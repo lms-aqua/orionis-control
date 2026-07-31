@@ -9,7 +9,7 @@
 [![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-0071E3?style=flat-square)](#)
 [![Auth](https://img.shields.io/badge/auth-OIDC%20%2B%20PKCE-2E7D32?style=flat-square)](#)
 [![Status](https://img.shields.io/badge/status-in%20development-F9A825?style=flat-square)](#)
-[![License](https://img.shields.io/badge/license-MIT-6E56CF?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-proprietary-6E56CF?style=flat-square)](LICENSE)
 
 </div>
 
@@ -81,7 +81,9 @@ Treated as a requirement, not a checklist item: full Dynamic Type support, Voice
 
 ## License
 
-Released under the [MIT License](LICENSE).
+**Copyright © 2026 Lost Media Studios. All rights reserved.**
+
+This project is proprietary. The repository is public for reference and portfolio purposes only — visibility is not permission. No right to copy, modify, redistribute, or use the software is granted. See [LICENSE](LICENSE) for the full terms.
 
 <div align="center">
 <sub>Built for people who run their own infrastructure and would like to stop opening four browser tabs to do it.</sub>
