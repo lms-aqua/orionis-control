@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+test-results
+tests
+data
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+*.log

@@ -1,0 +1,48 @@
+# --- secrets: never commit real values ---
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+secrets/
+Config/*.xcconfig
+!Config/*.xcconfig.example
+
+# --- node ---
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+.vitest/
+test-results/
+
+# --- data ---
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# --- apple ---
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM.zip
+.swiftpm/
+Packages/
+xcuserdata/
+
+# --- os / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
