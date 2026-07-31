@@ -13,6 +13,10 @@
 
 </div>
 
+> [!IMPORTANT]
+> **Proprietary — All Rights Reserved. © 2026 Lost Media Studios.**
+> This repository is public for reference and portfolio purposes only. **No license is granted.** You may not copy, modify, redistribute, or use this software or any part of it. Public visibility is not permission. See [LICENSE](LICENSE).
+
 ---
 
 ## About
