@@ -12,11 +12,30 @@ protocol CameraServicing: Sendable {
     func cameras() async throws -> [Camera]
     func camera(id: String) async throws -> Camera
     func snapshot(cameraId: String) async throws -> Data
-    func createStreamSession(cameraId: String, quality: StreamQuality, lowData: Bool) async throws
-        -> StreamSession
+    func createStreamSession(
+        cameraId: String,
+        quality: StreamQuality,
+        lowData: Bool,
+        preferredProtocols: [StreamProtocolKind]
+    ) async throws -> StreamSession
     func endStreamSession(cameraId: String, streamId: String) async throws
     func invokeControl(cameraId: String, request: CameraControlRequest) async throws
         -> CameraControlResult
+}
+
+extension CameraServicing {
+    /// Requests the app's full preference order (best latency first). The explicit
+    /// overload exists so the stream controller can pin a single protocol when it
+    /// falls back from WebRTC to HLS.
+    func createStreamSession(cameraId: String, quality: StreamQuality, lowData: Bool) async throws
+        -> StreamSession
+    {
+        try await createStreamSession(
+            cameraId: cameraId,
+            quality: quality,
+            lowData: lowData,
+            preferredProtocols: StreamProtocolKind.preferenceOrder)
+    }
 }
 
 protocol EventServicing: Sendable {
@@ -295,9 +314,12 @@ struct OrionisService: OrionisServicing {
             Endpoint(path: "/cameras/\(escaped(cameraId))/snapshot", timeout: 15))
     }
 
-    func createStreamSession(cameraId: String, quality: StreamQuality, lowData: Bool) async throws
-        -> StreamSession
-    {
+    func createStreamSession(
+        cameraId: String,
+        quality: StreamQuality,
+        lowData: Bool,
+        preferredProtocols: [StreamProtocolKind]
+    ) async throws -> StreamSession {
         struct Body: Encodable {
             let preferredProtocols: [String]
             let quality: String
@@ -308,7 +330,7 @@ struct OrionisService: OrionisServicing {
                 method: .post,
                 path: "/cameras/\(escaped(cameraId))/stream-sessions",
                 body: Body(
-                    preferredProtocols: StreamProtocolKind.preferenceOrder.map(\.rawValue),
+                    preferredProtocols: preferredProtocols.map(\.rawValue),
                     quality: quality.rawValue,
                     lowData: lowData
                 ),

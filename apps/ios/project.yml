@@ -18,6 +18,19 @@ configs:
   Staging: release
   Release: release
 
+packages:
+  # Google's libwebrtc, distributed as a prebuilt binary XCFramework. This is
+  # the media plane for sub-second live camera playback; the gateway proxies the
+  # SDP offer/answer and mints per-session TURN credentials, so go2rtc is never
+  # exposed. Its ObjC types are not Sendable-annotated, which surfaces as
+  # strict-concurrency *warnings* (not errors, since warnings-as-errors is off).
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    # Each upstream release is its own major, so `from:` pins to exactly this one
+    # (>=137.0.0, <138.0.0). A prebuilt, ABI-stable XCFramework — loads on the
+    # runner's Xcode 16 with the iOS 17 deployment target.
+    from: "137.0.0"
+
 settings:
   base:
     SWIFT_VERSION: "5.10"
@@ -120,7 +133,8 @@ targets:
         ORIONIS_OAUTH_CLIENT_ID: $(ORIONIS_OAUTH_CLIENT_ID)
         ORIONIS_OAUTH_REDIRECT_SCHEME: $(ORIONIS_OAUTH_REDIRECT_SCHEME)
         ORIONIS_BUILD_ENVIRONMENT: $(ORIONIS_BUILD_ENVIRONMENT)
-    dependencies: []
+    dependencies:
+      - package: WebRTC
 
   OrionisControlTests:
     type: bundle.unit-test

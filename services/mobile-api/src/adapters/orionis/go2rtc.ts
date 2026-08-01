@@ -46,9 +46,9 @@ const CAPABILITIES = {
   sensitivity: false,
   restart: false,
   snapshot: true,
-  // The gateway relays go2rtc HLS (AVPlayer-native); WebRTC/MJPEG are not
-  // exposed, so only HLS is advertised for negotiation.
-  protocols: ['hls'] as StreamProtocol[],
+  // WebRTC (sub-second, via the gateway's signalling proxy + TURN) is preferred;
+  // HLS (AVPlayer-native, ~seconds) is the fallback. Both keep go2rtc unexposed.
+  protocols: ['webrtc', 'hls'] as StreamProtocol[],
   qualities: ['auto'] as StreamQuality[],
 };
 
@@ -156,13 +156,16 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     quality: StreamQuality;
     ttlSeconds: number;
   }): Promise<StreamSession> {
-    // The go2rtc HLS data plane is proxied by the gateway's /stream/:id relay,
-    // which builds the real token-bound playbackUrl. This returns the
-    // negotiated shape (HLS); the route fills in the URL.
+    // Both go2rtc data planes are proxied by the gateway's /stream/:id routes —
+    // HLS relay or the WebRTC signalling proxy — so go2rtc is never exposed. The
+    // route fills in the token-bound playbackUrl and mints TURN ICE servers; this
+    // just carries the negotiated protocol through.
+    const protocol: StreamProtocol =
+      input.preferredProtocols[0] === 'webrtc' ? 'webrtc' : 'hls';
     return {
       id: `go2rtc:${input.cameraId}`,
       cameraId: input.cameraId,
-      protocol: 'hls',
+      protocol,
       playbackUrl: '',
       expiresAt: new Date(Date.now() + input.ttlSeconds * 1000).toISOString(),
       quality: input.quality,

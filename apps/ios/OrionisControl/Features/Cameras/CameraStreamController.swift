@@ -18,8 +18,17 @@ final class CameraStreamController {
     private(set) var diagnostics = CameraStreamDiagnostics()
 
     /// Created once and reused across reconnects, so renegotiating a stream never
-    /// rebuilds the view hierarchy.
+    /// rebuilds the view hierarchy. Used for the HLS transport (and the fallback).
     let player = AVPlayer()
+
+    /// The sub-second transport. Parallel to `player`; exactly one is active at a
+    /// time, chosen by the negotiated protocol. The view renders whichever
+    /// `isWebRTC` selects.
+    let webrtc = WebRTCStreamPlayer()
+
+    /// True while the active session is being served over WebRTC, so the viewer
+    /// knows to mount the Metal renderer instead of the `AVPlayer` layer.
+    private(set) var isWebRTC = false
 
     private(set) var cameraId: String
     private let service: any CameraServicing
@@ -32,12 +41,20 @@ final class CameraStreamController {
     private var detector = FrozenFrameDetector()
     private var attempt = 0
     private var wasPlayingBeforeBackground = false
+    private var isMuted = true
+
+    /// What we ask the gateway to negotiate. Normally the full preference order
+    /// (WebRTC first); pinned to HLS once WebRTC has failed for this camera, so a
+    /// fallback retry does not just land back on WebRTC and loop.
+    private var preferredProtocols: [StreamProtocolKind] = StreamProtocolKind.preferenceOrder
+    private var webRTCFallbackUsed = false
 
     /// Touched from the nonisolated `deinit` purely to cancel and deregister.
     /// `Task.cancel()` and `NotificationCenter.removeObserver` are both safe from
     /// any isolation domain.
     private nonisolated(unsafe) var connectTask: Task<Void, Never>?
     private nonisolated(unsafe) var recoveryTask: Task<Void, Never>?
+    private nonisolated(unsafe) var webRTCWatchdog: Task<Void, Never>?
     private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
 
     private var timeObserver: Any?
@@ -57,6 +74,7 @@ final class CameraStreamController {
     deinit {
         connectTask?.cancel()
         recoveryTask?.cancel()
+        webRTCWatchdog?.cancel()
         for token in itemTokens { NotificationCenter.default.removeObserver(token) }
     }
 
@@ -70,7 +88,19 @@ final class CameraStreamController {
         self.lowData = lowData
         attempt = 0
         wasPlayingBeforeBackground = false
+        // A fresh camera gets the full ladder again; a prior camera's WebRTC
+        // failure must not permanently pin this one to HLS.
+        preferredProtocols = StreamProtocolKind.preferenceOrder
+        webRTCFallbackUsed = false
         connect(isRetry: false)
+    }
+
+    /// Mutes/unmutes whichever transport is live. The viewer calls this instead of
+    /// touching `player` directly so WebRTC audio is covered too.
+    func setAudioMuted(_ muted: Bool) {
+        isMuted = muted
+        player.isMuted = muted
+        webrtc.setMuted(muted)
     }
 
     /// Moves this controller to another camera, reusing the same player.
@@ -88,6 +118,10 @@ final class CameraStreamController {
     func pause() {
         player.pause()
         recoveryTask?.cancel()
+        // WebRTC has no "pause": stop pulling media entirely. `resume()` rejoins
+        // from a fresh session, which is what a live stream wants anyway.
+        connectTask?.cancel()
+        teardownWebRTC()
         if !state.isTerminal { transition(to: .paused) }
     }
 
@@ -114,6 +148,7 @@ final class CameraStreamController {
         recoveryTask?.cancel()
         connectTask = nil
         recoveryTask = nil
+        teardownWebRTC()
         player.pause()
         clearItemObservers()
         player.replaceCurrentItem(with: nil)
@@ -129,6 +164,8 @@ final class CameraStreamController {
     func suspendForBackground() {
         wasPlayingBeforeBackground = state.isLive || state == .buffering || state == .connecting
         recoveryTask?.cancel()
+        connectTask?.cancel()
+        teardownWebRTC()
         player.pause()
     }
 
@@ -154,6 +191,7 @@ final class CameraStreamController {
 
     private func connect(isRetry: Bool) {
         connectTask?.cancel()
+        webRTCWatchdog?.cancel()
         guard let camera else { return }
 
         // An offline camera is not a stream failure, and retrying it is pointless.
@@ -169,7 +207,10 @@ final class CameraStreamController {
             guard let self else { return }
             do {
                 let session = try await self.service.createStreamSession(
-                    cameraId: self.cameraId, quality: self.quality, lowData: self.lowData)
+                    cameraId: self.cameraId,
+                    quality: self.quality,
+                    lowData: self.lowData,
+                    preferredProtocols: self.preferredProtocols)
                 guard !Task.isCancelled else { return }
                 self.play(session: session)
             } catch let error as APIError {
@@ -183,29 +224,25 @@ final class CameraStreamController {
     }
 
     private func play(session: StreamSession) {
-        // Only HLS is playable by AVFoundation here. Say so plainly rather than
-        // failing obscurely with an empty player.
         switch session.protocol {
         case .hls, .llhls:
-            break
+            teardownWebRTC()
+            playHLS(session)
         case .webrtc:
-            transition(
-                to: .unsupported(
-                    protocol: .webrtc,
-                    detail:
-                        "This build plays HLS and Low-Latency HLS. The gateway negotiated WebRTC, which needs a peer-connection stack that is not bundled in this version."
-                ))
-            return
+            playWebRTC(session)
         case .mjpeg:
+            teardownWebRTC()
             transition(
                 to: .unsupported(
                     protocol: .mjpeg,
                     detail:
                         "The gateway offered only MJPEG for this camera, which this version does not play."
                 ))
-            return
         }
+    }
 
+    /// AVFoundation transport: hand the token-bound playlist to the player.
+    private func playHLS(_ session: StreamSession) {
         self.session = session
         diagnostics.transport = session.protocol
 
@@ -220,10 +257,103 @@ final class CameraStreamController {
             ])
         let item = AVPlayerItem(asset: asset)
         detector.reset()
+        player.isMuted = isMuted
         transition(to: .buffering)
         observe(item: item)
         player.replaceCurrentItem(with: item)
         player.play()
+    }
+
+    // MARK: - WebRTC transport
+
+    /// Sub-second transport. Signalling runs on `connectTask`; the transition to
+    /// `.live` arrives via the connection-state callback. Any failure — signalling
+    /// throw, a failed peer connection, or the watchdog — falls back to HLS once,
+    /// then defers to normal recovery.
+    private func playWebRTC(_ session: StreamSession) {
+        self.session = session
+        isWebRTC = true
+        diagnostics.transport = .webrtc
+
+        // No AVPlayer item backs this transport; make sure a stale HLS frame is
+        // not left on screen underneath the Metal renderer.
+        clearItemObservers()
+        player.replaceCurrentItem(with: nil)
+        detector.reset()
+        transition(to: .buffering)
+
+        webrtc.setMuted(isMuted)
+        webrtc.onConnectionState = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .connected: self.webRTCDidConnect()
+            case .failed: self.webRTCDidFail(reason: "The WebRTC connection dropped")
+            case .connecting: break
+            }
+        }
+
+        startWebRTCWatchdog()
+
+        connectTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.webrtc.connect(session: session)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.webRTCDidFail(reason: "WebRTC could not negotiate a stream")
+            }
+        }
+    }
+
+    private func webRTCDidConnect() {
+        guard isWebRTC else { return }
+        webRTCWatchdog?.cancel()
+        attempt = 0
+        diagnostics.lastFrameAt = Date()
+        transition(to: .live)
+    }
+
+    /// The one place WebRTC failure is handled: fall back to HLS the first time,
+    /// then hand off to bounded recovery so a dead camera still ends in a final
+    /// state rather than ping-ponging between transports.
+    private func webRTCDidFail(reason: String) {
+        guard isWebRTC else { return }
+        webRTCWatchdog?.cancel()
+        teardownWebRTC()
+
+        if !webRTCFallbackUsed {
+            webRTCFallbackUsed = true
+            preferredProtocols = [.hls]
+            diagnostics.lastErrorSummary = "WebRTC unavailable, falling back to HLS"
+            attempt = 0
+            connect(isRetry: false)
+        } else {
+            beginRecovery(reason: reason)
+        }
+    }
+
+    /// Bounds how long a WebRTC negotiation may sit before "connected". Without it
+    /// a silent ICE failure would leave the viewer buffering forever.
+    private func startWebRTCWatchdog() {
+        webRTCWatchdog?.cancel()
+        webRTCWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.isWebRTC, self.state != .live else { return }
+                self.webRTCDidFail(reason: "WebRTC did not connect in time")
+            }
+        }
+    }
+
+    private func teardownWebRTC() {
+        webRTCWatchdog?.cancel()
+        guard isWebRTC else { return }
+        isWebRTC = false
+        webrtc.onConnectionState = nil
+        webrtc.close()
     }
 
     private func handle(error: APIError) {

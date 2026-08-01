@@ -210,9 +210,15 @@ struct CameraDetailView: View {
                     // rather than the view flashing to black. It is dimmed and
                     // labelled whenever the stream is not genuinely live.
                     if stream.state.isLive || stream.state.showsLastFrame {
-                        CameraVideoView(player: stream.player)
-                            .opacity(stream.state.isLive ? 1 : 0.45)
-                            .allowsHitTesting(false)
+                        Group {
+                            if stream.isWebRTC {
+                                WebRTCVideoView(track: stream.webrtc.remoteVideoTrack)
+                            } else {
+                                CameraVideoView(player: stream.player)
+                            }
+                        }
+                        .opacity(stream.state.isLive ? 1 : 0.45)
+                        .allowsHitTesting(false)
                     }
                     playerOverlay(stream, camera: camera)
                 }
@@ -382,7 +388,7 @@ struct CameraDetailView: View {
             if camera.capabilities.audio {
                 Button {
                     isMuted.toggle()
-                    stream?.player.isMuted = isMuted
+                    stream?.setAudioMuted(isMuted)
                 } label: {
                     Label(
                         isMuted ? "Unmute" : "Mute",
@@ -625,7 +631,7 @@ struct CameraDetailView: View {
         // autoclosure of `&&`.
         let conservingData = await environment.api.conservingData
         let lowData = environment.preferences.limitQualityOnCellular && conservingData
-        stream.player.isMuted = isMuted
+        stream.setAudioMuted(isMuted)
         stream.start(camera: camera, quality: quality, lowData: lowData)
     }
 

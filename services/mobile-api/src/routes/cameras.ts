@@ -314,10 +314,15 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
           protocol: upstream.protocol,
           quality,
           supportedQualities: upstream.supportedQualities,
-          // Resolved through the gateway, not a durable upstream URL.
-          // `.m3u8` is load-bearing: AVFoundation will not follow an
-          // extension-less playlist URL, however correct the content type.
-          playbackUrl: `${config.publicBaseUrl}/api/mobile/v1/stream/${localId}/playlist.m3u8`,
+          // Resolved through the gateway, not a durable upstream URL. For WebRTC
+          // this is the signalling endpoint the client POSTs its SDP offer to;
+          // for HLS it is the playlist. `.m3u8` is load-bearing for HLS:
+          // AVFoundation will not follow an extension-less playlist URL, however
+          // correct the content type.
+          playbackUrl:
+            upstream.protocol === 'webrtc'
+              ? `${config.publicBaseUrl}/api/mobile/v1/stream/${localId}/webrtc`
+              : `${config.publicBaseUrl}/api/mobile/v1/stream/${localId}/playlist.m3u8`,
           streamToken,
           expiresAt: expiresAt.toISOString(),
           // The relay credential is minted here, per session, for this user, and

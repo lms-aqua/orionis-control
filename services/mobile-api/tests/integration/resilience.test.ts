@@ -146,6 +146,31 @@ describe('partial upstream failure', () => {
     // The camera advertises webrtc + hls; llhls is unavailable, so hls wins.
     expect(res.json().data.protocol).toBe('hls');
   });
+
+  it('prefers webrtc and points playback at the signalling endpoint', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      // The default app preference order leads with webrtc.
+      payload: { preferredProtocols: ['webrtc', 'llhls', 'hls'] },
+    });
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data;
+    expect(data.protocol).toBe('webrtc');
+    // For webrtc, playbackUrl is where the client POSTs its SDP offer, not a
+    // playlist — and it still never leaks the upstream media host.
+    expect(data.playbackUrl).toMatch(/\/api\/mobile\/v1\/stream\/[^/]+\/webrtc$/);
+    expect(JSON.stringify(data)).not.toContain('media.internal.invalid');
+    // TURN credentials must ride along so the client can reach the relay.
+    expect(Array.isArray(data.iceServers)).toBe(true);
+  });
 });
 
 describe('stream authorisation', () => {

@@ -78,12 +78,23 @@ struct CameraLiveViewer: View {
 
     // MARK: Video
 
+    /// Picks the renderer for the active transport: the Metal WebRTC view for
+    /// sub-second streams, the `AVPlayer` layer for HLS.
+    @ViewBuilder
+    private func transportView(_ stream: CameraStreamController) -> some View {
+        if stream.isWebRTC {
+            WebRTCVideoView(track: stream.webrtc.remoteVideoTrack, fills: fillsScreen)
+        } else {
+            CameraVideoView(player: stream.player, fills: fillsScreen)
+        }
+    }
+
     @ViewBuilder
     private func video(_ stream: CameraStreamController) -> some View {
         GeometryReader { geometry in
             ZStack {
                 if stream.state.isLive || stream.state.showsLastFrame {
-                    CameraVideoView(player: stream.player, fills: fillsScreen)
+                    transportView(stream)
                         .scaleEffect(zoom)
                         .offset(x: pan.width, y: pan.height)
                         .opacity(stream.state.isLive ? 1 : 0.45)
@@ -244,7 +255,7 @@ struct CameraLiveViewer: View {
                         label: isMuted ? "Unmute" : "Mute"
                     ) {
                         isMuted.toggle()
-                        stream.player.isMuted = isMuted
+                        stream.setAudioMuted(isMuted)
                         scheduleControlsHide()
                     }
                 }
@@ -354,7 +365,7 @@ struct CameraLiveViewer: View {
         guard let stream else { return }
         let conservingData = await environment.api.conservingData
         let lowData = environment.preferences.limitQualityOnCellular && conservingData
-        stream.player.isMuted = isMuted
+        stream.setAudioMuted(isMuted)
         stream.start(
             camera: camera,
             quality: environment.preferences.defaultStreamQuality,
@@ -366,7 +377,7 @@ struct CameraLiveViewer: View {
         resetZoom()
         let conservingData = await environment.api.conservingData
         let lowData = environment.preferences.limitQualityOnCellular && conservingData
-        stream.player.isMuted = isMuted
+        stream.setAudioMuted(isMuted)
         await stream.switchTo(
             camera: camera,
             quality: environment.preferences.defaultStreamQuality,
