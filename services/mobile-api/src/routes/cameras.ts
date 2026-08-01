@@ -355,6 +355,48 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
+  // Validates a stream token (bearer header or ?token=) and returns the live
+  // stream_sessions row. Shared by the HLS relay and the WebRTC signalling proxy
+  // so both enforce identical authorisation, fail-closed.
+  const resolveStream = async (
+    r: FastifyRequest,
+  ): Promise<{ token: string; row: Record<string, unknown> }> => {
+    const { config, db } = r.services;
+    const header = r.headers.authorization;
+    const q = r.query as { token?: string };
+    const token =
+      (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')
+        ? header.slice(7).trim()
+        : null) ??
+      q.token ??
+      null;
+    if (!token) throw new AppError('UNAUTHENTICATED', 'A stream token is required.');
+
+    let claims;
+    try {
+      ({ payload: claims } = await jwtVerify(
+        token,
+        new TextEncoder().encode(config.sessionSigningKey),
+        { issuer: 'orionis-control-gateway', audience: 'orionis-control-stream' },
+      ));
+    } catch {
+      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
+    }
+
+    const row = db.prepare('SELECT * FROM stream_sessions WHERE id = ?').get(String(claims.str)) as
+      Record<string, unknown> | undefined;
+    if (!row || row.revoked_at) {
+      throw new AppError('STREAM_UNAVAILABLE', 'This stream session was revoked.');
+    }
+    if (new Date(String(row.expires_at)).getTime() < Date.now()) {
+      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream session has expired.');
+    }
+    if (!r.services.sessions.isActive(String(row.session_id))) {
+      throw new AppError('SESSION_REVOKED', 'The signed-in session is no longer valid.');
+    }
+    return { token, row };
+  };
+
   // --- GET /stream/:streamId/... (playback resolution) ----------------------
   // Registered outside the authenticated prefix guard: players cannot always
   // attach an Authorization header, so the short-lived stream token is passed
@@ -371,40 +413,8 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     }>,
     reply: FastifyReply,
   ): Promise<unknown> => {
-    const { config, db } = req.services;
-    const header = req.headers.authorization;
-    const token =
-      (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')
-        ? header.slice(7).trim()
-        : null) ?? req.query.token;
-
-    if (!token) {
-      throw new AppError('UNAUTHENTICATED', 'A stream token is required.');
-    }
-
-    let claims;
-    try {
-      ({ payload: claims } = await jwtVerify(
-        token,
-        new TextEncoder().encode(config.sessionSigningKey),
-        { issuer: 'orionis-control-gateway', audience: 'orionis-control-stream' },
-      ));
-    } catch {
-      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
-    }
-
-    const row = db.prepare('SELECT * FROM stream_sessions WHERE id = ?').get(String(claims.str)) as
-      Record<string, unknown> | undefined;
-
-    if (!row || row.revoked_at) {
-      throw new AppError('STREAM_UNAVAILABLE', 'This stream session was revoked.');
-    }
-    if (new Date(String(row.expires_at)).getTime() < Date.now()) {
-      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream session has expired.');
-    }
-    if (!req.services.sessions.isActive(String(row.session_id))) {
-      throw new AppError('SESSION_REVOKED', 'The signed-in session is no longer valid.');
-    }
+    const { config } = req.services;
+    const { token, row } = await resolveStream(req);
 
     // HLS relay for the go2rtc data plane. go2rtc is never exposed to the
     // client: the gateway serves the media playlist and the segments,
@@ -502,6 +512,50 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
   // Kept so a client holding an older playback URL still resolves to the
   // playlist rather than a 404.
   app.get('/stream/:streamId', relayHandler);
+
+  // --- POST /stream/:streamId/webrtc (WHEP-style signalling proxy) -----------
+  // go2rtc is never exposed to the client: the app sends its SDP offer here with
+  // the same stream token that authorises playback, and the gateway relays the
+  // offer to go2rtc and returns its answer. Media then flows peer-to-peer via
+  // the TURN relay whose per-session credential was minted in the stream
+  // session — which is why the relay port needs no IP allowlist to stay safe.
+  app.post<{
+    Params: { streamId: string };
+    Querystring: { token?: string };
+    Body: { type?: string; sdp?: string };
+  }>('/stream/:streamId/webrtc', async (req) => {
+    const { config } = req.services;
+    const { row } = await resolveStream(req);
+
+    const offer = req.body ?? {};
+    if (offer.type !== 'offer' || typeof offer.sdp !== 'string' || offer.sdp.length < 8) {
+      throw new AppError('VALIDATION_FAILED', 'A WebRTC offer is required.');
+    }
+
+    const src = String(row.camera_id);
+    try {
+      const upstream = await fetch(
+        `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'offer', sdp: offer.sdp }),
+          signal: AbortSignal.timeout(config.orionis.timeoutMs),
+        },
+      );
+      if (!upstream.ok) {
+        throw new AppError('STREAM_UNAVAILABLE', 'The camera could not negotiate a WebRTC stream.');
+      }
+      const answer = (await upstream.json()) as { type?: string; sdp?: string };
+      if (typeof answer.sdp !== 'string') {
+        throw new AppError('UPSTREAM_ERROR', 'The media plane returned no WebRTC answer.');
+      }
+      return ok({ type: 'answer', sdp: answer.sdp }, req.id);
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');
+    }
+  });
 
   // --- POST /cameras/:cameraId/controls -------------------------------------
   app.post<{ Params: { cameraId: string } }>(

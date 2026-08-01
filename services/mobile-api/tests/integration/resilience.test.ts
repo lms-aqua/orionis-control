@@ -215,6 +215,44 @@ describe('stream authorisation', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it('rejects a WebRTC offer without a stream token', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/stream/str_x/webrtc`,
+      payload: { type: 'offer', sdp: 'v=0\r\n' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects a malformed WebRTC offer even with a valid token', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const session = (
+      await harness.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+        headers: harness.auth(tokens.accessToken),
+        payload: { preferredProtocols: ['hls'] },
+      })
+    ).json().data;
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/stream/${session.id}/webrtc`,
+      headers: { authorization: `Bearer ${session.streamToken}` },
+      payload: { type: 'offer' }, // no sdp — must fail before any upstream call
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('VALIDATION_FAILED');
+  });
+
   it('rejects playback once the owning session is revoked', async () => {
     harness = await createHarness({
       orionis: new StubOrionisAdapter(),
