@@ -256,15 +256,13 @@ describe('stream authorisation', () => {
     }) as typeof globalThis.fetch;
 
     try {
-      const master = await harness.app.inject({
+      const first = await harness.app.inject({
         method: 'GET',
-        url: `${API_PREFIX}/stream/${id}`,
+        url: `${API_PREFIX}/stream/${id}/playlist.m3u8`,
         headers: { authorization: `Bearer ${streamToken}` },
       });
-      expect(master.statusCode).toBe(200);
-      // The upstream session id must never reach the player.
-      expect(master.body).not.toContain('sid-');
-      expect(master.body).toContain('hls=playlist');
+      expect(first.statusCode).toBe(200);
+      expect(first.body).toContain('/segment.ts?');
 
       // Simulate go2rtc retiring the session the relay just minted.
       liveSid = 'sid-retired';
@@ -272,15 +270,33 @@ describe('stream authorisation', () => {
 
       const playlist = await harness.app.inject({
         method: 'GET',
-        url: `${API_PREFIX}/stream/${id}?token=${encodeURIComponent(streamToken)}&hls=playlist`,
+        url: `${API_PREFIX}/stream/${id}/playlist.m3u8?token=${encodeURIComponent(streamToken)}`,
       });
 
       expect(playlist.statusCode).toBe(200);
       expect(minted.length).toBe(mintsBefore + 1);
-      expect(playlist.body).toContain('hls=segment');
+      expect(playlist.body).toContain('/segment.ts?');
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  it('hands the player a .m3u8 playback URL', async () => {
+    // Regression: an extension-less URL made AVFoundation re-request the same
+    // URL in a loop and never fetch the playlist contents, so the camera view
+    // connected and then showed nothing.
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+    expect(created.json().data.playbackUrl).toMatch(/\/stream\/str_[a-z0-9]+\/playlist\.m3u8$/);
   });
 
   it('answers a retired segment with 404 so the player resyncs', async () => {
@@ -306,7 +322,7 @@ describe('stream authorisation', () => {
     try {
       const res = await harness.app.inject({
         method: 'GET',
-        url: `${API_PREFIX}/stream/${id}?token=${encodeURIComponent(streamToken)}&hls=segment&id=sid-old&n=7`,
+        url: `${API_PREFIX}/stream/${id}/segment.ts?token=${encodeURIComponent(streamToken)}&id=sid-old&n=7`,
       });
       expect(res.statusCode).toBe(404);
     } finally {

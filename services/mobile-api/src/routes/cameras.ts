@@ -5,7 +5,7 @@
  * gateway-signed, short-lived, user-bound stream token; the playback URL is
  * resolved server-side and can be revoked at any time.
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { SignJWT, jwtVerify } from 'jose';
 import { AppError } from '../lib/errors.ts';
@@ -253,7 +253,9 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
           quality,
           supportedQualities: upstream.supportedQualities,
           // Resolved through the gateway, not a durable upstream URL.
-          playbackUrl: `${config.publicBaseUrl}/api/mobile/v1/stream/${localId}`,
+          // `.m3u8` is load-bearing: AVFoundation will not follow an
+          // extension-less playlist URL, however correct the content type.
+          playbackUrl: `${config.publicBaseUrl}/api/mobile/v1/stream/${localId}/playlist.m3u8`,
           streamToken,
           expiresAt: expiresAt.toISOString(),
           iceServers: upstream.iceServers,
@@ -287,14 +289,22 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // --- GET /stream/:streamId (playback resolution) --------------------------
+  // --- GET /stream/:streamId/... (playback resolution) ----------------------
   // Registered outside the authenticated prefix guard: players cannot always
   // attach an Authorization header, so the short-lived stream token is passed
   // as a bearer header when possible and validated here either way.
-  app.get<{
-    Params: { streamId: string };
-    Querystring: { token?: string; hls?: string; id?: string; n?: string };
-  }>('/stream/:streamId', async (req, reply) => {
+  //
+  // The paths end in `.m3u8` and `.ts` deliberately. AVFoundation would not
+  // follow an extension-less playlist URL even with the right content type —
+  // it re-requested the top-level URL in a loop and never fetched the variant,
+  // which looked like a camera that connects and then shows nothing.
+  const relayHandler = async (
+    req: FastifyRequest<{
+      Params: { streamId: string };
+      Querystring: { token?: string; id?: string; n?: string };
+    }>,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
     const { config, db } = req.services;
     const header = req.headers.authorization;
     const token =
@@ -331,40 +341,25 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     }
 
     // HLS relay for the go2rtc data plane. go2rtc is never exposed to the
-    // client: the gateway proxies the master playlist, the media playlist,
-    // and the segments, rewriting every sub-URL back through this same
-    // token-bound endpoint. go2rtc's HLS shape is:
-    //   master  /api/stream.m3u8?src=<name>  -> hls/playlist.m3u8?id=<sid>
+    // client: the gateway serves the media playlist and the segments,
+    // rewriting every segment URL back through this same token-bound endpoint.
+    // There is no master playlist — go2rtc offers a single variant, so a master
+    // adds an indirection (and a failure mode) for nothing.
+    // go2rtc's HLS shape is:
+    //   mint    /api/stream.m3u8?src=<name>  -> hls/playlist.m3u8?id=<sid>
     //   media   /api/hls/playlist.m3u8?id=<sid> -> segment.ts?id=<sid>&n=<n>
     //   segment /api/hls/segment.ts?id=<sid>&n=<n>
     const go2rtcBase = config.orionis.baseUrl;
     const src = String(row.camera_id);
-    const self = `${config.publicBaseUrl}/api/mobile/v1/stream/${req.params.streamId}`;
-    const tq = `token=${encodeURIComponent(token)}`;
-    const mode = req.query.hls;
-    const noStore = { 'cache-control': 'no-store' };
-
     const streamId = req.params.streamId;
+    const self = `${config.publicBaseUrl}/api/mobile/v1/stream/${streamId}`;
+    const tq = `token=${encodeURIComponent(token)}`;
+    const noStore = { 'cache-control': 'no-store' };
     const timeoutMs = config.orionis.timeoutMs;
+    const isSegment = req.url.split('?')[0]!.endsWith('.ts');
 
     try {
-      if (!mode) {
-        // Minting here also warms the upstream source before the player asks
-        // for its first segment. The id stays server-side.
-        await mintHlsSession(streamId, src, go2rtcBase, timeoutMs);
-        return reply
-          .headers({ 'content-type': 'application/vnd.apple.mpegurl', ...noStore })
-          .send(
-            [
-              '#EXTM3U',
-              '#EXT-X-STREAM-INF:BANDWIDTH=192000,CODECS="avc1.640029"',
-              `${self}?${tq}&hls=playlist`,
-              '',
-            ].join('\n'),
-          );
-      }
-
-      if (mode === 'playlist') {
+      if (!isSegment) {
         const fetchPlaylist = async (sid: string): Promise<Response> =>
           fetch(`${go2rtcBase}/api/hls/playlist.m3u8?id=${encodeURIComponent(sid)}`, {
             signal: AbortSignal.timeout(timeoutMs),
@@ -390,14 +385,13 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         // older one must not silently resolve against a newer session.
         const body = (await upstream.text()).replace(
           /segment\.ts\?id=([A-Za-z0-9_-]+)&n=(\d+)/g,
-          (_m, id, n) => `${self}?${tq}&hls=segment&id=${id}&n=${n}`,
+          (_m, id, n) => `${self}/segment.ts?${tq}&id=${id}&n=${n}`,
         );
         return reply
           .headers({ 'content-type': 'application/vnd.apple.mpegurl', ...noStore })
           .send(body);
       }
 
-      // segment
       const upstream = await fetch(
         `${go2rtcBase}/api/hls/segment.ts?id=${encodeURIComponent(req.query.id ?? '')}&n=${encodeURIComponent(req.query.n ?? '')}`,
         { signal: AbortSignal.timeout(timeoutMs) },
@@ -414,7 +408,13 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       if (err instanceof AppError) throw err;
       throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');
     }
-  });
+  };
+
+  app.get('/stream/:streamId/playlist.m3u8', relayHandler);
+  app.get('/stream/:streamId/segment.ts', relayHandler);
+  // Kept so a client holding an older playback URL still resolves to the
+  // playlist rather than a 404.
+  app.get('/stream/:streamId', relayHandler);
 
   // --- POST /cameras/:cameraId/controls -------------------------------------
   app.post<{ Params: { cameraId: string } }>(
