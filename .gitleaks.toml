@@ -3,22 +3,26 @@ title = "Orionis Control secret scanning"
 [extend]
 useDefault = true
 
+# NOTE: gitleaks uses the Go re2 engine, which does not support lookahead
+# ((?!...)). Placeholders (REPLACE_ME*) and example/fixture files are excluded
+# via [allowlist] below instead of an inline negative lookahead.
+
 [[rules]]
 id = "orionis-authelia-client-secret"
 description = "Authelia OIDC client secret assigned a real value"
-regex = '''(?i)AUTHELIA_CLIENT_SECRET\s*[:=]\s*(?!REPLACE_ME|""|''|\s*$)[^\s"']{8,}'''
+regex = '''(?i)AUTHELIA_CLIENT_SECRET\s*[:=]\s*[^\s"']{8,}'''
 tags = ["orionis", "oidc"]
 
 [[rules]]
 id = "orionis-session-signing-key"
 description = "Session signing key assigned a real value"
-regex = '''(?i)SESSION_SIGNING_KEY\s*[:=]\s*(?!REPLACE_ME|""|''|\s*$)[^\s"']{16,}'''
+regex = '''(?i)SESSION_SIGNING_KEY\s*[:=]\s*[^\s"']{16,}'''
 tags = ["orionis"]
 
 [[rules]]
 id = "orionis-adguard-password"
 description = "AdGuard credentials assigned a real value"
-regex = '''(?i)ADGUARD_PASSWORD\s*[:=]\s*(?!REPLACE_ME|""|''|\s*$)[^\s"']{4,}'''
+regex = '''(?i)ADGUARD_PASSWORD\s*[:=]\s*[^\s"']{4,}'''
 tags = ["orionis", "adguard"]
 
 [[rules]]
