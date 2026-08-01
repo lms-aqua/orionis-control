@@ -60,7 +60,7 @@ describe('MediaMtxRecordings.list', () => {
       '2026-08-01T11:00:00.000Z',
       '2026-08-01T10:00:00.000Z',
     ]);
-    const [newest] = page.items;
+    const newest = page.items[0]!;
     expect(newest.cameraId).toBe('57');
     expect(newest.cameraName).toBe('Driveway');
     expect(newest.endedAt).toBe('2026-08-01T12:05:00.000Z');
@@ -74,13 +74,13 @@ describe('MediaMtxRecordings.list', () => {
   it('derives retentionUntil from the configured retention', async () => {
     const s = store(playback({ '57': [{ start: '2026-08-01T00:00:00Z', duration: 60 }] }), 7);
     const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
-    expect(page.items[0].retentionUntil).toBe('2026-08-08T00:00:00.000Z');
+    expect(page.items[0]!.retentionUntil).toBe('2026-08-08T00:00:00.000Z');
   });
 
   it('reports no retention when none is configured', async () => {
     const s = store(playback({ '57': [{ start: '2026-08-01T00:00:00Z', duration: 60 }] }), null);
     const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
-    expect(page.items[0].retentionUntil).toBeNull();
+    expect(page.items[0]!.retentionUntil).toBeNull();
   });
 
   it('keeps ranges that straddle the requested window', async () => {
@@ -108,7 +108,7 @@ describe('MediaMtxRecordings.list', () => {
     );
     const page = await s.list({ limit: 10, offset: 0, cameraIds: ['56'] }, CAMERAS);
     expect(page.total).toBe(1);
-    expect(page.items[0].cameraId).toBe('56');
+    expect(page.items[0]!.cameraId).toBe('56');
   });
 
   it('treats a camera with no history as empty rather than failing', async () => {
@@ -139,7 +139,7 @@ describe('MediaMtxRecordings.list', () => {
     }) as typeof fetch);
     const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
     expect(page.total).toBe(1);
-    expect(page.items[0].cameraId).toBe('57');
+    expect(page.items[0]!.cameraId).toBe('57');
   });
 
   it('still surfaces a genuine recorder error', async () => {

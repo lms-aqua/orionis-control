@@ -21,6 +21,29 @@ import type {
 import type { Permission } from '../auth/roles.ts';
 import { can } from '../auth/roles.ts';
 
+/**
+ * Tells the player to start at the live edge instead of the back of the window.
+ *
+ * Measured on a live camera: the camera, Scrypted and go2rtc are effectively
+ * real-time and the HLS packager adds ~3s, yet the app was ~15s behind. The
+ * missing ~12s is join position -- an HLS player with no guidance starts several
+ * target durations back from the edge, and a sliding window several segments long
+ * gives it plenty of room to be conservative in.
+ *
+ * `EXT-X-START` is the tag that fixes exactly this. The offset is negative (from
+ * the end of the playlist) and deliberately just over one target duration, which
+ * is the closest a player can join without starving on the next segment.
+ */
+export function joinAtLiveEdge(playlist: string): string {
+  if (playlist.includes('#EXT-X-START')) return playlist;
+  const target = Number(/#EXT-X-TARGETDURATION:(\d+(?:\.\d+)?)/.exec(playlist)?.[1]);
+  const offset = Number.isFinite(target) && target > 0 ? Math.max(1, target * 1.5) : 3;
+  return playlist.replace(
+    '#EXTM3U',
+    `#EXTM3U\n#EXT-X-START:TIME-OFFSET=-${offset.toFixed(3)},PRECISE=YES`,
+  );
+}
+
 const StreamRequest = z.object({
   preferredProtocols: z
     .array(z.enum(['webrtc', 'llhls', 'hls', 'mjpeg']))
@@ -422,7 +445,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         // Segment URLs stay pinned to the session that produced this playlist:
         // segment numbering is per-session, so a number from an older one must
         // not silently resolve against a newer session.
-        const text = await upstream.text();
+        const text = joinAtLiveEdge(await upstream.text());
         const body = hlsBaseUrl
           ? text.replace(
               /^([A-Za-z0-9._-]+\.ts)\?session=([A-Za-z0-9-]+)$/gm,
