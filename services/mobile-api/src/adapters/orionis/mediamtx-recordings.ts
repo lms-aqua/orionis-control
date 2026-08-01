@@ -68,7 +68,10 @@ export class MediaMtxRecordings {
       throw new AppError('UPSTREAM_UNAVAILABLE', 'The recording store did not respond.');
     }
     // A camera that has never recorded is not an error; it simply has no history.
-    if (response.status === 404) return [];
+    // MediaMTX answers 400 for both "no recording directory yet" and "path is not
+    // configured", so both statuses mean the same thing here: nothing to show for
+    // this camera. One camera without footage must not fail the whole listing.
+    if (response.status === 404 || response.status === 400) return [];
     if (!response.ok) {
       throw new AppError('UPSTREAM_ERROR', 'The recording store returned an error.');
     }

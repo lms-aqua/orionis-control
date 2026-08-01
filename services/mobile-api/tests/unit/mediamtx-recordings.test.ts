@@ -118,6 +118,35 @@ describe('MediaMtxRecordings.list', () => {
     expect(page.total).toBe(1);
   });
 
+  it('treats the recorder 400 for an unrecorded camera as empty, not a failure', async () => {
+    // Observed against MediaMTX: a camera with no recording directory yet answers
+    // 400 ("lstat /recordings/55: no such file or directory"), as does an unknown
+    // path. One such camera must not fail the whole listing.
+    const s = store((async (input: string | URL | Request) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.searchParams.get('path') === '57') {
+        return new Response(JSON.stringify([{ start: '2026-08-01T11:00:00Z', duration: 60 }]), {
+          status: 200,
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          status: 'error',
+          error: 'lstat /recordings/56: no such file or directory',
+        }),
+        { status: 400 },
+      );
+    }) as typeof fetch);
+    const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
+    expect(page.total).toBe(1);
+    expect(page.items[0].cameraId).toBe('57');
+  });
+
+  it('still surfaces a genuine recorder error', async () => {
+    const s = store((async () => new Response('boom', { status: 500 })) as typeof fetch);
+    await expect(s.list({ limit: 10, offset: 0 }, CAMERAS)).rejects.toThrow(AppError);
+  });
+
   it('paginates', async () => {
     const entries = Array.from({ length: 5 }, (_, i) => ({
       start: `2026-08-01T1${i}:00:00Z`,
