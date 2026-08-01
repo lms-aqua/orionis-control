@@ -11,6 +11,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { AppError } from '../lib/errors.ts';
 import { ok } from '../lib/envelope.ts';
 import { randomId } from '../lib/crypto.ts';
+import { turnIceServers } from '../lib/turn.ts';
 import { actorOf, requireAuth, requirePermission, withIdempotency } from '../http/context.ts';
 import type {
   Camera,
@@ -319,7 +320,11 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
           playbackUrl: `${config.publicBaseUrl}/api/mobile/v1/stream/${localId}/playlist.m3u8`,
           streamToken,
           expiresAt: expiresAt.toISOString(),
-          iceServers: upstream.iceServers,
+          // The relay credential is minted here, per session, for this user, and
+          // expires in minutes. It is the only way a client reaches the media
+          // relay -- which is why that relay does not need to be firewalled to a
+          // single address to stay safe.
+          iceServers: [...upstream.iceServers, ...turnIceServers(config.turn, principal.userId)],
           renewAfterSeconds: Math.max(15, config.streamTokenTtlSeconds - 30),
         },
         req.id,

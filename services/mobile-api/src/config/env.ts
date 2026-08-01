@@ -7,6 +7,7 @@
  * unsafe (session key, OIDC identity) are hard requirements outside tests.
  */
 import { z } from 'zod';
+import type { TurnConfig } from '../lib/turn.ts';
 
 const csv = (v: string | undefined): string[] =>
   (v ?? '')
@@ -95,6 +96,14 @@ const RawSchema = z.object({
   ORIONIS_RECORDINGS_BASE_URL: z.string().default(''),
   // Must match the recorder's own retention, so retentionUntil is not a lie.
   ORIONIS_RECORDINGS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
+  // TURN relay for WebRTC. Comma separated, e.g.
+  //   turn:203.0.113.10:16143?transport=udp,turn:203.0.113.10:16143?transport=tcp
+  // Empty disables WebRTC rather than offering an unauthenticated relay.
+  TURN_URLS: z.string().default(''),
+  // Must equal the TURN server's static-auth-secret. Never sent to a client.
+  TURN_STATIC_AUTH_SECRET: z.string().default(''),
+  // Minutes, not hours: a leaked credential should die on its own.
+  TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(300),
   ORIONIS_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
   ADGUARD_INTERNAL_URL: z.string().default(''),
@@ -182,6 +191,7 @@ export interface Config {
   oidc: OidcConfig;
   roles: RoleMapping;
   orionis: OrionisConfig;
+  turn: TurnConfig;
   adguard: AdGuardConfig;
   apns: ApnsConfig;
   databaseUrl: string;
@@ -389,6 +399,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
         e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,
+    },
+    turn: {
+      urls: csv(e.TURN_URLS),
+      staticAuthSecret: e.TURN_STATIC_AUTH_SECRET,
+      credentialTtlSeconds: e.TURN_CREDENTIAL_TTL_SECONDS,
     },
     adguard: {
       configured: adguardConfigured,
