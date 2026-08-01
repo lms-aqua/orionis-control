@@ -2,7 +2,7 @@
 #
 # The .xcodeproj is generated rather than committed so the project file never
 # becomes a merge-conflict battleground and CI builds exactly what the repo
-# describes. Run `xcodegen generate` in this directory (see docs/IOS_SETUP.md).
+# describes. Run `xcodegen generate` in this directory before opening Xcode.
 
 name: OrionisControl
 options:

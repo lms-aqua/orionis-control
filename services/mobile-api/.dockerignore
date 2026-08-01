@@ -10,3 +10,6 @@ data
 .env
 .env.*
 *.log
+*.md
+.ai-local
+docs

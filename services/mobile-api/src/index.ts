@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   if (hasBlockingFindings(findings)) {
     console.error(
       '\nRefusing to start: the settings above are required in production. ' +
-        'See .env.example and docs/DEPLOYMENT.md.',
+        'See .env.example for the required configuration keys.',
     );
     process.exit(1);
   }

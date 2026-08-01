@@ -299,7 +299,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       // Implementations proxy or 302 to the upstream edge depending on protocol.
       throw new AppError(
         'CAPABILITY_UNSUPPORTED',
-        'Media relay is handled by the Orionis streaming edge, which is not connected to this gateway. See docs/CAMERA_STREAMING.md.',
+        'Media relay is handled by the Orionis streaming edge, which is not connected to this gateway.',
       );
 
       return reply;

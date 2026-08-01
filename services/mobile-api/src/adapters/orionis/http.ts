@@ -1,9 +1,9 @@
 /**
  * HTTP adapter for Orionis Guard.
  *
- * IMPORTANT: the upstream contract this codes against is documented in
- * docs/ORIONIS_UPSTREAM_CONTRACT.md. Until the real Orionis Guard build exposes
- * those endpoints, this adapter is exercised by contract tests against a stub
+ * IMPORTANT: this adapter codes against the Orionis Guard upstream contract.
+ * Until the real Orionis Guard build exposes those endpoints, this adapter is
+ * exercised by contract tests against a stub
  * server — it is NOT verified against production hardware. Responses are
  * validated with zod, so a mismatched upstream produces a clear UPSTREAM_ERROR
  * instead of malformed data reaching the app.

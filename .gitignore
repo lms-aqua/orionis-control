@@ -8,8 +8,27 @@
 *.cer
 *.certSigningRequest
 secrets/
+ExportOptions.plist
 Config/*.xcconfig
 !Config/*.xcconfig.example
+*.xcconfig
+!*.xcconfig.example
+
+# --- local-only technical documentation (never published) ---
+.ai-local/
+docs/
+CONTRIBUTING.md
+SECURITY.md
+CHANGELOG.md
+
+# --- AI handoffs, plans, and working notes (never published) ---
+*_HANDOFF.md
+*_PLAN.md
+*_PROGRESS.md
+*_NOTES.md
+AI_CONTEXT.md
+CLAUDE.md
+CODEX.md
 
 # --- node ---
 node_modules/
@@ -37,7 +56,9 @@ DerivedData/
 *.ipa
 *.dSYM.zip
 .swiftpm/
-Packages/
+# Scoped to the iOS tree so it does not collide, under case-insensitive git on
+# Windows/macOS, with the root packages/ directory that holds the API contract.
+/apps/ios/**/Packages/
 xcuserdata/
 
 # --- os / editor ---
