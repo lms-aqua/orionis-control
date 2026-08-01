@@ -105,6 +105,15 @@ struct CamerasView: View {
     @State private var model: CamerasViewModel?
     @State private var snapshots: CameraSnapshotStore?
     @State private var path = NavigationPath()
+    /// Cameras handed to the full-screen viewer, and where to start. Non-nil
+    /// presents it.
+    @State private var fullScreen: FullScreenRequest?
+
+    struct FullScreenRequest: Identifiable {
+        let cameras: [Camera]
+        let startIndex: Int
+        var id: String { cameras.indices.contains(startIndex) ? cameras[startIndex].id : "none" }
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -131,6 +140,9 @@ struct CamerasView: View {
                 path.append(id)
                 _ = router.consume()
             }
+        }
+        .fullScreenCover(item: $fullScreen) { request in
+            CameraLiveViewer(cameras: request.cameras, startAt: request.startIndex)
         }
     }
 
@@ -220,7 +232,7 @@ struct CamerasView: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
-                                .contextMenu { cardMenu(camera) }
+                                .contextMenu { cardMenu(camera, within: visible) }
                             }
                         }
                     }
@@ -240,7 +252,18 @@ struct CamerasView: View {
     }
 
     @ViewBuilder
-    private func cardMenu(_ camera: Camera) -> some View {
+    private func cardMenu(_ camera: Camera, within visible: [Camera]) -> some View {
+        // Full screen starts on this camera but carries the whole visible wall, so
+        // swiping moves through what the filters are currently showing.
+        if camera.health.status.isUsable {
+            Button {
+                fullScreen = FullScreenRequest(
+                    cameras: visible,
+                    startIndex: visible.firstIndex(where: { $0.id == camera.id }) ?? 0)
+            } label: {
+                Label("Open full screen", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+        }
         Button {
             environment.preferences.toggleFavourite(camera.id)
         } label: {

@@ -10,6 +10,9 @@ import SwiftUI
 @Observable
 final class CameraDetailViewModel {
     private(set) var camera: Camera?
+    /// The rest of the wall, so full screen can swipe between cameras without
+    /// going back to the grid first.
+    private(set) var siblings: [Camera] = []
     private(set) var events: [CameraEvent] = []
     private(set) var loadError: APIError?
     private(set) var controlMessage: String?
@@ -38,11 +41,15 @@ final class CameraDetailViewModel {
             return
         }
 
-        // Events are secondary: a failure here must not blank the live view.
+        // Events and the sibling list are secondary: a failure in either must not
+        // blank the live view.
         if let page = try? await eventsService.events(
             filter: EventFilter(cameraIds: [cameraId], limit: 10))
         {
             events = page.items
+        }
+        if let all = try? await cameras.cameras() {
+            siblings = all
         }
     }
 
@@ -83,6 +90,7 @@ struct CameraDetailView: View {
     @State private var isMuted = true
     @State private var confirmingControl: CameraControlRequest?
     @State private var showDiagnostics = false
+    @State private var showFullScreen = false
 
     var body: some View {
         Group {
@@ -116,6 +124,22 @@ struct CameraDetailView: View {
             // Revokes the gateway session as well as stopping the decoder, so no
             // stream is left running for a screen nobody is looking at.
             Task { [stream] in await stream?.stop() }
+        }
+        .fullScreenCover(isPresented: $showFullScreen) {
+            // Inline playback is released first: only one stream should be open.
+            let wall = model?.siblings.isEmpty == false
+                ? model!.siblings
+                : [model?.camera].compactMap { $0 }
+            CameraLiveViewer(
+                cameras: wall,
+                startAt: wall.firstIndex(where: { $0.id == cameraId }) ?? 0)
+        }
+        .onChange(of: showFullScreen) { _, presented in
+            if presented {
+                Task { await stream?.stop() }
+            } else if environment.preferences.autoplayLiveView {
+                Task { await startStream() }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -378,6 +402,20 @@ struct CameraDetailView: View {
                 }
                 .pickerStyle(.menu)
                 .onChange(of: quality) { _, _ in Task { await startStream() } }
+            }
+
+            if camera.health.status.isUsable {
+                Button {
+                    showFullScreen = true
+                } label: {
+                    Label(
+                        "Full screen",
+                        systemImage: "arrow.up.left.and.arrow.down.right"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Open full screen")
             }
 
             Spacer()
@@ -684,12 +722,15 @@ struct PTZPad: View {
 /// is what previously restarted playback for unrelated state changes.
 struct CameraVideoView: UIViewControllerRepresentable {
     let player: AVPlayer
+    /// `false` fits the whole frame (letterboxed); `true` fills the screen and
+    /// crops. Cameras are not all 16:9, so this is the viewer's choice, not ours.
+    var fills = false
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
-        controller.videoGravity = .resizeAspect
+        controller.videoGravity = fills ? .resizeAspectFill : .resizeAspect
         // The controller's own chrome would cover the picture and duplicate the
         // app's controls; status and actions are drawn by the viewer instead.
         controller.showsPlaybackControls = false
@@ -700,6 +741,10 @@ struct CameraVideoView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player {
             controller.player = player
+        }
+        let gravity: AVLayerVideoGravity = fills ? .resizeAspectFill : .resizeAspect
+        if controller.videoGravity != gravity {
+            controller.videoGravity = gravity
         }
     }
 

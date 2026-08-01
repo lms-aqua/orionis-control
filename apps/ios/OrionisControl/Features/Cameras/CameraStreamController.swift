@@ -21,7 +21,7 @@ final class CameraStreamController {
     /// rebuilds the view hierarchy.
     let player = AVPlayer()
 
-    private let cameraId: String
+    private(set) var cameraId: String
     private let service: any CameraServicing
     private let policy: ReconnectPolicy
 
@@ -71,6 +71,17 @@ final class CameraStreamController {
         attempt = 0
         wasPlayingBeforeBackground = false
         connect(isRetry: false)
+    }
+
+    /// Moves this controller to another camera, reusing the same player.
+    ///
+    /// The previous session is revoked before the next is opened, so swiping
+    /// through a wall of cameras never leaves a trail of live streams behind it
+    /// and only one stream is ever active.
+    func switchTo(camera: Camera, quality: StreamQuality, lowData: Bool) async {
+        await stop()
+        cameraId = camera.id
+        start(camera: camera, quality: quality, lowData: lowData)
     }
 
     /// Viewer-initiated pause. Distinct from a stall: no recovery is attempted.
