@@ -113,24 +113,41 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
    */
   const hlsSessions = new Map<string, string>();
 
+  /**
+   * Resolves the upstream's current variant-playlist URL for a camera and
+   * caches it against the gateway's own stream id.
+   *
+   * MediaMTX (`hlsBaseUrl` set) names the variant in `index.m3u8` as
+   * `main_stream.m3u8?session=<uuid>`; go2rtc names it as
+   * `hls/playlist.m3u8?id=<sid>`. Both are ephemeral, hence the same
+   * ownership rule for both.
+   */
   const mintHlsSession = async (
     streamId: string,
     src: string,
-    baseUrl: string,
-    timeoutMs: number,
+    config: { orionis: { baseUrl: string; hlsBaseUrl: string; timeoutMs: number } },
   ): Promise<string> => {
-    const upstream = await fetch(`${baseUrl}/api/stream.m3u8?src=${encodeURIComponent(src)}`, {
+    const { baseUrl, hlsBaseUrl, timeoutMs } = config.orionis;
+    const masterUrl = hlsBaseUrl
+      ? `${hlsBaseUrl}/${encodeURIComponent(src)}/index.m3u8`
+      : `${baseUrl}/api/stream.m3u8?src=${encodeURIComponent(src)}`;
+
+    const upstream = await fetch(masterUrl, {
       signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'follow',
     });
     if (!upstream.ok) {
       throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
     }
-    const sid = /hls\/playlist\.m3u8\?id=([A-Za-z0-9_-]+)/.exec(await upstream.text())?.[1];
-    if (!sid) {
+    const body = await upstream.text();
+    const variant = hlsBaseUrl
+      ? /^([A-Za-z0-9._-]+\.m3u8\?session=[A-Za-z0-9-]+)$/m.exec(body)?.[1]
+      : /hls\/playlist\.m3u8\?id=([A-Za-z0-9_-]+)/.exec(body)?.[1];
+    if (!variant) {
       throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
     }
-    hlsSessions.set(streamId, sid);
-    return sid;
+    hlsSessions.set(streamId, variant);
+    return variant;
   };
 
   // --- GET /cameras ---------------------------------------------------------
@@ -301,7 +318,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
   const relayHandler = async (
     req: FastifyRequest<{
       Params: { streamId: string };
-      Querystring: { token?: string; id?: string; n?: string };
+      Querystring: { token?: string; id?: string; n?: string; f?: string; s?: string };
     }>,
     reply: FastifyReply,
   ): Promise<unknown> => {
@@ -349,53 +366,74 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     //   mint    /api/stream.m3u8?src=<name>  -> hls/playlist.m3u8?id=<sid>
     //   media   /api/hls/playlist.m3u8?id=<sid> -> segment.ts?id=<sid>&n=<n>
     //   segment /api/hls/segment.ts?id=<sid>&n=<n>
-    const go2rtcBase = config.orionis.baseUrl;
+    const { baseUrl: go2rtcBase, hlsBaseUrl, timeoutMs } = config.orionis;
     const src = String(row.camera_id);
     const streamId = req.params.streamId;
     const self = `${config.publicBaseUrl}/api/mobile/v1/stream/${streamId}`;
     const tq = `token=${encodeURIComponent(token)}`;
     const noStore = { 'cache-control': 'no-store' };
-    const timeoutMs = config.orionis.timeoutMs;
     const isSegment = req.url.split('?')[0]!.endsWith('.ts');
 
     try {
       if (!isSegment) {
-        const fetchPlaylist = async (sid: string): Promise<Response> =>
-          fetch(`${go2rtcBase}/api/hls/playlist.m3u8?id=${encodeURIComponent(sid)}`, {
-            signal: AbortSignal.timeout(timeoutMs),
-          });
+        const fetchPlaylist = async (variant: string): Promise<Response> =>
+          fetch(
+            hlsBaseUrl
+              ? `${hlsBaseUrl}/${encodeURIComponent(src)}/${variant}`
+              : `${go2rtcBase}/api/hls/playlist.m3u8?id=${encodeURIComponent(variant)}`,
+            { signal: AbortSignal.timeout(timeoutMs), redirect: 'follow' },
+          );
 
-        let sid =
-          hlsSessions.get(streamId) ?? (await mintHlsSession(streamId, src, go2rtcBase, timeoutMs));
-        let upstream = await fetchPlaylist(sid);
+        let variant = hlsSessions.get(streamId) ?? (await mintHlsSession(streamId, src, config));
+        let upstream = await fetchPlaylist(variant);
 
         // The session expired or the source dropped: mint a fresh one rather
         // than failing the request. The player keeps polling this same URL, so
         // recovery is invisible to it.
         if (!upstream.ok) {
-          sid = await mintHlsSession(streamId, src, go2rtcBase, timeoutMs);
-          upstream = await fetchPlaylist(sid);
+          variant = await mintHlsSession(streamId, src, config);
+          upstream = await fetchPlaylist(variant);
         }
         if (!upstream.ok) {
           throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
         }
 
         // Segment URLs stay pinned to the session that produced this playlist:
-        // segment numbering restarts with each session, so a number from an
-        // older one must not silently resolve against a newer session.
-        const body = (await upstream.text()).replace(
-          /segment\.ts\?id=([A-Za-z0-9_-]+)&n=(\d+)/g,
-          (_m, id, n) => `${self}/segment.ts?${tq}&id=${id}&n=${n}`,
-        );
+        // segment numbering is per-session, so a number from an older one must
+        // not silently resolve against a newer session.
+        const text = await upstream.text();
+        const body = hlsBaseUrl
+          ? text.replace(
+              /^([A-Za-z0-9._-]+\.ts)\?session=([A-Za-z0-9-]+)$/gm,
+              (_m, file, session) => `${self}/segment.ts?${tq}&f=${file}&s=${session}`,
+            )
+          : text.replace(
+              /segment\.ts\?id=([A-Za-z0-9_-]+)&n=(\d+)/g,
+              (_m, id, n) => `${self}/segment.ts?${tq}&id=${id}&n=${n}`,
+            );
         return reply
           .headers({ 'content-type': 'application/vnd.apple.mpegurl', ...noStore })
           .send(body);
       }
 
-      const upstream = await fetch(
-        `${go2rtcBase}/api/hls/segment.ts?id=${encodeURIComponent(req.query.id ?? '')}&n=${encodeURIComponent(req.query.n ?? '')}`,
-        { signal: AbortSignal.timeout(timeoutMs) },
-      );
+      let segmentUrl: string;
+      if (hlsBaseUrl) {
+        // Anchored allowlist, not a sanitiser: the filename lands in a URL path
+        // segment, so anything outside this shape (traversal, absolute paths,
+        // query injection) is rejected rather than escaped.
+        const file = req.query.f ?? '';
+        if (!/^[A-Za-z0-9._-]+\.ts$/.test(file)) {
+          throw new AppError('STREAM_UNAVAILABLE', 'The camera stream segment is not available.');
+        }
+        segmentUrl = `${hlsBaseUrl}/${encodeURIComponent(src)}/${file}?session=${encodeURIComponent(req.query.s ?? '')}`;
+      } else {
+        segmentUrl = `${go2rtcBase}/api/hls/segment.ts?id=${encodeURIComponent(req.query.id ?? '')}&n=${encodeURIComponent(req.query.n ?? '')}`;
+      }
+
+      const upstream = await fetch(segmentUrl, {
+        signal: AbortSignal.timeout(timeoutMs),
+        redirect: 'follow',
+      });
       if (!upstream.ok) {
         // 404, not 503: a segment from a retired session is gone for good, and
         // HLS players respond to a missing segment by reloading the playlist —

@@ -44,6 +44,10 @@ const RawSchema = z.object({
   // 'http' (default) speaks the Orionis Guard contract; 'go2rtc' speaks a
   // go2rtc server's API for camera list + snapshots.
   ORIONIS_ADAPTER: z.enum(['http', 'go2rtc']).default('http'),
+  // Base URL of a MediaMTX HLS packager (e.g. http://orionis-hls:8888). When
+  // set, the stream relay serves HLS from it instead of from go2rtc, whose own
+  // HLS output stalls at two segments and drops the session after seconds.
+  ORIONIS_HLS_BASE_URL: z.string().default(''),
   ORIONIS_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
   ADGUARD_INTERNAL_URL: z.string().default(''),
@@ -87,6 +91,8 @@ export interface OrionisConfig {
   configured: boolean;
   adapter: 'http' | 'go2rtc';
   baseUrl: string;
+  /** MediaMTX HLS base URL; empty means relay HLS from go2rtc itself. */
+  hlsBaseUrl: string;
   serviceToken: string;
   timeoutMs: number;
 }
@@ -323,6 +329,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       configured: orionisConfigured,
       adapter: e.ORIONIS_ADAPTER,
       baseUrl: e.ORIONIS_INTERNAL_URL.replace(/\/+$/, ''),
+      hlsBaseUrl: e.ORIONIS_HLS_BASE_URL.replace(/\/+$/, ''),
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,
     },

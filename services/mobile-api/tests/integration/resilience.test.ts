@@ -281,6 +281,62 @@ describe('stream authorisation', () => {
     }
   });
 
+  it('relays MediaMTX HLS and refuses a segment name outside the allowlist', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+      env: { ORIONIS_HLS_BASE_URL: 'http://hls.invalid' },
+    });
+    const tokens = await harness.signIn();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+    const { id, streamToken } = created.json().data;
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith('/index.m3u8')) {
+        return new Response(
+          '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=899841,CODECS="avc1.4d0029"\nmain_stream.m3u8?session=abc-123\n',
+          { status: 200 },
+        );
+      }
+      if (url.includes('main_stream.m3u8')) {
+        return new Response(
+          '#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:12\n#EXTINF:2.0,\nhost_main_seg12.ts?session=abc-123\n',
+          { status: 200 },
+        );
+      }
+      return new Response('', { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    try {
+      const playlist = await harness.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/stream/${id}/playlist.m3u8`,
+        headers: { authorization: `Bearer ${streamToken}` },
+      });
+      expect(playlist.statusCode).toBe(200);
+      expect(playlist.body).toContain('/segment.ts?');
+      expect(playlist.body).toContain('f=host_main_seg12.ts');
+      // The upstream session must not be reachable as a bare URL by the client.
+      expect(playlist.body).not.toContain('main_stream.m3u8');
+
+      const traversal = await harness.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/stream/${id}/segment.ts?token=${encodeURIComponent(streamToken)}&f=${encodeURIComponent('../../../etc/passwd')}&s=abc-123`,
+      });
+      expect(traversal.statusCode).toBe(503);
+      expect(traversal.json().error.code).toBe('STREAM_UNAVAILABLE');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it('hands the player a .m3u8 playback URL', async () => {
     // Regression: an extension-less URL made AVFoundation re-request the same
     // URL in a loop and never fetch the playlist contents, so the camera view
