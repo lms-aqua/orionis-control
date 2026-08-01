@@ -74,6 +74,7 @@ final class ErrorMappingTests: XCTestCase {
     }
 }
 
+@MainActor
 final class CameraFilteringTests: XCTestCase {
     private func camera(
         id: String, name: String, status: CameraStatus = .online, location: String? = nil
@@ -152,6 +153,7 @@ final class CameraFilteringTests: XCTestCase {
     }
 }
 
+@MainActor
 final class EventSearchTests: XCTestCase {
     private func event(id: String, camera: String, type: CameraEventType) -> CameraEvent {
         CameraEvent(
@@ -184,6 +186,7 @@ final class EventSearchTests: XCTestCase {
     }
 }
 
+@MainActor
 final class DeepLinkRoutingTests: XCTestCase {
     func testCameraLink() {
         XCTAssertEqual(
