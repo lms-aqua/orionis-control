@@ -19,10 +19,10 @@ struct SettingsView: View {
             Form {
                 accountSection
                 connectionSection
-                securitySection(preferences)
-                camerasSection(preferences)
+                securitySection($preferences)
+                camerasSection($preferences)
                 notificationsSection
-                appearanceSection(preferences)
+                appearanceSection($preferences)
                 diagnosticsSection
                 signOutSection
             }

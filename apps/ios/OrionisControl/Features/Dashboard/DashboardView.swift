@@ -317,7 +317,7 @@ struct SectionUnavailable: View {
         let error = section
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: error?.isNotConfigured == true ? "cable.connector.slash" : "exclamationmark.triangle.fill")
-                .foregroundStyle(error?.isNotConfigured == true ? .secondary : .orange)
+                .foregroundStyle(error?.isNotConfigured == true ? Color.secondary : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text(error?.title ?? "\(feature) unavailable")
                     .font(.subheadline.weight(.medium))

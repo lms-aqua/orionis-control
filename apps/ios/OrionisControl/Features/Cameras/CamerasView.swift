@@ -266,7 +266,7 @@ struct CameraTile: View {
                             ? "video.fill" : "video.slash.fill"
                     )
                     .font(.title2)
-                    .foregroundStyle(camera.health.status == .online ? .secondary : .red)
+                    .foregroundStyle(camera.health.status == .online ? Color.secondary : Color.red)
                     if camera.health.status != .online {
                         Text(camera.health.status.rawValue.capitalized)
                             .font(.caption2)
