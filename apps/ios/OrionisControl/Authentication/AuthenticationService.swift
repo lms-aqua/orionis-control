@@ -302,7 +302,10 @@ final class AuthenticationService: NSObject {
         }
 
         let device = currentDevice()
-        let response = try await api.request(
+        // Public call: the app has no session yet — this is the exchange that
+        // creates one. Using the authenticated variant would try to attach a
+        // Bearer token that does not exist and fail before sending.
+        let response = try await api.requestPublic(
             Endpoint(
                 method: .post,
                 path: "/auth/token",
@@ -400,7 +403,10 @@ final class AuthenticationService: NSObject {
             let expiresIn: Int
         }
 
-        let response = try await api.request(
+        // Public call: refresh authenticates via the refresh token in the body,
+        // not a Bearer. The authenticated variant would recurse back into
+        // validAccessToken() → refresh and dead-lock.
+        let response = try await api.requestPublic(
             Endpoint(
                 method: .post,
                 path: "/auth/refresh",
