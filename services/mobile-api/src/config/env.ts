@@ -90,6 +90,11 @@ const RawSchema = z.object({
   // Display names for upstreams that key cameras by an opaque id.
   // Format: `id=Name|Location` entries, comma separated. Location optional.
   ORIONIS_CAMERA_LABELS: z.string().default(''),
+  // MediaMTX playback server, e.g. http://orionis-hls:9996. When set, the
+  // gateway serves real recordings from it; blank means no recording history.
+  ORIONIS_RECORDINGS_BASE_URL: z.string().default(''),
+  // Must match the recorder's own retention, so retentionUntil is not a lie.
+  ORIONIS_RECORDINGS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
   ORIONIS_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
   ADGUARD_INTERNAL_URL: z.string().default(''),
@@ -137,6 +142,10 @@ export interface OrionisConfig {
   hlsBaseUrl: string;
   /** Per-camera display names, keyed by upstream camera id. */
   cameraLabels: Record<string, CameraLabel>;
+  /** MediaMTX playback server base URL; empty disables recordings. */
+  recordingsBaseUrl: string;
+  /** Recorder retention in days, or null when not configured. */
+  recordingsRetentionDays: number | null;
   serviceToken: string;
   timeoutMs: number;
 }
@@ -375,6 +384,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       baseUrl: e.ORIONIS_INTERNAL_URL.replace(/\/+$/, ''),
       hlsBaseUrl: e.ORIONIS_HLS_BASE_URL.replace(/\/+$/, ''),
       cameraLabels: parseCameraLabels(e.ORIONIS_CAMERA_LABELS),
+      recordingsBaseUrl: e.ORIONIS_RECORDINGS_BASE_URL.replace(/\/+$/, ''),
+      recordingsRetentionDays:
+        e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,
     },

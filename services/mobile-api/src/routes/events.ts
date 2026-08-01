@@ -11,6 +11,7 @@ import { AppError } from '../lib/errors.ts';
 import { ok, paged } from '../lib/envelope.ts';
 import { actorOf, requirePermission } from '../http/context.ts';
 import type { CameraEvent } from '../adapters/orionis/types.ts';
+import { decodeRecordingId } from '../adapters/orionis/mediamtx-recordings.ts';
 import type { Db } from '../db/index.ts';
 
 const EventQuerySchema = z.object({
@@ -215,5 +216,70 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
     '/recordings/:recordingId',
     { preHandler: requirePermission('recordings.view') },
     async (req) => ok(await req.services.orionis.getRecording(req.params.recordingId), req.id),
+  );
+
+  // --- GET /recordings/:recordingId/clip ------------------------------------
+  // Relays the recorded bytes so the recorder is never exposed to a client, and
+  // so the same permission check that guards the listing guards the video.
+  app.get<{ Params: { recordingId: string } }>(
+    '/recordings/:recordingId/clip',
+    { preHandler: requirePermission('recordings.view') },
+    async (req, reply) => {
+      const { config, audit } = req.services;
+      if (!config.orionis.recordingsBaseUrl) {
+        throw new AppError('SERVICE_NOT_CONFIGURED', 'No recording store is configured.');
+      }
+
+      // Decoding validates the id's shape; getRecording confirms the footage is
+      // still within retention before any bytes are fetched.
+      const ref = decodeRecordingId(req.params.recordingId);
+      await req.services.orionis.getRecording(req.params.recordingId);
+
+      const params = new URLSearchParams({
+        path: ref.cameraId,
+        start: ref.start,
+        duration: String(ref.durationSeconds),
+      });
+      const range = req.headers.range;
+      let upstream: Response;
+      try {
+        upstream = await fetch(`${config.orionis.recordingsBaseUrl}/get?${params.toString()}`, {
+          // Range is passed through so a player can scrub without refetching the
+          // whole clip.
+          headers: typeof range === 'string' ? { range } : undefined,
+          signal: AbortSignal.timeout(config.orionis.timeoutMs),
+        });
+      } catch {
+        throw new AppError('UPSTREAM_UNAVAILABLE', 'The recording store did not respond.');
+      }
+      if (!upstream.ok && upstream.status !== 206) {
+        throw new AppError('NOT_FOUND', 'That recording is no longer available.');
+      }
+
+      const headers: Record<string, string> = {
+        'content-type': upstream.headers.get('content-type') ?? 'video/mp4',
+        'accept-ranges': 'bytes',
+        // Recorded footage is sensitive; it must not sit in a shared cache.
+        'cache-control': 'private, no-store',
+      };
+      const contentRange = upstream.headers.get('content-range');
+      if (contentRange) headers['content-range'] = contentRange;
+
+      audit.record({
+        action: 'recording.played',
+        actor: actorOf(req),
+        outcome: 'success',
+        targetType: 'recording',
+        targetId: req.params.recordingId,
+        requestId: req.id,
+        ip: req.ip,
+        metadata: { cameraId: ref.cameraId, startedAt: ref.start },
+      });
+
+      return reply
+        .code(upstream.status === 206 ? 206 : 200)
+        .headers(headers)
+        .send(Buffer.from(await upstream.arrayBuffer()));
+    },
   );
 }

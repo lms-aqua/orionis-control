@@ -9,6 +9,7 @@ import { OidcClient } from './auth/oidc.ts';
 import { AuditLog } from './audit/audit.ts';
 import { HttpOrionisAdapter } from './adapters/orionis/http.ts';
 import { Go2rtcOrionisAdapter } from './adapters/orionis/go2rtc.ts';
+import { MediaMtxRecordings } from './adapters/orionis/mediamtx-recordings.ts';
 import { UnconfiguredOrionisAdapter } from './adapters/orionis/unconfigured.ts';
 import type { OrionisAdapter } from './adapters/orionis/types.ts';
 import { HttpAdGuardAdapter, UnconfiguredAdGuardAdapter } from './adapters/adguard/http.ts';
@@ -50,6 +51,14 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
             config.orionis.timeoutMs,
             fetchImpl,
             config.orionis.cameraLabels,
+            config.orionis.recordingsBaseUrl
+              ? new MediaMtxRecordings(
+                  config.orionis.recordingsBaseUrl,
+                  config.orionis.timeoutMs,
+                  config.orionis.recordingsRetentionDays,
+                  fetchImpl,
+                )
+              : null,
           )
         : new HttpOrionisAdapter(
             config.orionis.baseUrl,

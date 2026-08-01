@@ -9,6 +9,7 @@
  */
 import { AppError } from '../../lib/errors.ts';
 import { UpstreamClient } from '../../lib/http-upstream.ts';
+import { MediaMtxRecordings } from './mediamtx-recordings.ts';
 import type {
   Camera,
   CameraControlRequest,
@@ -56,13 +57,17 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   readonly configured = true;
   private readonly client: UpstreamClient;
   private readonly labels: Record<string, { name: string; location: string | null }>;
+  /** Present only when a MediaMTX playback server is configured. */
+  private readonly recordings: MediaMtxRecordings | null;
 
   constructor(
     baseUrl: string,
     timeoutMs: number,
     fetchImpl: typeof fetch = fetch,
     labels: Record<string, { name: string; location: string | null }> = {},
+    recordings: MediaMtxRecordings | null = null,
   ) {
+    this.recordings = recordings;
     this.client = new UpstreamClient(
       'go2rtc',
       baseUrl,
@@ -187,22 +192,42 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     return false;
   }
 
-  async listRecordings(_query: RecordingQuery): Promise<Page<Recording>> {
-    return { items: [], total: 0 };
+  /** Cameras as {id, name} for the recordings collaborator. */
+  private async cameraIndex(): Promise<{ id: string; name: string | null }[]> {
+    const streams = await this.streams();
+    return Object.keys(streams)
+      .sort()
+      .map((id) => ({ id, name: this.labels[id]?.name ?? `Camera ${id}` }));
   }
 
-  async getRecording(): Promise<Recording> {
-    throw new AppError('NOT_FOUND', 'No recordings are available for these cameras.');
+  async listRecordings(query: RecordingQuery): Promise<Page<Recording>> {
+    // No recorder configured is an empty history, not a failure.
+    if (!this.recordings) return { items: [], total: 0 };
+    return this.recordings.list(query, await this.cameraIndex());
+  }
+
+  async getRecording(recordingId: string): Promise<Recording> {
+    if (!this.recordings) {
+      throw new AppError('NOT_FOUND', 'No recordings are available for these cameras.');
+    }
+    const index = await this.cameraIndex();
+    return this.recordings.get(
+      recordingId,
+      (cameraId) => index.find((camera) => camera.id === cameraId)?.name ?? null,
+    );
   }
 
   async getStorageStatus(): Promise<StorageStatus> {
-    return {
-      totalBytes: null,
-      usedBytes: null,
-      freeBytes: null,
-      retentionDays: null,
-      oldestRecordingAt: null,
-    };
+    if (!this.recordings) {
+      return {
+        totalBytes: null,
+        usedBytes: null,
+        freeBytes: null,
+        retentionDays: null,
+        oldestRecordingAt: null,
+      };
+    }
+    return this.recordings.storage(await this.cameraIndex());
   }
 
   async listServiceHealth(): Promise<OrionisServiceHealth[]> {

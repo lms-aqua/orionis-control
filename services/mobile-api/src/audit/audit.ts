@@ -25,6 +25,7 @@ export const AUDIT_ACTIONS = [
   'camera.restart',
   'camera.stream.session_created',
   'event.acknowledged',
+  'recording.played',
   'recording.deleted',
   'adguard.protection.disabled',
   'adguard.protection.enabled',
