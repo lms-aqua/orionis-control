@@ -1,0 +1,171 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: a rotated secret is still a leaked secret
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          args: detect --no-banner --redact --config .gitleaks.toml
+
+      - name: Repository-specific checks
+        run: |
+          fail=0
+
+          echo "== Real xcconfig or .env committed? =="
+          if git ls-files | grep -E '(^|/)\.env$|Config/.*\.xcconfig$' | grep -v '\.example$'; then
+            echo "::error::A real .env or .xcconfig is committed. Only .example files belong in the repo."
+            fail=1
+          fi
+
+          echo "== Signing assets committed? =="
+          if git ls-files | grep -Ei '\.(p8|p12|mobileprovision|cer|key|pem)$'; then
+            echo "::error::A signing asset or private key is committed."
+            fail=1
+          fi
+
+          echo "== TLS validation disabled anywhere? =="
+          if grep -rInE 'NSAllowsArbitraryLoads\s*[:=]\s*(true|YES)|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED' \
+              --include='*.swift' --include='*.ts' --include='*.yml' --include='*.plist' \
+              apps services deploy 2>/dev/null; then
+            echo "::error::Found a TLS-validation bypass."
+            fail=1
+          fi
+
+          echo "== Credentials in query strings? =="
+          if grep -rInE '[?&](password|token|secret|api_?key)=' \
+              --include='*.swift' --include='*.ts' apps services 2>/dev/null; then
+            echo "::error::A credential appears to be passed in a query string."
+            fail=1
+          fi
+
+          exit $fail
+
+  public-docs:
+    name: No private detail in public docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan public-facing files
+        run: |
+          fail=0
+          # Only the public-facing README is scanned. Technical documentation is
+          # local-only (see .gitignore) and never enters the repository.
+          FILES="README.md"
+
+          echo "== Private IPv4 addresses =="
+          if grep -rInE '\b(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}\b' $FILES 2>/dev/null; then
+            echo "::error::A private IP address appears in public documentation."
+            fail=1
+          fi
+
+          echo "== Non-example real hostnames =="
+          # Documentation must use .example / .invalid placeholders only.
+          if grep -rInE 'https?://[a-z0-9.-]+\.(com|net|org|io|dev|tax)\b' $FILES 2>/dev/null \
+              | grep -vE 'example\.(com|net|org)|github\.com|apple\.com|adguard|authelia|caddyserver|openid\.net|ietf\.org|rfc-editor|w3\.org|shields\.io'; then
+            echo "::error::A real hostname appears in public documentation. Use example.com or .invalid."
+            fail=1
+          fi
+
+          exit $fail
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/mobile-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: services/mobile-api/package-lock.json
+
+      - run: npm ci --ignore-scripts
+
+      - name: Audit production dependencies
+        run: |
+          # High and critical findings fail the build; lower ones are reported.
+          npm audit --omit=dev --audit-level=high
+        continue-on-error: false
+
+      - name: Full audit report
+        if: always()
+        run: npm audit --json > npm-audit.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-audit
+          path: services/mobile-api/npm-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  container-scan:
+    name: Container vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t orionis-mobile-api:scan services/mobile-api
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: orionis-mobile-api:scan
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+        continue-on-error: true
+
+  codeql:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        language: [javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          language: ${{ matrix.language }}
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

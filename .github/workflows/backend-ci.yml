@@ -1,0 +1,138 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["services/mobile-api/**", "packages/**", ".github/workflows/backend-ci.yml"]
+  pull_request:
+    paths: ["services/mobile-api/**", "packages/**", ".github/workflows/backend-ci.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/mobile-api
+
+jobs:
+  verify:
+    name: Format, lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: services/mobile-api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Contract tests
+        run: npx vitest run tests/contract
+
+      - name: Verify migrations apply and verify from empty
+        env:
+          NODE_ENV: test
+          DATABASE_URL: ./data/ci-migrations.db
+        run: npm run migrate
+
+      - name: Verify the generated OpenAPI contract is committed
+        run: |
+          npm run openapi
+          if ! git diff --quiet -- ../../packages/api-contract/openapi.json; then
+            echo "::error::packages/api-contract/openapi.json is out of date. Run 'npm run openapi' and commit the result."
+            git --no-pager diff -- ../../packages/api-contract/openapi.json
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: services/mobile-api/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  container:
+    name: Build container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/mobile-api
+          push: false
+          load: true
+          tags: orionis-mobile-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image
+        run: |
+          # The gateway must start with no upstreams configured and serve /meta
+          # with honest "not configured" flags — that is the documented contract.
+          docker run -d --name orionis-ci \
+            -e NODE_ENV=production \
+            -e SESSION_SIGNING_KEY="$(openssl rand -base64 48)" \
+            -e PUBLIC_BASE_URL=https://gateway.example.invalid \
+            -e AUTHELIA_ISSUER_URL=https://auth.example.invalid \
+            -e AUTHELIA_CLIENT_ID=ci \
+            -e AUTHELIA_CLIENT_SECRET=ci-secret \
+            -e AUTHELIA_REDIRECT_URI=https://gateway.example.invalid/api/mobile/v1/auth/callback \
+            -p 8080:8080 orionis-mobile-api:ci
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz > /dev/null; then
+              echo "healthz OK after ${attempt}s"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::Container never became healthy"
+              docker logs orionis-ci
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "--- /meta ---"
+          curl -fsS http://127.0.0.1:8080/api/mobile/v1/meta | tee meta.json
+          grep -q '"success":true' meta.json || { echo "::error::/meta did not return a success envelope"; exit 1; }
+          grep -q '"cameras":false' meta.json || { echo "::error::/meta should report cameras as unconfigured in CI"; exit 1; }
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs orionis-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f orionis-ci || true

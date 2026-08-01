@@ -1,0 +1,50 @@
+name: Security report (low severity only)
+description: Report a low-severity security concern in public
+title: "[security] "
+labels: ["security", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Stop if this is exploitable
+
+        **Do not open a public issue for anything that could be exploited.**
+        That includes authentication bypass, privilege escalation, session
+        theft, unauthorised camera access, and remote code execution.
+
+        Report those privately instead, through GitHub's private advisory form:
+        https://github.com/lms-aqua/orionis-control/security/advisories/new
+
+        Use this template only for low-severity, non-exploitable observations:
+        a missing hardening measure, a defence-in-depth suggestion, a
+        dependency advisory that is not reachable in this code.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Severity confirmation
+      options:
+        - label: This is NOT exploitable and disclosing it publicly causes no risk
+          required: true
+        - label: I have not included any working exploit, credential or private hostname
+          required: true
+
+  - type: textarea
+    id: observation
+    attributes:
+      label: What did you observe?
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Why does it matter?
+      description: What would have to also go wrong for this to become exploitable?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested hardening

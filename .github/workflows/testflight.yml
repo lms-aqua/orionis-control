@@ -1,0 +1,177 @@
+name: TestFlight
+
+# Manual only, and only from protected refs. This workflow uploads a build to
+# real users, so it never runs automatically.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number to submit"
+        required: true
+      notes:
+        description: "What to test"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    name: Build and upload to App Store Connect
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: testflight # requires an approval gate configured on the repo
+    defaults:
+      run:
+        working-directory: apps/ios
+
+    steps:
+      - name: Refuse to run from an unapproved ref
+        run: |
+          REF="${{ github.ref }}"
+          case "$REF" in
+            refs/heads/main|refs/heads/release/*|refs/tags/v*) ;;
+            *)
+              echo "::error::TestFlight uploads run only from main, release/* or a version tag. Got $REF."
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/checkout@v4
+
+      - name: Verify every required secret is configured
+        env:
+          CERT: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERT_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          for name in CERT CERT_PASSWORD PROFILE ASC_KEY_ID ASC_ISSUER_ID ASC_KEY KEYCHAIN_PASSWORD TEAM_ID; do
+            eval "value=\${$name}"
+            if [ -z "$value" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::TestFlight upload is not configured. Missing repository secrets:$missing"
+            echo "Configure them under Settings → Secrets and variables → Actions, then re-run."
+            echo "This job fails deliberately rather than reporting a successful upload that did not happen."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      - name: Select Xcode
+        run: |
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+
+      - run: brew install xcodegen
+
+      - name: Configure signing
+        env:
+          CERT: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERT_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -eu
+          KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign > /dev/null 2>&1
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/orionis.mobileprovision
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Prepare production configuration
+        env:
+          XCCONFIG: ${{ secrets.IOS_PRODUCTION_XCCONFIG }}
+        run: |
+          mkdir -p Config
+          printf '%s' "$XCCONFIG" > Config/Production.xcconfig
+          # Prove the file was written without printing its contents.
+          test -s Config/Production.xcconfig || { echo "::error::IOS_PRODUCTION_XCCONFIG is empty"; exit 1; }
+
+      - name: Generate project and set the build number
+        env:
+          BUILD_NUMBER: ${{ github.event.inputs.build_number }}
+        run: |
+          xcodegen generate --spec project.yml
+          agvtool new-version -all "$BUILD_NUMBER" || true
+
+      - name: Archive
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/OrionisControl.xcarchive \
+            | tee archive.log
+
+      - name: Export IPA
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > ExportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+            <key>destination</key><string>export</string>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath build/OrionisControl.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/export
+
+          test -f build/export/*.ipa || { echo "::error::No IPA was produced"; exit 1; }
+
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -eu
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY" | base64 --decode \
+            > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+          IPA=$(ls build/export/*.ipa | head -n 1)
+          echo "Uploading $(basename "$IPA")"
+
+          # Validate first: a rejected binary should fail here, not silently.
+          xcrun altool --validate-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          echo "Upload accepted by App Store Connect. Processing continues on Apple's side."
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-logs
+          # Logs only. Never the IPA, the archive or any provisioning data.
+          path: apps/ios/archive.log
+          if-no-files-found: ignore
+          retention-days: 7

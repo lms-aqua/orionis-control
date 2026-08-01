@@ -1,0 +1,91 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste tokens, passwords, private hostnames or IP addresses.**
+        Settings → Diagnostics → Export diagnostic report produces a redacted
+        report that is safe to attach.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - iOS app — sign-in
+        - iOS app — cameras or live view
+        - iOS app — events or recordings
+        - iOS app — network filtering
+        - iOS app — system or settings
+        - iOS app — notifications
+        - Mobile API gateway
+        - Deployment or configuration
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: error-title
+    attributes:
+      label: Error shown in the app
+      description: The heading and message the app displayed, if any.
+
+  - type: input
+    id: request-id
+    attributes:
+      label: Reference ID
+      description: >-
+        Error screens show a reference such as req_ab12cd34. It lets the
+        failure be found in the gateway log.
+
+  - type: input
+    id: versions
+    attributes:
+      label: App and gateway versions
+      description: Settings → Diagnostics shows both.
+      placeholder: "app 0.1.0 (1), gateway 0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device and iOS version
+      placeholder: "iPhone 15 Pro, iOS 18.2"
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic report
+      description: Paste the redacted report from Settings → Diagnostics.
+      render: text
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have removed anything private from this report
+          required: true
+        - label: I can reproduce this consistently

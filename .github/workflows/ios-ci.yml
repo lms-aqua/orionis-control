@@ -1,0 +1,173 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/ios/**", ".github/workflows/ios-ci.yml"]
+  pull_request:
+    paths: ["apps/ios/**", ".github/workflows/ios-ci.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/ios
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest available Xcode
+        run: |
+          ls /Applications | grep -i '^Xcode' || true
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$LATEST" ]; then
+            echo "::error::No Xcode installation found on the runner"
+            exit 1
+          fi
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-xcodegen
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Provide a CI build configuration
+        run: |
+          # Real xcconfigs are gitignored. CI uses the example values so the
+          # project builds without any secret being present.
+          mkdir -p Config
+          cp Config/Development.xcconfig.example Config/Development.xcconfig
+
+      - name: Generate the Xcode project
+        run: |
+          xcodegen generate --spec project.yml
+          test -d OrionisControl.xcodeproj || { echo "::error::Project generation produced no .xcodeproj"; exit 1; }
+
+      - name: Resolve Swift package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl
+
+      - name: Pick a simulator
+        id: sim
+        run: |
+          DEVICE=$(xcrun simctl list devices available --json \
+            | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)['devices']
+          best = None
+          for runtime, devices in data.items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devices:
+                  if d.get('isAvailable') and 'iPhone' in d['name']:
+                      best = d['name']
+          print(best or '')
+          ")
+          if [ -z "$DEVICE" ]; then
+            echo "::error::No available iPhone simulator on the runner"
+            exit 1
+          fi
+          echo "Using simulator: $DEVICE"
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Debug, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee build-debug.log
+
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -only-testing:OrionisControlTests \
+            -resultBundlePath TestResults-unit.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee test-unit.log
+
+      - name: UI tests
+        # UI tests are slower and simulator-flaky; they must not gate a merge,
+        # but their failure is still surfaced rather than hidden.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -only-testing:OrionisControlUITests \
+            -resultBundlePath TestResults-ui.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee test-ui.log
+
+      - name: Release-style unsigned build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee build-release.log
+
+      - name: Report new warnings
+        if: always()
+        run: |
+          COUNT=$(grep -c "warning:" build-debug.log || true)
+          echo "Compiler warnings: $COUNT"
+          if [ "$COUNT" -gt 0 ]; then
+            grep "warning:" build-debug.log | sort -u | head -50
+            echo "::warning::$COUNT compiler warning(s). Resolve or document them."
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: |
+            apps/ios/TestResults-unit.xcresult
+            apps/ios/TestResults-ui.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs
+          path: apps/ios/*.log
+          if-no-files-found: ignore
+          retention-days: 7
