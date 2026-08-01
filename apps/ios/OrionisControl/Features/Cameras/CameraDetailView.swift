@@ -1,23 +1,17 @@
 import AVKit
 import SwiftUI
 
-/// Live view for a single camera: player, supported controls, recent events.
+/// Live view for a single camera: metadata, supported controls, recent events.
+///
+/// Playback is not here. `CameraStreamController` owns the player and the stream
+/// lifecycle, so this type never has to reason about reconnects — and the player
+/// is not rebuilt every time this view model changes.
 @MainActor
 @Observable
 final class CameraDetailViewModel {
-    enum PlaybackState: Equatable {
-        case idle
-        case negotiating
-        case playing(StreamSession)
-        case reconnecting(attempt: Int)
-        case unsupported(StreamProtocolKind, String)
-        case failed(APIError)
-    }
-
     private(set) var camera: Camera?
     private(set) var events: [CameraEvent] = []
     private(set) var loadError: APIError?
-    private(set) var playback: PlaybackState = .idle
     private(set) var controlMessage: String?
     private(set) var isInvokingControl = false
     private(set) var snapshot: Data?
@@ -25,17 +19,12 @@ final class CameraDetailViewModel {
     private let cameraId: String
     private let cameras: any CameraServicing
     private let eventsService: any EventServicing
-    // Assigned only on the main actor; read from the nonisolated deinit purely
-    // to cancel it. Task.cancel() is safe to call from any isolation domain.
-    private nonisolated(unsafe) var renewTask: Task<Void, Never>?
 
     init(cameraId: String, cameras: any CameraServicing, events: any EventServicing) {
         self.cameraId = cameraId
         self.cameras = cameras
         self.eventsService = events
     }
-
-    deinit { renewTask?.cancel() }
 
     func load() async {
         do {
@@ -59,67 +48,6 @@ final class CameraDetailViewModel {
 
     func loadSnapshot() async {
         snapshot = try? await cameras.snapshot(cameraId: cameraId)
-    }
-
-    /// Starts playback, negotiating protocol and quality with the gateway.
-    func startStream(quality: StreamQuality, lowData: Bool) async {
-        guard let camera else { return }
-        guard camera.health.status.isUsable else {
-            playback = .failed(
-                .server(
-                    code: .cameraOffline,
-                    message: "\(camera.name) is offline, so there is nothing to play.",
-                    recoverable: true, requestId: nil))
-            return
-        }
-
-        playback = .negotiating
-        do {
-            let session = try await cameras.createStreamSession(
-                cameraId: cameraId, quality: quality, lowData: lowData)
-
-            // AVKit plays HLS natively. WebRTC needs a peer-connection stack
-            // this build does not ship; say so rather than fail obscurely.
-            switch session.protocol {
-            case .hls, .llhls:
-                playback = .playing(session)
-                scheduleRenewal(session, quality: quality, lowData: lowData)
-            case .webrtc:
-                playback = .unsupported(
-                    .webrtc,
-                    "This build plays HLS and Low-Latency HLS. The gateway negotiated WebRTC, which needs a WebRTC stack that is not bundled in this version."
-                )
-            case .mjpeg:
-                playback = .unsupported(
-                    .mjpeg,
-                    "The gateway offered only MJPEG for this camera. MJPEG playback is not implemented in this version."
-                )
-            }
-        } catch let error as APIError {
-            playback = .failed(error)
-        } catch {
-            playback = .failed(.unexpectedStatus(0, requestId: nil))
-        }
-    }
-
-    /// Stream tokens are short-lived; renew before they lapse so playback does
-    /// not visibly stall.
-    private func scheduleRenewal(_ session: StreamSession, quality: StreamQuality, lowData: Bool) {
-        renewTask?.cancel()
-        renewTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(max(15, session.renewAfterSeconds)))
-            guard !Task.isCancelled, let self else { return }
-            await self.startStream(quality: quality, lowData: lowData)
-        }
-    }
-
-    func stopStream() async {
-        renewTask?.cancel()
-        renewTask = nil
-        if case .playing(let session) = playback {
-            try? await cameras.endStreamSession(cameraId: cameraId, streamId: session.id)
-        }
-        playback = .idle
     }
 
     func invoke(_ request: CameraControlRequest) async {
@@ -146,7 +74,11 @@ struct CameraDetailView: View {
 
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: CameraDetailViewModel?
+    /// Held as view state, not built in `body`: the player must survive
+    /// re-evaluation rather than being recreated by it.
+    @State private var stream: CameraStreamController?
     @State private var quality: StreamQuality = .auto
     @State private var isMuted = true
     @State private var confirmingControl: CameraControlRequest?
@@ -169,6 +101,10 @@ struct CameraDetailView: View {
                     cameras: environment.service,
                     events: environment.service)
             }
+            if stream == nil {
+                stream = CameraStreamController(
+                    cameraId: cameraId, service: environment.service)
+            }
             quality = environment.preferences.defaultStreamQuality
             isMuted = environment.preferences.startMuted
             await model?.load()
@@ -177,7 +113,16 @@ struct CameraDetailView: View {
             }
         }
         .onDisappear {
-            Task { await model?.stopStream() }
+            // Revokes the gateway session as well as stopping the decoder, so no
+            // stream is left running for a screen nobody is looking at.
+            Task { [stream] in await stream?.stop() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: stream?.resumeFromBackground()
+            case .inactive, .background: stream?.suspendForBackground()
+            @unknown default: break
+            }
         }
         .confirmationDialog(
             confirmationTitle,
@@ -234,109 +179,27 @@ struct CameraDetailView: View {
         VStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 14).fill(.black)
-                switch model.playback {
-                case .idle:
-                    VStack(spacing: 10) {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 44))
-                            .foregroundStyle(.white.opacity(0.9))
-                        Text("Tap to start live view")
-                            .font(.footnote)
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
-                    .onTapGesture { Task { await startStream() } }
 
-                case .negotiating:
-                    VStack(spacing: 8) {
-                        ProgressView().tint(.white)
-                        Text("Connecting…").font(.footnote).foregroundStyle(.white.opacity(0.8))
+                if let stream {
+                    // The video layer stays mounted through buffering and
+                    // reconnects so the last decoded frame remains on screen
+                    // rather than the view flashing to black. It is dimmed and
+                    // labelled whenever the stream is not genuinely live.
+                    if stream.state.isLive || stream.state.showsLastFrame {
+                        CameraVideoView(player: stream.player)
+                            .opacity(stream.state.isLive ? 1 : 0.45)
+                            .allowsHitTesting(false)
                     }
-
-                case .reconnecting(let attempt):
-                    VStack(spacing: 8) {
-                        ProgressView().tint(.white)
-                        Text("Reconnecting (attempt \(attempt))…")
-                            .font(.footnote).foregroundStyle(.white.opacity(0.8))
-                    }
-
-                case .playing(let session):
-                    HLSPlayerView(session: session, isMuted: $isMuted)
-
-                case .unsupported(let kind, let detail):
-                    VStack(spacing: 8) {
-                        Image(systemName: "play.slash.fill")
-                            .font(.title)
-                            .foregroundStyle(.white.opacity(0.85))
-                        Text("\(kind.displayName) is not supported in this build")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.white)
-                        Text(detail)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.75))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
-                    }
-
-                case .failed(let error):
-                    VStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.title)
-                            .foregroundStyle(.orange)
-                        Text(error.title)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.white)
-                        Text(error.message)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.75))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
-                        if error.isRetryable {
-                            Button("Try again") { Task { await startStream() } }
-                                .buttonStyle(.bordered)
-                                .tint(.white)
-                        }
-                    }
+                    playerOverlay(stream, camera: camera)
                 }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "\(camera.name) live view. \(stream?.state.statusText ?? "Not connected")")
 
-            HStack(spacing: 12) {
-                if camera.capabilities.audio {
-                    Button {
-                        isMuted.toggle()
-                    } label: {
-                        Label(
-                            isMuted ? "Unmute" : "Mute",
-                            systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
-                        )
-                        .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel(isMuted ? "Unmute audio" : "Mute audio")
-                }
-
-                if camera.capabilities.qualities.count > 1 {
-                    Picker("Quality", selection: $quality) {
-                        ForEach(camera.capabilities.qualities) { option in
-                            Text(option.displayName).tag(option)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: quality) { _, _ in Task { await startStream() } }
-                }
-
-                Spacer()
-
-                Button {
-                    showDiagnostics.toggle()
-                } label: {
-                    Label("Diagnostics", systemImage: "waveform.path.ecg")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Stream diagnostics")
-            }
+            playerControls(model, camera: camera)
 
             if showDiagnostics {
                 streamDiagnostics(model, camera: camera)
@@ -344,17 +207,213 @@ struct CameraDetailView: View {
         }
     }
 
+    /// Status and recovery affordances drawn over the video.
+    @ViewBuilder
+    private func playerOverlay(_ stream: CameraStreamController, camera: Camera) -> some View {
+        switch stream.state {
+        case .idle:
+            VStack(spacing: 10) {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("Tap to start live view")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+            .onTapGesture { Task { await startStream() } }
+
+        case .connecting, .buffering:
+            VStack(spacing: 8) {
+                ProgressView().tint(.white)
+                Text(stream.state.statusText)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+
+        case .reconnecting:
+            VStack(spacing: 8) {
+                ProgressView().tint(.white)
+                Text(stream.state.statusText)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.8))
+                Button("Retry now") { stream.retryNow() }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                    .controlSize(.small)
+            }
+
+        case .live:
+            // A live badge, and nothing else covering the picture.
+            VStack {
+                HStack {
+                    LiveBadge()
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(10)
+
+        case .paused:
+            VStack(spacing: 8) {
+                Image(systemName: "pause.circle.fill")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("Paused — showing the last frame")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            .onTapGesture { stream.resume() }
+
+        case .offline(let reason):
+            statusOverlay(
+                symbol: "video.slash.fill",
+                tint: .orange,
+                title: "\(camera.name) is offline",
+                detail: reason ?? camera.health.message,
+                lastSeen: camera.health.lastSeenAt,
+                retry: { stream.retryNow() })
+
+        case .authenticationFailed:
+            statusOverlay(
+                symbol: "lock.fill",
+                tint: .orange,
+                title: "Authentication required",
+                detail: "Sign in again to watch this camera.",
+                lastSeen: nil,
+                retry: nil)
+
+        case .unsupported(let kind, let detail):
+            statusOverlay(
+                symbol: "play.slash.fill",
+                tint: .white,
+                title: "\(kind.displayName) is not supported in this build",
+                detail: detail,
+                lastSeen: nil,
+                retry: nil)
+
+        case .failed(let reason):
+            statusOverlay(
+                symbol: "exclamationmark.triangle.fill",
+                tint: .orange,
+                title: "Stream unavailable",
+                detail: reason,
+                lastSeen: camera.health.lastSeenAt,
+                retry: { stream.retryNow() })
+        }
+    }
+
+    @ViewBuilder
+    private func statusOverlay(
+        symbol: String,
+        tint: Color,
+        title: String,
+        detail: String?,
+        lastSeen: Date?,
+        retry: (() -> Void)?
+    ) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: symbol).font(.title).foregroundStyle(tint)
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+            if let detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+            if let lastSeen {
+                Text("Last seen \(lastSeen.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            if let retry {
+                Button("Try again", action: retry)
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func playerControls(_ model: CameraDetailViewModel, camera: Camera) -> some View {
+        HStack(spacing: 12) {
+            if let stream, !stream.state.isTerminal {
+                Button {
+                    if stream.state == .paused { stream.resume() } else { stream.pause() }
+                } label: {
+                    Label(
+                        stream.state == .paused ? "Play" : "Pause",
+                        systemImage: stream.state == .paused ? "play.fill" : "pause.fill"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(
+                    stream.state == .paused ? "Resume live view" : "Pause live view")
+            }
+
+            if camera.capabilities.audio {
+                Button {
+                    isMuted.toggle()
+                    stream?.player.isMuted = isMuted
+                } label: {
+                    Label(
+                        isMuted ? "Unmute" : "Mute",
+                        systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(isMuted ? "Unmute audio" : "Mute audio")
+            }
+
+            if camera.capabilities.qualities.count > 1 {
+                Picker("Quality", selection: $quality) {
+                    ForEach(camera.capabilities.qualities) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: quality) { _, _ in Task { await startStream() } }
+            }
+
+            Spacer()
+
+            Button {
+                showDiagnostics.toggle()
+            } label: {
+                Label("Diagnostics", systemImage: "waveform.path.ecg")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Stream diagnostics")
+        }
+    }
+
     @ViewBuilder
     private func streamDiagnostics(_ model: CameraDetailViewModel, camera: Camera) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if case .playing(let session) = model.playback {
-                diagnosticRow("Protocol", session.protocol.displayName)
-                diagnosticRow("Quality", session.quality.displayName)
-                diagnosticRow(
-                    "Token expires",
-                    session.expiresAt.formatted(date: .omitted, time: .standard))
+            if let stream {
+                let d = stream.diagnostics
+                diagnosticRow("State", stream.state.statusText)
+                if let transport = d.transport {
+                    diagnosticRow("Transport", transport.displayName)
+                }
+                diagnosticRow("Connection attempts", "\(d.connectionAttempts)")
+                diagnosticRow("Reconnects", "\(d.reconnectCount)")
+                diagnosticRow("Stalls", "\(d.stallCount)")
+                if let stale = d.framesStaleFor() {
+                    diagnosticRow("Last frame", String(format: "%.0fs ago", stale))
+                }
+                if let error = d.lastErrorSummary {
+                    diagnosticRow("Last error", error)
+                }
             }
-            if let resolution = camera.health.resolution {
+            // Prefer what the player actually reports over what the camera claims.
+            if let resolution = stream?.diagnostics.resolution ?? camera.health.resolution {
                 diagnosticRow("Resolution", resolution)
             }
             if let fps = camera.health.frameRate {
@@ -523,11 +582,13 @@ struct CameraDetailView: View {
     // MARK: Actions
 
     private func startStream() async {
+        guard let camera = model?.camera, let stream else { return }
         // Evaluate the async property first: `await` cannot appear inside the
         // autoclosure of `&&`.
         let conservingData = await environment.api.conservingData
         let lowData = environment.preferences.limitQualityOnCellular && conservingData
-        await model?.startStream(quality: quality, lowData: lowData)
+        stream.player.isMuted = isMuted
+        stream.start(camera: camera, quality: quality, lowData: lowData)
     }
 
     private func performControl(_ request: CameraControlRequest) async {
@@ -615,62 +676,57 @@ struct PTZPad: View {
     }
 }
 
-/// HLS / Low-Latency HLS playback.
+/// Displays a player that something else owns.
 ///
-/// The stream token is attached as an `Authorization` header rather than a
-/// query parameter, so it never lands in a URL, a log or a cache key.
-struct HLSPlayerView: UIViewControllerRepresentable {
-    let session: StreamSession
-    @Binding var isMuted: Bool
+/// This view deliberately creates nothing: `CameraStreamController` owns the
+/// `AVPlayer`, its item, and the stream's lifecycle. Building a player inside a
+/// SwiftUI view means rebuilding it whenever SwiftUI re-evaluates the body, which
+/// is what previously restarted playback for unrelated state changes.
+struct CameraVideoView: UIViewControllerRepresentable {
+    let player: AVPlayer
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.videoGravity = .resizeAspect
-        controller.player = makePlayer()
-        controller.player?.isMuted = isMuted
-        controller.player?.play()
+        // The controller's own chrome would cover the picture and duplicate the
+        // app's controls; status and actions are drawn by the viewer instead.
+        controller.showsPlaybackControls = false
+        controller.player = player
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        controller.player?.isMuted = isMuted
-
-        // Swap the item only when the session actually changed (renewal).
-        let currentURL = (controller.player?.currentItem?.asset as? AVURLAsset)?.url
-        if currentURL != session.playbackUrl {
-            controller.player?.replaceCurrentItem(with: makeItem())
-            controller.player?.play()
+        if controller.player !== player {
+            controller.player = player
         }
     }
 
     static func dismantleUIViewController(
         _ controller: AVPlayerViewController, coordinator: Void
     ) {
-        controller.player?.pause()
-        controller.player?.replaceCurrentItem(with: nil)
+        // The player outlives this view and is torn down by its controller, so
+        // only the reference is dropped here.
+        controller.player = nil
     }
+}
 
-    private func makeItem() -> AVPlayerItem {
-        let asset = AVURLAsset(
-            url: session.playbackUrl,
-            options: [
-                "AVURLAssetHTTPHeaderFieldsKey": [
-                    "Authorization": "Bearer \(session.streamToken)"
-                ]
-            ])
-        return AVPlayerItem(asset: asset)
-        // Buffering is deliberately left to AVFoundation. Chasing a tight live
-        // edge here (preferredForwardBufferDuration = 2 alongside
-        // automaticallyWaitsToMinimizeStalling = false) starved the player: with
-        // two-second segments it would load two segments, start, stall, and then
-        // stop requesting media entirely while still refreshing the playlist --
-        // a permanently frozen first frame. HLS players need roughly three
-        // target durations buffered, so asking for two seconds fought the format.
-    }
-
-    private func makePlayer() -> AVPlayer {
-        AVPlayer(playerItem: makeItem())
+/// "LIVE" indicator. Text as well as colour, so the state is not conveyed by a
+/// red dot alone.
+struct LiveBadge: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(.red)
+                .frame(width: 7, height: 7)
+            Text("LIVE")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.black.opacity(0.55), in: Capsule())
+        .accessibilityLabel("Live")
     }
 }
