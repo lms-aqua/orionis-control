@@ -41,6 +41,9 @@ const RawSchema = z.object({
 
   ORIONIS_INTERNAL_URL: z.string().default(''),
   ORIONIS_SERVICE_TOKEN: z.string().default(''),
+  // 'http' (default) speaks the Orionis Guard contract; 'go2rtc' speaks a
+  // go2rtc server's API for camera list + snapshots.
+  ORIONIS_ADAPTER: z.enum(['http', 'go2rtc']).default('http'),
   ORIONIS_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
   ADGUARD_INTERNAL_URL: z.string().default(''),
@@ -82,6 +85,7 @@ export interface OidcConfig {
 
 export interface OrionisConfig {
   configured: boolean;
+  adapter: 'http' | 'go2rtc';
   baseUrl: string;
   serviceToken: string;
   timeoutMs: number;
@@ -317,6 +321,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
     roles,
     orionis: {
       configured: orionisConfigured,
+      adapter: e.ORIONIS_ADAPTER,
       baseUrl: e.ORIONIS_INTERNAL_URL.replace(/\/+$/, ''),
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,

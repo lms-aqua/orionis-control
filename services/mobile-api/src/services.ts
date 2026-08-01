@@ -8,6 +8,7 @@ import { SessionService } from './auth/sessions.ts';
 import { OidcClient } from './auth/oidc.ts';
 import { AuditLog } from './audit/audit.ts';
 import { HttpOrionisAdapter } from './adapters/orionis/http.ts';
+import { Go2rtcOrionisAdapter } from './adapters/orionis/go2rtc.ts';
 import { UnconfiguredOrionisAdapter } from './adapters/orionis/unconfigured.ts';
 import type { OrionisAdapter } from './adapters/orionis/types.ts';
 import { HttpAdGuardAdapter, UnconfiguredAdGuardAdapter } from './adapters/adguard/http.ts';
@@ -43,12 +44,14 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
   const orionis: OrionisAdapter =
     opts.orionis ??
     (config.orionis.configured
-      ? new HttpOrionisAdapter(
-          config.orionis.baseUrl,
-          config.orionis.serviceToken,
-          config.orionis.timeoutMs,
-          fetchImpl,
-        )
+      ? config.orionis.adapter === 'go2rtc'
+        ? new Go2rtcOrionisAdapter(config.orionis.baseUrl, config.orionis.timeoutMs, fetchImpl)
+        : new HttpOrionisAdapter(
+            config.orionis.baseUrl,
+            config.orionis.serviceToken,
+            config.orionis.timeoutMs,
+            fetchImpl,
+          )
       : new UnconfiguredOrionisAdapter());
 
   const adguard: AdGuardAdapter =
