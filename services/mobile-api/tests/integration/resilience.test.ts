@@ -211,6 +211,108 @@ describe('stream authorisation', () => {
     expect(res.statusCode).toBe(401);
     expect(res.json().error.code).toBe('SESSION_REVOKED');
   });
+
+  it('re-mints an expired upstream HLS session instead of failing playback', async () => {
+    // Regression: go2rtc drops its HLS session id seconds after the last poll
+    // (or the moment the source hiccups). The relay used to hand that id to
+    // the player, so an expiry left the player pinned to a dead id and every
+    // later poll returned 503 — video played, then went black permanently.
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+    const { id, streamToken } = created.json().data;
+
+    const realFetch = globalThis.fetch;
+    const minted: string[] = [];
+    let liveSid = 'sid-1';
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes('/api/stream.m3u8')) {
+        // Each mint retires the previous session, as go2rtc does.
+        liveSid = `sid-${minted.length + 2}`;
+        minted.push(liveSid);
+        return new Response(
+          `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=192000,CODECS="avc1.640029"\nhls/playlist.m3u8?id=${liveSid}\n`,
+          { status: 200 },
+        );
+      }
+      if (url.includes('/api/hls/playlist.m3u8')) {
+        const asked = new URL(url, 'http://x').searchParams.get('id');
+        return asked === liveSid
+          ? new Response('#EXTM3U\n#EXTINF:1,\nsegment.ts?id=' + liveSid + '&n=1\n', {
+              status: 200,
+            })
+          : new Response('not found', { status: 404 });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof globalThis.fetch;
+
+    try {
+      const master = await harness.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/stream/${id}`,
+        headers: { authorization: `Bearer ${streamToken}` },
+      });
+      expect(master.statusCode).toBe(200);
+      // The upstream session id must never reach the player.
+      expect(master.body).not.toContain('sid-');
+      expect(master.body).toContain('hls=playlist');
+
+      // Simulate go2rtc retiring the session the relay just minted.
+      liveSid = 'sid-retired';
+      const mintsBefore = minted.length;
+
+      const playlist = await harness.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/stream/${id}?token=${encodeURIComponent(streamToken)}&hls=playlist`,
+      });
+
+      expect(playlist.statusCode).toBe(200);
+      expect(minted.length).toBe(mintsBefore + 1);
+      expect(playlist.body).toContain('hls=segment');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('answers a retired segment with 404 so the player resyncs', async () => {
+    // A 5xx makes AVPlayer abandon playback; a missing segment makes it reload
+    // the playlist, which is the recovery path we want.
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+    const { id, streamToken } = created.json().data;
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('gone', { status: 404 })) as typeof globalThis.fetch;
+
+    try {
+      const res = await harness.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/stream/${id}?token=${encodeURIComponent(streamToken)}&hls=segment&id=sid-old&n=7`,
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });
 
 describe('idempotency', () => {

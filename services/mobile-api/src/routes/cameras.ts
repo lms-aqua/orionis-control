@@ -99,6 +99,40 @@ const DISRUPTIVE: ReadonlySet<CameraControlRequest['action']> = new Set([
 ]);
 
 export async function registerCameraRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * go2rtc mints a short-lived HLS session id for every `stream.m3u8` request
+   * and drops it a few seconds after the last poll — or immediately if the
+   * upstream source hiccups. That id must therefore never reach the client: a
+   * player that holds one is permanently dead the moment go2rtc forgets it,
+   * which shows up as a stream that plays and then goes black forever.
+   *
+   * The gateway owns the session instead. Client playlist URLs carry no id;
+   * this map resolves the current one per stream session and re-mints it on
+   * demand, so a source hiccup costs one playlist reload rather than the
+   * whole playback.
+   */
+  const hlsSessions = new Map<string, string>();
+
+  const mintHlsSession = async (
+    streamId: string,
+    src: string,
+    baseUrl: string,
+    timeoutMs: number,
+  ): Promise<string> => {
+    const upstream = await fetch(`${baseUrl}/api/stream.m3u8?src=${encodeURIComponent(src)}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!upstream.ok) {
+      throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
+    }
+    const sid = /hls\/playlist\.m3u8\?id=([A-Za-z0-9_-]+)/.exec(await upstream.text())?.[1];
+    if (!sid) {
+      throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
+    }
+    hlsSessions.set(streamId, sid);
+    return sid;
+  };
+
   // --- GET /cameras ---------------------------------------------------------
   app.get('/cameras', { preHandler: requirePermission('cameras.view') }, async (req) => {
     const cameras = await req.services.orionis.listCameras();
@@ -248,6 +282,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       );
       // Best effort upstream teardown; local revocation already stops playback.
       await orionis.revokeStreamSession(req.params.streamId).catch(() => undefined);
+      hlsSessions.delete(req.params.streamId);
       return ok({ revoked: true }, req.id);
     },
   );
@@ -309,32 +344,50 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     const mode = req.query.hls;
     const noStore = { 'cache-control': 'no-store' };
 
+    const streamId = req.params.streamId;
+    const timeoutMs = config.orionis.timeoutMs;
+
     try {
       if (!mode) {
-        const upstream = await fetch(
-          `${go2rtcBase}/api/stream.m3u8?src=${encodeURIComponent(src)}`,
-          { signal: AbortSignal.timeout(config.orionis.timeoutMs) },
-        );
-        if (!upstream.ok) {
-          throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
-        }
-        const body = (await upstream.text()).replace(
-          /hls\/playlist\.m3u8\?id=([A-Za-z0-9_-]+)/g,
-          (_m, id) => `${self}?${tq}&hls=playlist&id=${id}`,
-        );
+        // Minting here also warms the upstream source before the player asks
+        // for its first segment. The id stays server-side.
+        await mintHlsSession(streamId, src, go2rtcBase, timeoutMs);
         return reply
           .headers({ 'content-type': 'application/vnd.apple.mpegurl', ...noStore })
-          .send(body);
+          .send(
+            [
+              '#EXTM3U',
+              '#EXT-X-STREAM-INF:BANDWIDTH=192000,CODECS="avc1.640029"',
+              `${self}?${tq}&hls=playlist`,
+              '',
+            ].join('\n'),
+          );
       }
 
       if (mode === 'playlist') {
-        const upstream = await fetch(
-          `${go2rtcBase}/api/hls/playlist.m3u8?id=${encodeURIComponent(req.query.id ?? '')}`,
-          { signal: AbortSignal.timeout(config.orionis.timeoutMs) },
-        );
+        const fetchPlaylist = async (sid: string): Promise<Response> =>
+          fetch(`${go2rtcBase}/api/hls/playlist.m3u8?id=${encodeURIComponent(sid)}`, {
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+
+        let sid =
+          hlsSessions.get(streamId) ?? (await mintHlsSession(streamId, src, go2rtcBase, timeoutMs));
+        let upstream = await fetchPlaylist(sid);
+
+        // The session expired or the source dropped: mint a fresh one rather
+        // than failing the request. The player keeps polling this same URL, so
+        // recovery is invisible to it.
+        if (!upstream.ok) {
+          sid = await mintHlsSession(streamId, src, go2rtcBase, timeoutMs);
+          upstream = await fetchPlaylist(sid);
+        }
         if (!upstream.ok) {
           throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
         }
+
+        // Segment URLs stay pinned to the session that produced this playlist:
+        // segment numbering restarts with each session, so a number from an
+        // older one must not silently resolve against a newer session.
         const body = (await upstream.text()).replace(
           /segment\.ts\?id=([A-Za-z0-9_-]+)&n=(\d+)/g,
           (_m, id, n) => `${self}?${tq}&hls=segment&id=${id}&n=${n}`,
@@ -347,10 +400,13 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       // segment
       const upstream = await fetch(
         `${go2rtcBase}/api/hls/segment.ts?id=${encodeURIComponent(req.query.id ?? '')}&n=${encodeURIComponent(req.query.n ?? '')}`,
-        { signal: AbortSignal.timeout(config.orionis.timeoutMs) },
+        { signal: AbortSignal.timeout(timeoutMs) },
       );
       if (!upstream.ok) {
-        throw new AppError('STREAM_UNAVAILABLE', 'The camera stream segment is not available.');
+        // 404, not 503: a segment from a retired session is gone for good, and
+        // HLS players respond to a missing segment by reloading the playlist —
+        // which is exactly the resync we want. A 5xx makes them give up.
+        return reply.code(404).headers(noStore).send();
       }
       const buf = Buffer.from(await upstream.arrayBuffer());
       return reply.headers({ 'content-type': 'video/mp2t', ...noStore }).send(buf);
