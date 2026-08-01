@@ -169,9 +169,41 @@ describe('stream authorisation', () => {
     expect(JSON.stringify(data)).not.toContain('media.internal.invalid');
     expect(data.playbackUrl).toContain('/api/mobile/v1/stream/');
 
+    // Long enough that a normal look at a camera is not interrupted by a
+    // renewal, but still bounded — and revocation does not depend on it, since
+    // every relay request re-checks the row and the signed-in session.
     const ttlMs = new Date(data.expiresAt).getTime() - Date.now();
     expect(ttlMs).toBeGreaterThan(0);
-    expect(ttlMs).toBeLessThanOrEqual(120_000);
+    expect(ttlMs).toBeLessThanOrEqual(7_200_000);
+  });
+
+  it('retires a superseded stream session instead of leaking it', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+
+    const open = async () =>
+      harness!.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+        headers: harness!.auth(tokens.accessToken),
+        payload: { preferredProtocols: ['hls'] },
+      });
+
+    const first = (await open()).json().data;
+    const second = (await open()).json().data;
+    expect(first.id).not.toBe(second.id);
+
+    // The first session's playback must now be refused, and the second must work.
+    const stale = await harness.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/stream/${first.id}/playlist.m3u8`,
+      headers: { authorization: `Bearer ${first.streamToken}` },
+    });
+    expect(stale.statusCode).toBe(503);
+    expect(stale.json().error.code).toBe('STREAM_UNAVAILABLE');
   });
 
   it('rejects playback without a token', async () => {

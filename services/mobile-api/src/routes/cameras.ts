@@ -222,6 +222,27 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       const localId = randomId('str');
       const expiresAt = new Date(Date.now() + config.streamTokenTtlSeconds * 1000);
 
+      // One signed-in session viewing one camera needs exactly one stream
+      // session. Re-opening a camera (or renewing a token) previously left the
+      // old row live, so every reopen leaked a session and its upstream HLS
+      // consumer. Retire the predecessors instead of accumulating them.
+      const superseded = db
+        .prepare(
+          `SELECT id FROM stream_sessions
+             WHERE session_id = ? AND camera_id = ? AND revoked_at IS NULL`,
+        )
+        .all(principal.sessionId, cameraId) as { id: string }[];
+      if (superseded.length > 0) {
+        db.prepare(
+          `UPDATE stream_sessions SET revoked_at = ?
+             WHERE session_id = ? AND camera_id = ? AND revoked_at IS NULL`,
+        ).run(new Date().toISOString(), principal.sessionId, cameraId);
+        for (const row of superseded) {
+          hlsSessions.delete(row.id);
+          await orionis.revokeStreamSession(row.id).catch(() => undefined);
+        }
+      }
+
       db.prepare(
         `INSERT INTO stream_sessions (id, user_id, session_id, camera_id, protocol, quality, created_at, expires_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

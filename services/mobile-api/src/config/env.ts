@@ -58,7 +58,14 @@ const RawSchema = z.object({
   SESSION_SIGNING_KEY: z.string().default(''),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().min(3600).default(2_592_000),
-  STREAM_TOKEN_TTL_SECONDS: z.coerce.number().int().min(15).max(900).default(120),
+  // A viewing session must outlive a normal look at a camera. At 120s the app
+  // renewed at 90s, and renewal mints a new playback URL, which swaps the
+  // player item and visibly restarts the video -- so watching a camera stuttered
+  // every 90 seconds by construction. Revocation does not depend on this value:
+  // every relay request re-checks the stream row (revoked_at, expires_at) and
+  // that the signed-in session is still active, so a logout or an explicit
+  // revoke takes effect immediately regardless of the token's remaining life.
+  STREAM_TOKEN_TTL_SECONDS: z.coerce.number().int().min(15).max(7200).default(1800),
 
   AUTHELIA_ISSUER_URL: z.string().default(''),
   AUTHELIA_CLIENT_ID: z.string().default(''),
