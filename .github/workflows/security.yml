@@ -138,7 +138,7 @@ jobs:
         run: docker build -t orionis-mobile-api:scan services/mobile-api
 
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: orionis-mobile-api:scan
           format: sarif
