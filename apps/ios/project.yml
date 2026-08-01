@@ -52,7 +52,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lostmediastudios.orioniscontrol
-        PRODUCT_NAME: Orionis Control
+        # PRODUCT_NAME must stay space-free: it names the .app bundle and its
+        # executable, and a space breaks the unit-test target's TEST_HOST path
+        # ("Orionis Control.app" vs the expected "OrionisControl.app"). The
+        # user-visible name is set via CFBundleDisplayName below.
+        PRODUCT_NAME: OrionisControl
         INFOPLIST_FILE: OrionisControl/Info.plist
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -74,7 +78,7 @@ targets:
     info:
       path: OrionisControl/Info.plist
       properties:
-        CFBundleDisplayName: $(PRODUCT_NAME)
+        CFBundleDisplayName: Orionis Control
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
         UILaunchScreen:
