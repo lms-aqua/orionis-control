@@ -660,15 +660,17 @@ struct HLSPlayerView: UIViewControllerRepresentable {
                     "Authorization": "Bearer \(session.streamToken)"
                 ]
             ])
-        let item = AVPlayerItem(asset: asset)
-        // Keep the live edge tight; this is monitoring, not catch-up viewing.
-        item.preferredForwardBufferDuration = 2
-        return item
+        return AVPlayerItem(asset: asset)
+        // Buffering is deliberately left to AVFoundation. Chasing a tight live
+        // edge here (preferredForwardBufferDuration = 2 alongside
+        // automaticallyWaitsToMinimizeStalling = false) starved the player: with
+        // two-second segments it would load two segments, start, stall, and then
+        // stop requesting media entirely while still refreshing the playlist --
+        // a permanently frozen first frame. HLS players need roughly three
+        // target durations buffered, so asking for two seconds fought the format.
     }
 
     private func makePlayer() -> AVPlayer {
-        let player = AVPlayer(playerItem: makeItem())
-        player.automaticallyWaitsToMinimizeStalling = false
-        return player
+        AVPlayer(playerItem: makeItem())
     }
 }
