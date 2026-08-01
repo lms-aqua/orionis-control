@@ -14,6 +14,38 @@ const csv = (v: string | undefined): string[] =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+export interface CameraLabel {
+  name: string;
+  location: string | null;
+}
+
+/**
+ * Parses `ORIONIS_CAMERA_LABELS` into per-camera display names.
+ *
+ * Upstreams that key cameras by an opaque id (go2rtc names its streams after the
+ * Scrypted device id) leave the app showing "Camera 57". This maps those ids to
+ * something a person recognises, without inventing a name for an id that has no
+ * entry.
+ *
+ * Format: `id=Name|Location` entries separated by commas; the location is
+ * optional. Example: `57=Driveway|Outside,56=Shed`.
+ */
+export function parseCameraLabels(raw: string | undefined): Record<string, CameraLabel> {
+  const labels: Record<string, CameraLabel> = {};
+  for (const entry of csv(raw)) {
+    const eq = entry.indexOf('=');
+    if (eq <= 0) continue;
+    const id = entry.slice(0, eq).trim();
+    const rest = entry.slice(eq + 1);
+    const [namePart, locationPart] = rest.split('|');
+    const name = (namePart ?? '').trim();
+    if (!id || !name) continue;
+    const location = (locationPart ?? '').trim();
+    labels[id] = { name, location: location || null };
+  }
+  return labels;
+}
+
 const RawSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
@@ -48,6 +80,9 @@ const RawSchema = z.object({
   // set, the stream relay serves HLS from it instead of from go2rtc, whose own
   // HLS output stalls at two segments and drops the session after seconds.
   ORIONIS_HLS_BASE_URL: z.string().default(''),
+  // Display names for upstreams that key cameras by an opaque id.
+  // Format: `id=Name|Location` entries, comma separated. Location optional.
+  ORIONIS_CAMERA_LABELS: z.string().default(''),
   ORIONIS_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
   ADGUARD_INTERNAL_URL: z.string().default(''),
@@ -93,6 +128,8 @@ export interface OrionisConfig {
   baseUrl: string;
   /** MediaMTX HLS base URL; empty means relay HLS from go2rtc itself. */
   hlsBaseUrl: string;
+  /** Per-camera display names, keyed by upstream camera id. */
+  cameraLabels: Record<string, CameraLabel>;
   serviceToken: string;
   timeoutMs: number;
 }
@@ -330,6 +367,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       adapter: e.ORIONIS_ADAPTER,
       baseUrl: e.ORIONIS_INTERNAL_URL.replace(/\/+$/, ''),
       hlsBaseUrl: e.ORIONIS_HLS_BASE_URL.replace(/\/+$/, ''),
+      cameraLabels: parseCameraLabels(e.ORIONIS_CAMERA_LABELS),
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,
     },

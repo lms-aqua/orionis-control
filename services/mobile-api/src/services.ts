@@ -45,7 +45,12 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
     opts.orionis ??
     (config.orionis.configured
       ? config.orionis.adapter === 'go2rtc'
-        ? new Go2rtcOrionisAdapter(config.orionis.baseUrl, config.orionis.timeoutMs, fetchImpl)
+        ? new Go2rtcOrionisAdapter(
+            config.orionis.baseUrl,
+            config.orionis.timeoutMs,
+            fetchImpl,
+            config.orionis.cameraLabels,
+          )
         : new HttpOrionisAdapter(
             config.orionis.baseUrl,
             config.orionis.serviceToken,

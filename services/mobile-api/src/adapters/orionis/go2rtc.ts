@@ -55,8 +55,14 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   readonly kind = 'http' as const;
   readonly configured = true;
   private readonly client: UpstreamClient;
+  private readonly labels: Record<string, { name: string; location: string | null }>;
 
-  constructor(baseUrl: string, timeoutMs: number, fetchImpl: typeof fetch = fetch) {
+  constructor(
+    baseUrl: string,
+    timeoutMs: number,
+    fetchImpl: typeof fetch = fetch,
+    labels: Record<string, { name: string; location: string | null }> = {},
+  ) {
     this.client = new UpstreamClient(
       'go2rtc',
       baseUrl,
@@ -64,6 +70,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       timeoutMs,
       fetchImpl,
     );
+    this.labels = labels;
   }
 
   private async streams(): Promise<Record<string, Go2rtcStream>> {
@@ -75,10 +82,14 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
 
   private toCamera(id: string, stream: Go2rtcStream | undefined): Camera {
     const online = Boolean(stream?.producers && stream.producers.length > 0);
+    // go2rtc names its streams after the upstream device id. A configured label
+    // turns that into something recognisable; without one, the id is shown
+    // as-is rather than guessed at.
+    const label = this.labels[id];
     return {
       id,
-      name: `Camera ${id}`,
-      location: null,
+      name: label?.name ?? `Camera ${id}`,
+      location: label?.location ?? null,
       group: null,
       model: 'go2rtc',
       firmware: null,
