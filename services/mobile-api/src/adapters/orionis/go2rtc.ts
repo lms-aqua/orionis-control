@@ -45,7 +45,9 @@ const CAPABILITIES = {
   sensitivity: false,
   restart: false,
   snapshot: true,
-  protocols: ['webrtc', 'hls', 'mjpeg'] as StreamProtocol[],
+  // The gateway relays go2rtc HLS (AVPlayer-native); WebRTC/MJPEG are not
+  // exposed, so only HLS is advertised for negotiation.
+  protocols: ['hls'] as StreamProtocol[],
   qualities: ['auto'] as StreamQuality[],
 };
 
@@ -132,14 +134,25 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     return { bytes: data, contentType: 'image/jpeg', capturedAt: new Date().toISOString() };
   }
 
-  async createStreamSession(): Promise<StreamSession> {
-    // Live playback requires an authenticated, short-lived media edge that
-    // proxies go2rtc's WebRTC/HLS to the app. That edge is not yet connected,
-    // so streaming is reported as unsupported rather than exposing go2rtc.
-    throw new AppError(
-      'CAPABILITY_UNSUPPORTED',
-      'Live streaming is not connected to this gateway yet. Camera list and snapshots are available.',
-    );
+  async createStreamSession(input: {
+    cameraId: string;
+    preferredProtocols: StreamProtocol[];
+    quality: StreamQuality;
+    ttlSeconds: number;
+  }): Promise<StreamSession> {
+    // The go2rtc HLS data plane is proxied by the gateway's /stream/:id relay,
+    // which builds the real token-bound playbackUrl. This returns the
+    // negotiated shape (HLS); the route fills in the URL.
+    return {
+      id: `go2rtc:${input.cameraId}`,
+      cameraId: input.cameraId,
+      protocol: 'hls',
+      playbackUrl: '',
+      expiresAt: new Date(Date.now() + input.ttlSeconds * 1000).toISOString(),
+      quality: input.quality,
+      iceServers: [],
+      supportedQualities: ['auto'],
+    };
   }
 
   async revokeStreamSession(): Promise<void> {

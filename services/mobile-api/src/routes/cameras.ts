@@ -256,55 +256,109 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
   // Registered outside the authenticated prefix guard: players cannot always
   // attach an Authorization header, so the short-lived stream token is passed
   // as a bearer header when possible and validated here either way.
-  app.get<{ Params: { streamId: string }; Querystring: { token?: string } }>(
-    '/stream/:streamId',
-    async (req, reply) => {
-      const { config, db } = req.services;
-      const header = req.headers.authorization;
-      const token =
-        (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')
-          ? header.slice(7).trim()
-          : null) ?? req.query.token;
+  app.get<{
+    Params: { streamId: string };
+    Querystring: { token?: string; hls?: string; id?: string; n?: string };
+  }>('/stream/:streamId', async (req, reply) => {
+    const { config, db } = req.services;
+    const header = req.headers.authorization;
+    const token =
+      (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')
+        ? header.slice(7).trim()
+        : null) ?? req.query.token;
 
-      if (!token) {
-        throw new AppError('UNAUTHENTICATED', 'A stream token is required.');
+    if (!token) {
+      throw new AppError('UNAUTHENTICATED', 'A stream token is required.');
+    }
+
+    let claims;
+    try {
+      ({ payload: claims } = await jwtVerify(
+        token,
+        new TextEncoder().encode(config.sessionSigningKey),
+        { issuer: 'orionis-control-gateway', audience: 'orionis-control-stream' },
+      ));
+    } catch {
+      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
+    }
+
+    const row = db.prepare('SELECT * FROM stream_sessions WHERE id = ?').get(String(claims.str)) as
+      Record<string, unknown> | undefined;
+
+    if (!row || row.revoked_at) {
+      throw new AppError('STREAM_UNAVAILABLE', 'This stream session was revoked.');
+    }
+    if (new Date(String(row.expires_at)).getTime() < Date.now()) {
+      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream session has expired.');
+    }
+    if (!req.services.sessions.isActive(String(row.session_id))) {
+      throw new AppError('SESSION_REVOKED', 'The signed-in session is no longer valid.');
+    }
+
+    // HLS relay for the go2rtc data plane. go2rtc is never exposed to the
+    // client: the gateway proxies the master playlist, the media playlist,
+    // and the segments, rewriting every sub-URL back through this same
+    // token-bound endpoint. go2rtc's HLS shape is:
+    //   master  /api/stream.m3u8?src=<name>  -> hls/playlist.m3u8?id=<sid>
+    //   media   /api/hls/playlist.m3u8?id=<sid> -> segment.ts?id=<sid>&n=<n>
+    //   segment /api/hls/segment.ts?id=<sid>&n=<n>
+    const go2rtcBase = config.orionis.baseUrl;
+    const src = String(row.camera_id);
+    const self = `${config.publicBaseUrl}/api/mobile/v1/stream/${req.params.streamId}`;
+    const tq = `token=${encodeURIComponent(token)}`;
+    const mode = req.query.hls;
+    const noStore = { 'cache-control': 'no-store' };
+
+    try {
+      if (!mode) {
+        const upstream = await fetch(
+          `${go2rtcBase}/api/stream.m3u8?src=${encodeURIComponent(src)}`,
+          { signal: AbortSignal.timeout(config.orionis.timeoutMs) },
+        );
+        if (!upstream.ok) {
+          throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
+        }
+        const body = (await upstream.text()).replace(
+          /hls\/playlist\.m3u8\?id=([A-Za-z0-9_-]+)/g,
+          (_m, id) => `${self}?${tq}&hls=playlist&id=${id}`,
+        );
+        return reply
+          .headers({ 'content-type': 'application/vnd.apple.mpegurl', ...noStore })
+          .send(body);
       }
 
-      let claims;
-      try {
-        ({ payload: claims } = await jwtVerify(
-          token,
-          new TextEncoder().encode(config.sessionSigningKey),
-          { issuer: 'orionis-control-gateway', audience: 'orionis-control-stream' },
-        ));
-      } catch {
-        throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
+      if (mode === 'playlist') {
+        const upstream = await fetch(
+          `${go2rtcBase}/api/hls/playlist.m3u8?id=${encodeURIComponent(req.query.id ?? '')}`,
+          { signal: AbortSignal.timeout(config.orionis.timeoutMs) },
+        );
+        if (!upstream.ok) {
+          throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
+        }
+        const body = (await upstream.text()).replace(
+          /segment\.ts\?id=([A-Za-z0-9_-]+)&n=(\d+)/g,
+          (_m, id, n) => `${self}?${tq}&hls=segment&id=${id}&n=${n}`,
+        );
+        return reply
+          .headers({ 'content-type': 'application/vnd.apple.mpegurl', ...noStore })
+          .send(body);
       }
 
-      const row = db
-        .prepare('SELECT * FROM stream_sessions WHERE id = ?')
-        .get(String(claims.str)) as Record<string, unknown> | undefined;
-
-      if (!row || row.revoked_at) {
-        throw new AppError('STREAM_UNAVAILABLE', 'This stream session was revoked.');
-      }
-      if (new Date(String(row.expires_at)).getTime() < Date.now()) {
-        throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream session has expired.');
-      }
-      if (!req.services.sessions.isActive(String(row.session_id))) {
-        throw new AppError('SESSION_REVOKED', 'The signed-in session is no longer valid.');
-      }
-
-      // The upstream media URL is resolved here and never returned to the app.
-      // Implementations proxy or 302 to the upstream edge depending on protocol.
-      throw new AppError(
-        'CAPABILITY_UNSUPPORTED',
-        'Media relay is handled by the Orionis streaming edge, which is not connected to this gateway.',
+      // segment
+      const upstream = await fetch(
+        `${go2rtcBase}/api/hls/segment.ts?id=${encodeURIComponent(req.query.id ?? '')}&n=${encodeURIComponent(req.query.n ?? '')}`,
+        { signal: AbortSignal.timeout(config.orionis.timeoutMs) },
       );
-
-      return reply;
-    },
-  );
+      if (!upstream.ok) {
+        throw new AppError('STREAM_UNAVAILABLE', 'The camera stream segment is not available.');
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      return reply.headers({ 'content-type': 'video/mp2t', ...noStore }).send(buf);
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');
+    }
+  });
 
   // --- POST /cameras/:cameraId/controls -------------------------------------
   app.post<{ Params: { cameraId: string } }>(
