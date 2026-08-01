@@ -25,7 +25,9 @@ final class CameraDetailViewModel {
     private let cameraId: String
     private let cameras: any CameraServicing
     private let eventsService: any EventServicing
-    private var renewTask: Task<Void, Never>?
+    // Assigned only on the main actor; read from the nonisolated deinit purely
+    // to cancel it. Task.cancel() is safe to call from any isolation domain.
+    private nonisolated(unsafe) var renewTask: Task<Void, Never>?
 
     init(cameraId: String, cameras: any CameraServicing, events: any EventServicing) {
         self.cameraId = cameraId
@@ -521,9 +523,10 @@ struct CameraDetailView: View {
     // MARK: Actions
 
     private func startStream() async {
-        let lowData =
-            environment.preferences.limitQualityOnCellular
-            && (await environment.api.conservingData)
+        // Evaluate the async property first: `await` cannot appear inside the
+        // autoclosure of `&&`.
+        let conservingData = await environment.api.conservingData
+        let lowData = environment.preferences.limitQualityOnCellular && conservingData
         await model?.startStream(quality: quality, lowData: lowData)
     }
 

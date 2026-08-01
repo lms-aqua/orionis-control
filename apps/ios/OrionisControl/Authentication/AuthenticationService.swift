@@ -97,7 +97,7 @@ final class AuthenticationService: NSObject {
     /// A stable per-install identifier. Not a device fingerprint: it is random,
     /// app-scoped, and destroyed when the app data is cleared.
     var deviceId: String {
-        if let existing = try? secrets.get(.deviceId), let existing, !existing.isEmpty {
+        if let existing = try? secrets.get(.deviceId), !existing.isEmpty {
             return existing
         }
         let generated = UUID().uuidString.lowercased()
@@ -114,7 +114,7 @@ final class AuthenticationService: NSObject {
             return
         }
 
-        guard let refresh = try? secrets.get(.refreshToken), let refresh, !refresh.isEmpty else {
+        guard let refresh = try? secrets.get(.refreshToken), !refresh.isEmpty else {
             state = .signedOut(reason: nil)
             return
         }
@@ -375,9 +375,9 @@ final class AuthenticationService: NSObject {
 
     private func currentTokens() -> TokenSet? {
         guard
-            let access = try? secrets.get(.accessToken), let access,
-            let refresh = try? secrets.get(.refreshToken), let refresh,
-            let expiryRaw = try? secrets.get(.accessTokenExpiry), let expiryRaw,
+            let access = try? secrets.get(.accessToken),
+            let refresh = try? secrets.get(.refreshToken),
+            let expiryRaw = try? secrets.get(.accessTokenExpiry),
             let expiry = TimeInterval(expiryRaw)
         else { return nil }
         return TokenSet(
@@ -499,7 +499,7 @@ extension AuthenticationService: TokenProviding {
             guard let self else { throw APIError.cancelled }
             defer { Task { @MainActor in self.refreshTask = nil } }
 
-            guard let refresh = try? self.secrets.get(.refreshToken), let refresh else {
+            guard let refresh = try? self.secrets.get(.refreshToken) else {
                 throw APIError.server(
                     code: .reauthenticationRequired,
                     message: "There is no saved session to refresh.",

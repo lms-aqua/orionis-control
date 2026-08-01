@@ -151,6 +151,7 @@ enum APIError: Error, Equatable, Sendable {
             default:
                 nil
             }
+        case .unexpectedStatus: "Try again shortly, or check the System screen for service health."
         case .offline: "Reconnect to Wi-Fi or cellular and try again."
         case .timedOut: "Check your connection and try again."
         case .insecureConnection: "Check the gateway's TLS certificate."

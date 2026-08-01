@@ -54,8 +54,11 @@ jobs:
           fi
 
           echo "== Credentials in query strings? =="
+          # Production code only. Redaction tests legitimately contain fixture
+          # URLs like '...?token=abc' to prove those values get stripped.
           if grep -rInE '[?&](password|token|secret|api_?key)=' \
-              --include='*.swift' --include='*.ts' apps services 2>/dev/null; then
+              --include='*.swift' --include='*.ts' \
+              --exclude-dir=tests --exclude-dir='*Tests' apps services 2>/dev/null; then
             echo "::error::A credential appears to be passed in a query string."
             fail=1
           fi
@@ -138,7 +141,7 @@ jobs:
         run: docker build -t orionis-mobile-api:scan services/mobile-api
 
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: orionis-mobile-api:scan
           format: sarif
