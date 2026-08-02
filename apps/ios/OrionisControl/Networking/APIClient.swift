@@ -209,6 +209,54 @@ actor APIClient {
         }
     }
 
+    /// Raw bytes plus the server's suggested filename, for a clip being exported.
+    ///
+    /// The filename matters: a clip saved out of the app is looked at weeks later,
+    /// and the gateway already names it after the camera and the moment it covers.
+    /// Falls back to nil rather than guessing, so the caller decides.
+    func requestDownload(_ endpoint: Endpoint) async throws -> (data: Data, filename: String?) {
+        guard await monitor.isConnected else { throw APIError.offline }
+        var request = try buildRequest(endpoint)
+        if let token = try await tokenProvider?.validAccessToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.decoding("The response was not an HTTP response.")
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw try mapErrorResponse(data: data, status: http.statusCode)
+            }
+            return (data, Self.filename(fromContentDisposition: http.value(forHTTPHeaderField: "content-disposition")))
+        } catch let error as URLError {
+            throw APIError.from(urlError: error)
+        }
+    }
+
+    /// Pulls `filename="…"` out of a Content-Disposition header.
+    ///
+    /// Deliberately strict about path separators: the name goes on to be used as a
+    /// filename, and a server-supplied value must not be able to escape the
+    /// directory it is written into.
+    static func filename(fromContentDisposition header: String?) -> String? {
+        guard let header else { return nil }
+        guard
+            let range = header.range(
+                of: #"filename\*?=\"?([^\";]+)"#, options: .regularExpression)
+        else { return nil }
+        let raw = String(header[range])
+            .replacingOccurrences(of: "filename*=", with: "")
+            .replacingOccurrences(of: "filename=", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" "))
+        let cleaned = raw
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: "..", with: "-")
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     // MARK: - Core
 
     private func perform<T: Decodable & Sendable>(

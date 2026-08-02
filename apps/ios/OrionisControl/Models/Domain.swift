@@ -550,6 +550,110 @@ struct RetentionChangeRequest: Codable, Sendable, Equatable {
     let days: Int
 }
 
+/// A continuous run of footage, or a gap between runs.
+struct CoverageRun: Codable, Sendable, Equatable, Identifiable {
+    let startedAt: Date
+    let endedAt: Date
+    let durationSeconds: Double
+
+    var id: String { "\(startedAt.timeIntervalSince1970)-\(endedAt.timeIntervalSince1970)" }
+    var interval: DateInterval { DateInterval(start: startedAt, end: max(endedAt, startedAt)) }
+}
+
+/// What the timeline draws for one day.
+///
+/// The gateway merges the recorder's segments into runs and reports the real gaps,
+/// so the app no longer pages through hundreds of ten-minute segments — and the
+/// seams where the recorder rotates files are not mistaken for missing footage.
+struct RecordingCoverage: Codable, Sendable, Equatable {
+    let cameraId: String
+    let dayStart: Date
+    let dayEnd: Date
+    let runs: [CoverageRun]
+    let gaps: [CoverageRun]
+    let recordedSeconds: Double
+    let coverageRatio: Double
+    let earliestAt: Date?
+    let latestAt: Date?
+}
+
+/// Starred cameras and their order, held per account so a second device inherits them.
+struct CameraPreferences: Codable, Sendable, Equatable {
+    let favouriteIds: [String]
+    let order: [String]
+}
+
+struct CameraPreferencesUpdate: Codable, Sendable, Equatable {
+    let favouriteIds: [String]?
+    let order: [String]?
+}
+
+// MARK: - Infrastructure
+
+struct CaddyServerState: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let name: String
+    let status: String
+    let lastPinged: Date?
+
+    var isOnline: Bool { status.lowercased() == "online" }
+}
+
+struct CaddyState: Codable, Sendable, Equatable {
+    let total: Int?
+    let online: Int?
+    let offline: Int?
+    let unknown: Int?
+    let servers: [CaddyServerState]?
+    /// Set when this section could not be read; the rest of the page still renders.
+    let error: String?
+}
+
+struct AutheliaState: Codable, Sendable, Equatable {
+    let running: Bool?
+    let status: String?
+    let health: String?
+    let startedAt: Date?
+    let restartCount: Int?
+    let image: String?
+    let error: String?
+}
+
+/// A queued Authelia restart. Separate request/applied timestamps because the
+/// restart happens outside the gateway — and signs out the session that asked.
+struct AutheliaRestartState: Codable, Sendable, Equatable {
+    let requestedAt: Date?
+    let requestedBy: String?
+    let lastRestartedAt: Date?
+    let pending: Bool
+    let available: Bool
+    let message: String?
+}
+
+struct InfraStatus: Codable, Sendable, Equatable {
+    let caddy: CaddyState
+    let authelia: AutheliaState
+    let autheliaRestart: AutheliaRestartState
+}
+
+struct AutheliaUserSummary: Codable, Sendable, Equatable, Identifiable {
+    let username: String
+    let displayName: String?
+    let email: String?
+    let groups: [String]
+    let disabled: Bool
+
+    var id: String { username }
+}
+
+struct AutheliaBackupSummary: Codable, Sendable, Equatable, Identifiable {
+    let name: String
+    let size: Double
+    let modifiedAt: Date?
+
+    var id: String { name }
+}
+
 // MARK: - Audit
 
 struct AuditRecord: Codable, Sendable, Equatable, Identifiable {

@@ -21,6 +21,20 @@ protocol CameraServicing: Sendable {
     func endStreamSession(cameraId: String, streamId: String) async throws
     func invokeControl(cameraId: String, request: CameraControlRequest) async throws
         -> CameraControlResult
+    func cameraPreferences() async throws -> CameraPreferences
+    func setCameraPreferences(_ update: CameraPreferencesUpdate) async throws -> CameraPreferences
+}
+
+/// Caddy and Authelia. Administrator-only on the server; the app hides it too.
+protocol InfraServicing: Sendable {
+    func infraStatus() async throws -> InfraStatus
+    func autheliaUsers() async throws -> [AutheliaUserSummary]
+    func autheliaBackups() async throws -> [AutheliaBackupSummary]
+    func restoreAutheliaBackup(name: String) async throws
+    func setAutheliaPassword(username: String, password: String) async throws
+    func requestAutheliaRestart() async throws -> AutheliaRestartState
+    func caddyConfig() async throws -> String
+    func autheliaConfig() async throws -> String
 }
 
 extension CameraServicing {
@@ -44,6 +58,9 @@ protocol EventServicing: Sendable {
     func acknowledge(eventId: String, note: String?) async throws -> CameraEvent
     func recordings(cameraIds: [String], from: Date?, to: Date?, limit: Int, offset: Int)
         async throws -> Paged<Recording>
+    func coverage(cameraId: String, day: Date) async throws -> RecordingCoverage
+    /// Downloads a clip to a temporary file and returns it, ready to share.
+    func exportClip(cameraId: String, start: Date, duration: Int) async throws -> URL
     func recordingStorage() async throws -> StorageStatus
     func retention() async throws -> RetentionSettings
     func setRetention(days: Int) async throws -> RetentionSettings
@@ -80,7 +97,7 @@ protocol DeviceServicing: Sendable {
 }
 
 typealias OrionisServicing = MetaServicing & CameraServicing & EventServicing & AdGuardServicing
-    & SystemServicing & DeviceServicing
+    & SystemServicing & DeviceServicing & InfraServicing
 
 // MARK: - Request and response types
 
@@ -428,6 +445,47 @@ struct OrionisService: OrionisServicing {
         )
     }
 
+    func coverage(cameraId: String, day: Date) async throws -> RecordingCoverage {
+        try await api.request(
+            Endpoint(
+                path: "/recordings/coverage",
+                query: [
+                    "cameraId": cameraId,
+                    "day": ISO8601DateFormatter.orionisPlain.string(from: day),
+                ],
+                isRetryable: true
+            ),
+            as: RecordingCoverage.self
+        )
+    }
+
+    /// Downloads a clip and returns a temporary file.
+    ///
+    /// Written to disk rather than held in memory because a share sheet needs a
+    /// file URL, and a ten-minute clip is tens of megabytes. The name comes from
+    /// the gateway's own Content-Disposition where possible, so a saved clip is
+    /// recognisable months later.
+    func exportClip(cameraId: String, start: Date, duration: Int) async throws -> URL {
+        let (data, suggestedName) = try await api.requestDownload(
+            Endpoint(
+                path: "/recordings/clip",
+                query: [
+                    "cameraId": cameraId,
+                    "start": ISO8601DateFormatter.orionisPlain.string(from: start),
+                    "duration": String(duration),
+                    "download": "true",
+                ],
+                timeout: 120
+            )
+        )
+        let stamp = ISO8601DateFormatter.orionisPlain.string(from: start)
+            .replacingOccurrences(of: ":", with: "-")
+        let name = suggestedName ?? "clip-\(cameraId)-\(stamp).mp4"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
     func recordingStorage() async throws -> StorageStatus {
         try await api.request(
             Endpoint(path: "/recordings/storage", isRetryable: true), as: StorageStatus.self)
@@ -538,6 +596,85 @@ struct OrionisService: OrionisServicing {
             ),
             as: AdGuardStatus.self
         )
+    }
+
+    // MARK: Camera preferences
+
+    func cameraPreferences() async throws -> CameraPreferences {
+        try await api.request(
+            Endpoint(path: "/cameras/preferences", isRetryable: true), as: CameraPreferences.self)
+    }
+
+    func setCameraPreferences(_ update: CameraPreferencesUpdate) async throws -> CameraPreferences {
+        try await api.request(
+            Endpoint(method: .put, path: "/cameras/preferences", body: update),
+            as: CameraPreferences.self)
+    }
+
+    // MARK: Infrastructure
+
+    func infraStatus() async throws -> InfraStatus {
+        try await api.request(Endpoint(path: "/infra/status", isRetryable: true), as: InfraStatus.self)
+    }
+
+    func autheliaUsers() async throws -> [AutheliaUserSummary] {
+        struct Response: Decodable { let items: [AutheliaUserSummary] }
+        return try await api.request(
+            Endpoint(path: "/infra/authelia/users", isRetryable: true), as: Response.self
+        ).items
+    }
+
+    func autheliaBackups() async throws -> [AutheliaBackupSummary] {
+        struct Response: Decodable { let items: [AutheliaBackupSummary] }
+        return try await api.request(
+            Endpoint(path: "/infra/authelia/backups", isRetryable: true), as: Response.self
+        ).items
+    }
+
+    func restoreAutheliaBackup(name: String) async throws {
+        struct Body: Encodable { let name: String }
+        try await api.requestVoid(
+            Endpoint(
+                method: .post,
+                path: "/infra/authelia/backups/restore",
+                body: Body(name: name),
+                idempotencyKey: UUID().uuidString,
+                confirmDisruptive: true
+            ))
+    }
+
+    func setAutheliaPassword(username: String, password: String) async throws {
+        struct Body: Encodable { let password: String }
+        try await api.requestVoid(
+            Endpoint(
+                method: .put,
+                path: "/infra/authelia/users/\(escaped(username))/password",
+                body: Body(password: password),
+                confirmDisruptive: true
+            ))
+    }
+
+    func requestAutheliaRestart() async throws -> AutheliaRestartState {
+        try await api.request(
+            Endpoint(
+                method: .post,
+                path: "/infra/authelia/restart",
+                idempotencyKey: UUID().uuidString,
+                confirmDisruptive: true
+            ),
+            as: AutheliaRestartState.self)
+    }
+
+    func caddyConfig() async throws -> String {
+        struct Response: Decodable { let raw: String }
+        return try await api.request(
+            Endpoint(path: "/infra/caddy/config", timeout: 30), as: Response.self).raw
+    }
+
+    func autheliaConfig() async throws -> String {
+        struct Response: Decodable { let content: String }
+        return try await api.request(
+            Endpoint(path: "/infra/authelia/config", timeout: 30), as: Response.self).content
     }
 
     // MARK: System

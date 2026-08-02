@@ -18,6 +18,12 @@ final class RecordingsTimelineModel {
     let player = AVPlayer()
 
     private(set) var coverage: [DateInterval] = []
+    /// Real gaps between runs, so the scrubber can show where footage is missing
+    /// instead of leaving a stretch that merely looks unrecorded.
+    private(set) var gaps: [DateInterval] = []
+    private(set) var coverageRatio: Double = 0
+    private(set) var exportedClip: URL?
+    private(set) var isExporting = false
     private(set) var isLoading = false
     private(set) var errorText: String?
     private(set) var hasFootage = false
@@ -71,11 +77,13 @@ final class RecordingsTimelineModel {
         dayStart = Calendar.current.startOfDay(for: day)
         let end = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? day
         do {
-            let page = try await service.recordings(
-                cameraIds: [cameraId], from: dayStart, to: end, limit: 200, offset: 0)
-            coverage = page.items
-                .map { DateInterval(start: $0.startedAt, duration: $0.durationSeconds) }
-                .sorted { $0.start < $1.start }
+            // The gateway merges the recorder's ten-minute segments into runs and
+            // reports the gaps, so this no longer pages through every segment and
+            // the seams where files rotate are not drawn as missing footage.
+            let summary = try await service.coverage(cameraId: cameraId, day: dayStart)
+            coverage = summary.runs.map(\.interval)
+            gaps = summary.gaps.map(\.interval)
+            coverageRatio = summary.coverageRatio
             hasFootage = !coverage.isEmpty
             // Start at the most recent footage — that's what people look at first.
             if let last = coverage.last {
@@ -92,6 +100,24 @@ final class RecordingsTimelineModel {
         }
         isLoading = false
     }
+
+    /// Exports the window under the playhead as a file to share or save.
+    func exportCurrentWindow() async {
+        guard !isExporting else { return }
+        isExporting = true
+        defer { isExporting = false }
+        let start = alignedWindowStart(for: currentTime)
+        do {
+            exportedClip = try await service.exportClip(
+                cameraId: cameraId, start: start, duration: windowSeconds)
+        } catch let apiError as APIError {
+            errorText = apiError.message
+        } catch {
+            errorText = "That clip could not be exported."
+        }
+    }
+
+    func clearExportedClip() { exportedClip = nil }
 
     // MARK: Scrubbing
 
@@ -312,6 +338,20 @@ struct RecordingsView: View {
                 Spacer()
             }
         }
+        .sheet(
+            isPresented: Binding(
+                get: { model?.exportedClip != nil },
+                set: { if !$0 { model?.clearExportedClip() } }
+            )
+        ) {
+            if let url = model?.exportedClip {
+                ShareLink(item: url) {
+                    Label("Save or share this clip", systemImage: "square.and.arrow.up")
+                        .padding()
+                }
+                .presentationDetents([.height(160)])
+            }
+        }
         .navigationTitle("Recordings")
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -368,6 +408,31 @@ struct RecordingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+
+            if model.coverageRatio > 0 {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("\(Int((model.coverageRatio * 100).rounded()))%")
+                        .font(.subheadline.monospacedDigit())
+                    Text("of day")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            // Exports the window under the playhead, which is the footage the
+            // viewer is actually looking at.
+            Button {
+                Task { await model.exportCurrentWindow() }
+            } label: {
+                if model.isExporting {
+                    ProgressView()
+                } else {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.title3)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.hasFootage || model.isExporting)
+            .accessibilityLabel("Export this clip")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -399,10 +464,27 @@ struct TimelineScrubber: View {
         // playhead moves and coverage loads.
         let currentTime = model.currentTime
         let coverage = model.coverage
+        let gaps = model.gaps
         return GeometryReader { geo in
             let center = geo.size.width / 2
             Canvas { context, size in
                 let mid = size.height / 2
+
+                // Gaps first, so a coverage band drawn over one always wins. A gap
+                // is real missing footage -- the recorder was not running, or the
+                // camera was down -- as opposed to the seams between segment files,
+                // which the gateway already merged away.
+                for gap in gaps {
+                    let x0 = center + gap.start.timeIntervalSince(currentTime) * pointsPerSecond
+                    let x1 = center + gap.end.timeIntervalSince(currentTime) * pointsPerSecond
+                    guard x1 >= 0, x0 <= size.width else { continue }
+                    let rect = CGRect(
+                        x: max(x0, -4), y: mid - 12,
+                        width: max(1, min(x1, size.width + 4) - max(x0, -4)), height: 24)
+                    context.fill(
+                        Path(roundedRect: rect, cornerRadius: 2),
+                        with: .color(.orange.opacity(0.28)))
+                }
 
                 // Recorded coverage bands.
                 for interval in coverage {
