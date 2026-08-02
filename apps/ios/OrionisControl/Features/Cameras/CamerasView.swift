@@ -8,6 +8,9 @@ final class CamerasViewModel {
     private(set) var error: APIError?
     private(set) var isLoading = false
     private(set) var lastLoadedAt: Date?
+    /// Favourites and order as the account holds them, so a second device inherits
+    /// them instead of starting empty. Nil until the gateway has answered.
+    private(set) var accountPreferences: CameraPreferences?
 
     var searchText = ""
     var statusFilter: StatusFilter = .all
@@ -43,7 +46,8 @@ final class CamerasViewModel {
         status: StatusFilter,
         location: String?,
         favouritesOnly: Bool,
-        favourites: [String]
+        favourites: [String],
+        order: [String] = []
     ) -> [Camera] {
         let needle = search.trimmingCharacters(in: .whitespaces).lowercased()
         return
@@ -61,8 +65,19 @@ final class CamerasViewModel {
                     || (camera.location ?? "").lowercased().contains(needle)
                     || (camera.group ?? "").lowercased().contains(needle)
             }
-            // Favourites first, then offline (they need attention), then name.
+            // An explicit order is the viewer's decision, so it wins outright.
+            // Without one: favourites first, then offline (they need attention),
+            // then name.
             .sorted { lhs, rhs in
+                if !order.isEmpty {
+                    let lhsIndex = order.firstIndex(of: lhs.id)
+                    let rhsIndex = order.firstIndex(of: rhs.id)
+                    if let l = lhsIndex, let r = rhsIndex, l != r { return l < r }
+                    // A camera the order does not mention sorts after ones it does,
+                    // so a newly added camera appears rather than vanishing.
+                    if lhsIndex != nil, rhsIndex == nil { return true }
+                    if lhsIndex == nil, rhsIndex != nil { return false }
+                }
                 let lhsFav = favourites.contains(lhs.id)
                 let rhsFav = favourites.contains(rhs.id)
                 if lhsFav != rhsFav { return lhsFav }
@@ -80,7 +95,23 @@ final class CamerasViewModel {
             status: statusFilter,
             location: locationFilter,
             favouritesOnly: showFavouritesOnly,
-            favourites: favourites)
+            favourites: favourites,
+            order: accountPreferences?.order ?? [])
+    }
+
+    /// Mirrors a favourite change to the account, so the other device agrees.
+    ///
+    /// The local toggle has already happened by the time this runs: a star should
+    /// respond instantly and not wait on the network. A failure here leaves the
+    /// device ahead of the account, which the next successful load reconciles.
+    func syncFavourites(_ ids: [String]) async {
+        accountPreferences = try? await service.setCameraPreferences(
+            CameraPreferencesUpdate(favouriteIds: ids, order: nil))
+    }
+
+    func saveOrder(_ ids: [String]) async {
+        accountPreferences = try? await service.setCameraPreferences(
+            CameraPreferencesUpdate(favouriteIds: nil, order: ids))
     }
 
     func load(showSpinner: Bool = true) async {
@@ -90,6 +121,9 @@ final class CamerasViewModel {
             cameras = try await service.cameras()
             lastLoadedAt = Date()
             error = nil
+            // Secondary: a gateway that cannot report preferences should still
+            // show the cameras, falling back to whatever this device remembers.
+            accountPreferences = try? await service.cameraPreferences()
         } catch let apiError as APIError {
             error = apiError
         } catch {
@@ -108,6 +142,7 @@ struct CamerasView: View {
     /// Cameras handed to the full-screen viewer, and where to start. Non-nil
     /// presents it.
     @State private var fullScreen: FullScreenRequest?
+    @State private var reordering = false
 
     struct FullScreenRequest: Identifiable {
         let cameras: [Camera]
@@ -134,6 +169,11 @@ struct CamerasView: View {
             if model == nil { model = CamerasViewModel(service: environment.service) }
             if snapshots == nil { snapshots = CameraSnapshotStore(service: environment.service) }
             await model?.load()
+            // The account is authoritative once it answers, so a second device
+            // inherits the stars rather than keeping its own set.
+            if let remote = model?.accountPreferences?.favouriteIds {
+                environment.preferences.favouriteCameraIds = remote
+            }
         }
         .onChange(of: router.pendingDestination) { _, destination in
             if case .camera(let id) = destination {
@@ -143,6 +183,11 @@ struct CamerasView: View {
         }
         .fullScreenCover(item: $fullScreen) { request in
             CameraLiveViewer(cameras: request.cameras, startAt: request.startIndex)
+        }
+        .sheet(isPresented: $reordering) {
+            if let model {
+                CameraOrderView(model: model)
+            }
         }
     }
 
@@ -169,6 +214,11 @@ struct CamerasView: View {
                         }
                     }
                     Divider()
+                    Button {
+                        reordering = true
+                    } label: {
+                        Label("Reorder cameras", systemImage: "arrow.up.arrow.down")
+                    }
                     Picker("Layout", selection: layoutBinding) {
                         Label("One up", systemImage: "square").tag(1)
                         Label("Two up", systemImage: "square.grid.2x2").tag(2)
@@ -266,6 +316,8 @@ struct CamerasView: View {
         }
         Button {
             environment.preferences.toggleFavourite(camera.id)
+            let ids = environment.preferences.favouriteCameraIds
+            Task { await model?.syncFavourites(ids) }
         } label: {
             Label(
                 environment.preferences.isFavourite(camera.id)

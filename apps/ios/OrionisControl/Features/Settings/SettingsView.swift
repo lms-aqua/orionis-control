@@ -21,6 +21,7 @@ struct SettingsView: View {
                 connectionSection
                 securitySection($preferences)
                 camerasSection($preferences)
+                infrastructureSection
                 notificationsSection
                 appearanceSection($preferences)
                 diagnosticsSection
@@ -185,6 +186,24 @@ struct SettingsView: View {
                 } label: {
                     LabeledContent("Recordings", value: "Storage and retention")
                 }
+            }
+        }
+    }
+
+    /// Administrator-only, and gated on the same role the gateway enforces.
+    @ViewBuilder
+    private var infrastructureSection: some View {
+        if environment.auth.state.user?.role == .administrator {
+            Section {
+                NavigationLink {
+                    InfrastructureView()
+                } label: {
+                    LabeledContent("Caddy and Authelia", value: "Manage")
+                }
+            } header: {
+                Text("Infrastructure")
+            } footer: {
+                Text("Affects every site on the server and everyone's ability to sign in.")
             }
         }
     }
