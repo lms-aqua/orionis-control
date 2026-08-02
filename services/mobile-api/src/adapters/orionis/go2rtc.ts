@@ -86,11 +86,28 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   }
 
   private toCamera(id: string, stream: Go2rtcStream | undefined): Camera {
+    // A configured camera that has dropped out of go2rtc entirely (its source
+    // went unreachable, so the sync pruned it) is still a camera the user owns.
+    // Rather than have it vanish from the app, it is surfaced as offline with a
+    // reason — but only when we have a label for it, so an unknown stream id is
+    // never invented into a camera.
+    const knownToHub = stream !== undefined;
     const online = Boolean(stream?.producers && stream.producers.length > 0);
     // go2rtc names its streams after the upstream device id. A configured label
     // turns that into something recognisable; without one, the id is shown
     // as-is rather than guessed at.
     const label = this.labels[id];
+
+    // Say plainly why nothing is playing, so the app can show a real reason when
+    // the camera is tapped instead of a blank failure.
+    let message: string | null = null;
+    if (!online) {
+      message = knownToHub
+        ? 'This camera is connected but is not sending video right now.'
+        : 'This camera is offline and not reachable on the network right now. ' +
+          'It will come back on its own once it reconnects.';
+    }
+
     return {
       id,
       name: label?.name ?? `Camera ${id}`,
@@ -101,7 +118,9 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       capabilities: { ...CAPABILITIES },
       health: {
         status: online ? 'online' : 'offline',
-        recording: false,
+        // MediaMTX records every camera it pulls continuously, so a live camera
+        // with a recorder configured is genuinely recording right now.
+        recording: online && this.recordings !== null,
         streaming: online,
         motionDetected: false,
         privacyEnabled: false,
@@ -110,22 +129,28 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
         bitrateKbps: null,
         frameRate: null,
         resolution: null,
-        message: online ? null : 'No producer is currently connected for this stream.',
+        message,
       },
       snapshotPath: `/cameras/${encodeURIComponent(id)}/snapshot`,
     };
   }
 
+  /** Every id we should show: whatever go2rtc has, plus every labelled camera. */
+  private roster(streamIds: string[]): string[] {
+    const ids = new Set<string>([...streamIds, ...Object.keys(this.labels)]);
+    return [...ids].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  }
+
   async listCameras(): Promise<Camera[]> {
     const streams = await this.streams();
-    return Object.keys(streams)
-      .sort()
-      .map((id) => this.toCamera(id, streams[id]));
+    return this.roster(Object.keys(streams)).map((id) => this.toCamera(id, streams[id]));
   }
 
   async getCamera(cameraId: string): Promise<Camera> {
     const streams = await this.streams();
-    if (!(cameraId in streams)) {
+    // A labelled camera that is temporarily gone from go2rtc still resolves — as
+    // offline — so opening it shows the reason rather than a 404.
+    if (!(cameraId in streams) && !(cameraId in this.labels)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
     return this.toCamera(cameraId, streams[cameraId]);
