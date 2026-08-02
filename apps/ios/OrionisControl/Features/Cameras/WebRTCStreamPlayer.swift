@@ -95,10 +95,12 @@ final class WebRTCStreamPlayer {
             Task { @MainActor in self?.resumeGathering() }
         }
         observer.onRemoteVideoTrack = { [weak self] track in
-            Task { @MainActor in self?.attach(videoTrack: track) }
+            let boxed = UncheckedTransfer(value: track)
+            Task { @MainActor in self?.attach(videoTrack: boxed.value) }
         }
         observer.onRemoteAudioTrack = { [weak self] track in
-            Task { @MainActor in self?.attach(audioTrack: track) }
+            let boxed = UncheckedTransfer(value: track)
+            Task { @MainActor in self?.attach(audioTrack: boxed.value) }
         }
         observer.onConnectionState = { [weak self] state in
             Task { @MainActor in self?.handle(connectionState: state) }
@@ -285,6 +287,17 @@ final class WebRTCStreamPlayer {
 /// on WebRTC's signalling thread) to closures. Kept separate from the
 /// `@MainActor` player so the delegate methods stay `nonisolated` and each hops
 /// to the main actor itself.
+/// Carries a WebRTC object from a signalling thread to the main actor.
+///
+/// libwebrtc's ObjC types are not `Sendable`-annotated, so handing a track to the
+/// main actor is flagged as a possible race. It is safe here for a specific reason:
+/// the delegate hands over a freshly created track it does not touch again, and the
+/// main actor's only use of it is to attach it to a renderer. This box states that
+/// the guarantee comes from WebRTC's ownership model rather than from the compiler.
+private struct UncheckedTransfer<Value>: @unchecked Sendable {
+    let value: Value
+}
+
 private final class PeerConnectionObserver: NSObject, RTCPeerConnectionDelegate {
     var onIceGatheringComplete: (@Sendable () -> Void)?
     /// The candidate's SDP line only: enough to tell a relay from a host

@@ -42,7 +42,8 @@ struct Endpoint: Sendable {
     var method: Method = .get
     var path: String
     var query: [String: String?] = [:]
-    var body: Encodable?
+    /// Sendable so `Endpoint` genuinely is: every body passed is a value type.
+    var body: (any Encodable & Sendable)?
     var headers: [String: String] = [:]
     /// Sensitive writes carry one so a retry can never execute twice.
     var idempotencyKey: String?
@@ -420,20 +421,24 @@ actor APIClient {
 }
 
 /// Type-erasing wrapper so `Endpoint.body` can hold any Encodable.
-private struct AnyEncodable: Encodable {
-    private let encodeClosure: (Encoder) throws -> Void
-    init(_ wrapped: Encodable) { encodeClosure = wrapped.encode }
+private struct AnyEncodable: Encodable, @unchecked Sendable {
+    private let encodeClosure: @Sendable (Encoder) throws -> Void
+    init(_ wrapped: any Encodable & Sendable) { encodeClosure = wrapped.encode }
     func encode(to encoder: Encoder) throws { try encodeClosure(encoder) }
 }
 
 extension ISO8601DateFormatter {
-    static let orionisWithFractionalSeconds: ISO8601DateFormatter = {
+    // These are shared deliberately: constructing a formatter is expensive and
+    // these are only ever asked to format or parse, which Foundation's formatters
+    // support concurrently. `nonisolated(unsafe)` records that judgement instead of
+    // leaving a bare concurrency warning that looks unexamined.
+    nonisolated(unsafe) static let orionisWithFractionalSeconds: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
 
-    static let orionisPlain: ISO8601DateFormatter = {
+    nonisolated(unsafe) static let orionisPlain: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f
