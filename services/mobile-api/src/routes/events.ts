@@ -251,6 +251,7 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         start: ref.start,
         duration: ref.durationSeconds,
         range: req.headers.range,
+        ifNoneMatch: req.headers['if-none-match'],
         timeoutMs: config.orionis.timeoutMs,
       });
 
@@ -290,6 +291,7 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         start: q.start,
         duration: q.duration,
         range: req.headers.range,
+        ifNoneMatch: req.headers['if-none-match'],
         timeoutMs: config.orionis.timeoutMs,
       });
 

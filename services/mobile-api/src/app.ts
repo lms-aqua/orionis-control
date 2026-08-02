@@ -168,10 +168,7 @@ export async function buildApp(services: AppServices): Promise<FastifyInstance> 
   app.get('/altstore/source.json', async (_req, reply) => {
     try {
       const body = await getAltstoreSource();
-      return reply
-        .type('application/json')
-        .header('cache-control', 'no-cache')
-        .send(body);
+      return reply.type('application/json').header('cache-control', 'no-cache').send(body);
     } catch {
       return reply.status(503).send({ error: 'The app source is temporarily unavailable.' });
     }

@@ -37,6 +37,9 @@ final class RecordingsTimelineModel {
 
     /// Where the loaded window began, so playback position maps back to wall time.
     private var windowStart: Date?
+    /// Bumped per load so a slow request that lost the race cannot yank the
+    /// viewer back to a moment they already scrubbed away from.
+    private var loadGeneration = 0
     // Short windows load fast and make scrubbing responsive; playback rolls into
     // the next one automatically, so continuity isn't lost.
     private let windowSeconds = 90
@@ -77,7 +80,7 @@ final class RecordingsTimelineModel {
             // Start at the most recent footage — that's what people look at first.
             if let last = coverage.last {
                 currentTime = min(last.end - 1, dayEnd)
-                loadWindow(from: currentTime, autoplay: false)
+                loadWindow(containing: currentTime, autoplay: false)
             } else {
                 currentTime = dayEnd
                 player.replaceCurrentItem(with: nil)
@@ -98,7 +101,18 @@ final class RecordingsTimelineModel {
     }
 
     func scrub(to date: Date) {
-        currentTime = clamp(date)
+        let target = clamp(date)
+        currentTime = target
+        // Follow the finger while the moment is already buffered. This costs
+        // nothing and is what makes dragging feel immediate; anything outside the
+        // loaded window waits for the drag to end rather than firing a request
+        // per pixel.
+        if isWithinLoadedWindow(target), let windowStart {
+            player.seek(
+                to: CMTime(seconds: target.timeIntervalSince(windowStart), preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero)
+        }
     }
 
     func endScrub() {
@@ -122,32 +136,75 @@ final class RecordingsTimelineModel {
 
     // MARK: Seeking / windows
 
+    /// Windows start on a fixed grid rather than wherever the finger landed.
+    ///
+    /// Two reasons, both about speed. A window that starts at an arbitrary instant
+    /// is unique to that one scrub, so nothing — not the gateway's cache, not the
+    /// device's HTTP cache — can ever be reused. And dragging within footage that
+    /// is already loaded should not touch the network at all, which is only
+    /// decidable if windows have stable boundaries.
+    private func alignedWindowStart(for date: Date) -> Date {
+        let seconds = date.timeIntervalSince1970
+        let size = Double(windowSeconds)
+        return Date(timeIntervalSince1970: (seconds / size).rounded(.down) * size)
+    }
+
+    /// True when `date` falls inside the window currently loaded in the player.
+    private func isWithinLoadedWindow(_ date: Date) -> Bool {
+        guard let windowStart, player.currentItem != nil else { return false }
+        let offset = date.timeIntervalSince(windowStart)
+        return offset >= 0 && offset < Double(windowSeconds)
+    }
+
     private func seek(to date: Date, autoplay: Bool) {
         let target = clamp(date)
         currentTime = target
+
+        // The fast path: the moment is already in the player's buffer, so this is
+        // a local seek with no request and no new item.
+        if isWithinLoadedWindow(target), let windowStart {
+            let offset = target.timeIntervalSince(windowStart)
+            player.seek(
+                to: CMTime(seconds: offset, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero)
+            if autoplay {
+                player.play()
+                isPlaying = true
+            }
+            return
+        }
+
         if isCovered(target) {
-            loadWindow(from: target, autoplay: autoplay)
+            loadWindow(containing: target, autoplay: autoplay)
         } else if let next = nextCoverageStart(after: target) {
             currentTime = next
-            loadWindow(from: next, autoplay: autoplay)
+            loadWindow(containing: next, autoplay: autoplay)
         } else {
             player.replaceCurrentItem(with: nil)
             isPlaying = false
         }
     }
 
-    private func loadWindow(from date: Date, autoplay: Bool) {
-        windowStart = date
-        let path = "/recordings/clip"
+    private func loadWindow(containing date: Date, autoplay: Bool) {
+        let start = alignedWindowStart(for: date)
+        let offset = max(0, date.timeIntervalSince(start))
+        windowStart = start
+        loadGeneration &+= 1
+        let generation = loadGeneration
+
         let query = [
             "cameraId": cameraId,
-            "start": Self.iso.string(from: date),
+            "start": Self.iso.string(from: start),
             "duration": String(windowSeconds),
         ]
         Task { [weak self] in
             guard let self else { return }
             do {
-                let media = try await self.api.authorizedMedia(path: path, query: query)
+                let media = try await self.api.authorizedMedia(path: "/recordings/clip", query: query)
+                // A later scrub already superseded this load; dropping it keeps a
+                // slow request from yanking the viewer back to an old moment.
+                guard generation == self.loadGeneration else { return }
                 let asset = AVURLAsset(
                     url: media.url,
                     options: media.headers.isEmpty
@@ -155,11 +212,18 @@ final class RecordingsTimelineModel {
                 let item = AVPlayerItem(asset: asset)
                 self.observeEnd(of: item)
                 self.player.replaceCurrentItem(with: item)
+                if offset > 0.1 {
+                    self.player.seek(
+                        to: CMTime(seconds: offset, preferredTimescale: 600),
+                        toleranceBefore: .zero,
+                        toleranceAfter: .zero)
+                }
                 if autoplay {
                     self.player.play()
                     self.isPlaying = true
                 }
             } catch {
+                guard generation == self.loadGeneration else { return }
                 self.errorText = "Couldn't load footage at that time."
             }
         }

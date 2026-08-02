@@ -185,8 +185,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     // HLS relay or the WebRTC signalling proxy — so go2rtc is never exposed. The
     // route fills in the token-bound playbackUrl and mints TURN ICE servers; this
     // just carries the negotiated protocol through.
-    const protocol: StreamProtocol =
-      input.preferredProtocols[0] === 'webrtc' ? 'webrtc' : 'hls';
+    const protocol: StreamProtocol = input.preferredProtocols[0] === 'webrtc' ? 'webrtc' : 'hls';
     return {
       id: `go2rtc:${input.cameraId}`,
       cameraId: input.cameraId,
