@@ -96,7 +96,10 @@ jobs:
 
           SIZE=$(stat -f%z "build/$IPA_NAME")
           SHA=$(shasum -a 256 "build/$IPA_NAME" | awk '{print $1}')
-          DATE=$(date -u +%Y-%m-%d)
+          # Full timestamp, not a bare date. A date-only value is read as UTC
+          # midnight, and UTC midnight is the previous evening in the Americas --
+          # so a build published today showed up in the installer as "yesterday".
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           {
             echo "version=$VERSION"
