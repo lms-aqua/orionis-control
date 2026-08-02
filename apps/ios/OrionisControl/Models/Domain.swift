@@ -504,6 +504,16 @@ struct GatewayCapabilities: Codable, Sendable, Equatable {
     let streaming: Bool
     let adguard: Bool
     let push: Bool
+    /// Whether anything upstream can actually detect events.
+    ///
+    /// Distinct from `events`, which only says the endpoint exists. A healthy
+    /// events endpoint with no detection source behind it can never return
+    /// anything, and saying "nothing has been recorded" in that case describes a
+    /// quiet period rather than a feature that cannot work.
+    ///
+    /// Optional so an older gateway that does not report it still decodes; nil
+    /// means "not stated", which is treated as unknown rather than as false.
+    let eventDetection: Bool?
 }
 
 struct GatewayAuthentication: Codable, Sendable, Equatable {

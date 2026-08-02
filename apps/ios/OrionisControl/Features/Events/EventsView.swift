@@ -184,6 +184,18 @@ struct EventsView: View {
             } else {
                 ErrorStateView(error: error, retry: { await model.load() })
             }
+        } else if model.events.isEmpty, environment.meta?.capabilities.eventDetection == false {
+            // The endpoint is healthy and will never return anything, because
+            // nothing upstream detects motion or objects. Saying "no events" here
+            // would describe a quiet period instead of a feature that cannot work.
+            EmptyStateView(
+                title: "Detection isn't set up",
+                message:
+                    "Your cameras are recording continuously, but none of them detect motion or objects yet — so there are no events to list. Recorded footage is still available on each camera's timeline.",
+                systemImage: "sensor.tag.radiowaves.forward.slash",
+                actionTitle: nil,
+                action: nil
+            )
         } else if model.events.isEmpty {
             EmptyStateView(
                 title: model.filter.isFiltered ? "No matching events" : "No events",
