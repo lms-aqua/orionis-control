@@ -147,8 +147,19 @@ actor APIClient {
     /// media directly and cannot go through `request(...)`, so it needs both the
     /// absolute URL and the auth header handed to it explicitly — exactly as live
     /// playback does with its per-stream token.
-    func authorizedMedia(path: String) async throws -> (url: URL, headers: [String: String]) {
-        let url = baseURL.appending(path: "api/mobile/v1" + path)
+    func authorizedMedia(path: String, query: [String: String] = [:]) async throws -> (
+        url: URL, headers: [String: String]
+    ) {
+        var components = URLComponents(
+            url: baseURL.appending(path: "api/mobile/v1" + path), resolvingAgainstBaseURL: false)
+        if !query.isEmpty {
+            components?.queryItems = query
+                .sorted { $0.key < $1.key }
+                .map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        guard let url = components?.url else {
+            throw APIError.configuration("Could not build a media URL.")
+        }
         var headers: [String: String] = [:]
         if let token = try await tokenProvider?.validAccessToken() {
             headers["Authorization"] = "Bearer \(token)"

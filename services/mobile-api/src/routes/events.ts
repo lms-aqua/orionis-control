@@ -33,6 +33,15 @@ const RecordingQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// Arbitrary playback window for the scrubbable timeline: footage from any
+// instant, not just a recording's own boundaries. Duration is capped so one
+// request can't ask the recorder for an unbounded span.
+const ClipWindowSchema = z.object({
+  cameraId: z.string().min(1).max(64),
+  start: z.string().datetime(),
+  duration: z.coerce.number().int().min(1).max(1800).default(600),
+});
+
 const AcknowledgeBody = z.object({
   note: z.string().max(500).nullable().optional(),
 });
@@ -274,6 +283,66 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         requestId: req.id,
         ip: req.ip,
         metadata: { cameraId: ref.cameraId, startedAt: ref.start },
+      });
+
+      return reply
+        .code(upstream.status === 206 ? 206 : 200)
+        .headers(headers)
+        .send(Buffer.from(await upstream.arrayBuffer()));
+    },
+  );
+
+  // --- GET /recordings/clip -------------------------------------------------
+  // Footage from an arbitrary instant, for the scrubbable timeline: the client
+  // asks for `start` + `duration` directly instead of a recording id, so
+  // dragging the playhead plays from that exact moment. Same relay + Range
+  // passthrough as the by-id clip, so the recorder is never exposed.
+  app.get<{ Querystring: Record<string, string> }>(
+    '/recordings/clip',
+    { preHandler: requirePermission('recordings.view') },
+    async (req, reply) => {
+      const { config, audit } = req.services;
+      if (!config.orionis.recordingsBaseUrl) {
+        throw new AppError('SERVICE_NOT_CONFIGURED', 'No recording store is configured.');
+      }
+      const q = ClipWindowSchema.parse(req.query);
+
+      const params = new URLSearchParams({
+        path: q.cameraId,
+        start: q.start,
+        duration: String(q.duration),
+      });
+      const range = req.headers.range;
+      let upstream: Response;
+      try {
+        upstream = await fetch(`${config.orionis.recordingsBaseUrl}/get?${params.toString()}`, {
+          headers: typeof range === 'string' ? { range } : undefined,
+          signal: AbortSignal.timeout(config.orionis.timeoutMs),
+        });
+      } catch {
+        throw new AppError('UPSTREAM_UNAVAILABLE', 'The recording store did not respond.');
+      }
+      if (!upstream.ok && upstream.status !== 206) {
+        throw new AppError('NOT_FOUND', 'No footage is available at that time.');
+      }
+
+      const headers: Record<string, string> = {
+        'content-type': upstream.headers.get('content-type') ?? 'video/mp4',
+        'accept-ranges': 'bytes',
+        'cache-control': 'private, no-store',
+      };
+      const contentRange = upstream.headers.get('content-range');
+      if (contentRange) headers['content-range'] = contentRange;
+
+      audit.record({
+        action: 'recording.played',
+        actor: actorOf(req),
+        outcome: 'success',
+        targetType: 'recording',
+        targetId: `${q.cameraId}@${q.start}`,
+        requestId: req.id,
+        ip: req.ip,
+        metadata: { cameraId: q.cameraId, startedAt: q.start, window: q.duration },
       });
 
       return reply
