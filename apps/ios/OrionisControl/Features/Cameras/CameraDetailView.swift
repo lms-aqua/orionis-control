@@ -188,6 +188,7 @@ struct CameraDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     detailsSection(camera)
+                    recordingsSection(camera)
                     eventsSection(model)
                 }
                 .padding(16)
@@ -601,6 +602,32 @@ struct CameraDetailView: View {
         }
         .font(.subheadline)
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func recordingsSection(_ camera: Camera) -> some View {
+        NavigationLink {
+            RecordingsView(cameraId: camera.id, cameraName: camera.name)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recordings").font(.headline)
+                    Text("Scrub the last 7 days of footage")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

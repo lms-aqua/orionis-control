@@ -141,6 +141,20 @@ actor APIClient {
     func setTokenProvider(_ provider: TokenProviding?) { tokenProvider = provider }
 
     var currentBaseURL: URL { baseURL }
+
+    /// A fully-qualified URL for a media sub-resource (e.g. a recording clip)
+    /// together with a bearer header valid at call time. AVFoundation fetches
+    /// media directly and cannot go through `request(...)`, so it needs both the
+    /// absolute URL and the auth header handed to it explicitly — exactly as live
+    /// playback does with its per-stream token.
+    func authorizedMedia(path: String) async throws -> (url: URL, headers: [String: String]) {
+        let url = baseURL.appending(path: "api/mobile/v1" + path)
+        var headers: [String: String] = [:]
+        if let token = try await tokenProvider?.validAccessToken() {
+            headers["Authorization"] = "Bearer \(token)"
+        }
+        return (url, headers)
+    }
     var conservingData: Bool { get async { await monitor.shouldConserveData } }
 
     // MARK: - Requests
