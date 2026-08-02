@@ -407,9 +407,18 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // Validates a stream token (bearer header or ?token=) and returns the live
-  // stream_sessions row. Shared by the HLS relay and the WebRTC signalling proxy
-  // so both enforce identical authorisation, fail-closed.
+  // Validates a stream token and returns the live stream_sessions row. Shared by
+  // the HLS relay and the WebRTC signalling proxy so both enforce identical
+  // authorisation, fail-closed.
+  //
+  // The token is accepted from a bearer header or, for HLS sub-resources, from a
+  // query parameter. That second route is a deliberate exception to keeping
+  // credentials out of URLs: AVFoundation does not carry the asset's
+  // Authorization header onto the playlist and segment requests it derives, so a
+  // header-only design cannot play HLS at all. What bounds it is that the token is
+  // short-lived, bound to one user, session and camera, revocable at any time, and
+  // every response carrying such a URL is served no-store so it is not written to
+  // a shared cache.
   const resolveStream = async (
     r: FastifyRequest,
   ): Promise<{ token: string; row: Record<string, unknown> }> => {

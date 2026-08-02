@@ -136,6 +136,8 @@
           "system.view",
           "system.actions.run",
           "audit.view",
+          "infra.view",
+          "infra.manage",
           "devices.manage"
         ]
       },
