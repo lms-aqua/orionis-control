@@ -10,6 +10,7 @@
 import { AppError } from '../../lib/errors.ts';
 import { UpstreamClient } from '../../lib/http-upstream.ts';
 import { MediaMtxRecordings } from './mediamtx-recordings.ts';
+import { UNKNOWN_STORAGE } from './types.ts';
 import type {
   Camera,
   CameraControlRequest,
@@ -257,13 +258,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
 
   async getStorageStatus(): Promise<StorageStatus> {
     if (!this.recordings) {
-      return {
-        totalBytes: null,
-        usedBytes: null,
-        freeBytes: null,
-        retentionDays: null,
-        oldestRecordingAt: null,
-      };
+      return { ...UNKNOWN_STORAGE };
     }
     return this.recordings.storage(await this.cameraIndex());
   }

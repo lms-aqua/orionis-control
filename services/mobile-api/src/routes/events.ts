@@ -221,6 +221,15 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  // --- GET /recordings/storage ----------------------------------------------
+  // Registered before /recordings/:recordingId so "storage" is not mistaken for a
+  // recording id.
+  app.get(
+    '/recordings/storage',
+    { preHandler: requirePermission('recordings.view') },
+    async (req) => ok(await req.services.orionis.getStorageStatus(), req.id),
+  );
+
   // --- GET /recordings/:recordingId -----------------------------------------
   app.get<{ Params: { recordingId: string } }>(
     '/recordings/:recordingId',

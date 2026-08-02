@@ -101,6 +101,10 @@ const RawSchema = z.object({
   // MediaMTX playback server, e.g. http://orionis-hls:9996. When set, the
   // gateway serves real recordings from it; blank means no recording history.
   ORIONIS_RECORDINGS_BASE_URL: z.string().default(''),
+  // Read-only mount of the recorder's volume. Without it, storage figures are
+  // unknown rather than guessed: the playback API reports neither sizes nor
+  // capacity, and duration x bitrate would be an invented number.
+  ORIONIS_RECORDINGS_PATH: z.string().default(''),
   // Must match the recorder's own retention, so retentionUntil is not a lie.
   ORIONIS_RECORDINGS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
   // TURN relay for WebRTC. Comma separated, e.g.
@@ -160,6 +164,8 @@ export interface OrionisConfig {
   cameraLabels: Record<string, CameraLabel>;
   /** MediaMTX playback server base URL; empty disables recordings. */
   recordingsBaseUrl: string;
+  /** Read-only path to the recorder's storage; empty means unknown. */
+  recordingsPath: string;
   /** Recorder retention in days, or null when not configured. */
   recordingsRetentionDays: number | null;
   /** Whether WebRTC may be advertised to clients. */
@@ -404,6 +410,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       hlsBaseUrl: e.ORIONIS_HLS_BASE_URL.replace(/\/+$/, ''),
       cameraLabels: parseCameraLabels(e.ORIONIS_CAMERA_LABELS),
       recordingsBaseUrl: e.ORIONIS_RECORDINGS_BASE_URL.replace(/\/+$/, ''),
+      recordingsPath: e.ORIONIS_RECORDINGS_PATH,
       recordingsRetentionDays:
         e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
       enableWebrtc: e.ORIONIS_ENABLE_WEBRTC,

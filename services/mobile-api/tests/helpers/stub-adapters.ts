@@ -20,6 +20,7 @@ import type {
   StorageStatus,
   StreamSession,
 } from '../../src/adapters/orionis/types.ts';
+import { UNKNOWN_STORAGE } from '../../src/adapters/orionis/types.ts';
 import type {
   AdGuardAdapter,
   AdGuardStats,
@@ -200,11 +201,27 @@ export class StubOrionisAdapter implements OrionisAdapter {
   async getStorageStatus(): Promise<StorageStatus> {
     this.guard();
     return {
+      ...UNKNOWN_STORAGE,
       totalBytes: 4_000_000_000_000,
       usedBytes: 2_800_000_000_000,
       freeBytes: 1_200_000_000_000,
+      recordingsBytes: 900_000_000_000,
+      fileCount: 1200,
+      dailyBytes: 17_000_000_000,
+      daysRemaining: 70,
       retentionDays: 30,
       oldestRecordingAt: '2026-07-01T00:00:00.000Z',
+      newestRecordingAt: '2026-08-01T00:00:00.000Z',
+      perCamera: [
+        {
+          cameraId: 'cam-front',
+          cameraName: 'Front',
+          bytes: 500_000_000_000,
+          fileCount: 700,
+          oldestAt: '2026-07-01T00:00:00.000Z',
+          newestAt: '2026-08-01T00:00:00.000Z',
+        },
+      ],
     };
   }
   async listServiceHealth(): Promise<OrionisServiceHealth[]> {

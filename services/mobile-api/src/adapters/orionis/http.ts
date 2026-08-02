@@ -27,6 +27,7 @@ import type {
   StreamQuality,
   StreamSession,
 } from './types.ts';
+import { UNKNOWN_STORAGE } from './types.ts';
 
 const ProtocolSchema = z.enum(['webrtc', 'llhls', 'hls', 'mjpeg']);
 const QualitySchema = z.enum(['auto', 'low', 'medium', 'high']);
@@ -433,6 +434,7 @@ export class HttpOrionisAdapter implements OrionisAdapter {
       'storage status',
     );
     return {
+      ...UNKNOWN_STORAGE,
       totalBytes: parsed.total_bytes,
       usedBytes: parsed.used_bytes,
       freeBytes: parsed.free_bytes,

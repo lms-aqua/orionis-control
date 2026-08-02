@@ -57,6 +57,7 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
                   config.orionis.timeoutMs,
                   config.orionis.recordingsRetentionDays,
                   fetchImpl,
+                  config.orionis.recordingsPath,
                 )
               : null,
             config.orionis.enableWebrtc,

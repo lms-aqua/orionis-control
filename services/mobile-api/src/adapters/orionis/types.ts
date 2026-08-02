@@ -120,12 +120,31 @@ export interface Recording {
   markers: { at: string; type: CameraEventType; eventId: string }[];
 }
 
+export interface CameraStorageUsage {
+  cameraId: string;
+  cameraName: string | null;
+  bytes: number;
+  fileCount: number;
+  oldestAt: string | null;
+  newestAt: string | null;
+}
+
 export interface StorageStatus {
+  /** The filesystem holding recordings. Null when it cannot be inspected. */
   totalBytes: number | null;
   usedBytes: number | null;
   freeBytes: number | null;
+  /** Consumed by recordings specifically, as opposed to the whole filesystem. */
+  recordingsBytes: number | null;
+  fileCount: number | null;
+  /** Average bytes written per day, or null with too little history to divide by. */
+  dailyBytes: number | null;
+  /** Days of footage the free space can still absorb at the current rate. */
+  daysRemaining: number | null;
   retentionDays: number | null;
   oldestRecordingAt: string | null;
+  newestRecordingAt: string | null;
+  perCamera: CameraStorageUsage[];
 }
 
 export interface OrionisServiceHealth {
@@ -222,3 +241,21 @@ export interface OrionisAdapter {
   listServiceHealth(): Promise<OrionisServiceHealth[]>;
   runServiceAction(serviceId: string, action: string): Promise<{ ok: boolean; message: string }>;
 }
+
+/**
+ * Storage when nothing can be measured. Capacity stays null rather than 0: a
+ * reported 0 free would read as "disk full" instead of "unknown".
+ */
+export const UNKNOWN_STORAGE: StorageStatus = {
+  totalBytes: null,
+  usedBytes: null,
+  freeBytes: null,
+  recordingsBytes: null,
+  fileCount: null,
+  dailyBytes: null,
+  daysRemaining: null,
+  retentionDays: null,
+  oldestRecordingAt: null,
+  newestRecordingAt: null,
+  perCamera: [],
+};

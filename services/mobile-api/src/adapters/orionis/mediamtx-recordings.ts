@@ -11,6 +11,8 @@
  * retention policy has already deleted.
  */
 import { AppError } from '../../lib/errors.ts';
+import { measureRecordingStorage, projectDailyBytes } from '../../lib/recording-storage.ts';
+import { UNKNOWN_STORAGE } from './types.ts';
 import type { Page, Recording, RecordingQuery, StorageStatus } from './types.ts';
 
 interface PlaybackEntry {
@@ -56,6 +58,8 @@ export class MediaMtxRecordings {
     private readonly timeoutMs: number,
     private readonly retentionDays: number | null,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** Read-only mount of the recorder's volume; empty means sizes are unknown. */
+    private readonly storagePath: string = '',
   ) {}
 
   private async segments(cameraId: string): Promise<RecordingRef[]> {
@@ -179,7 +183,10 @@ export class MediaMtxRecordings {
     return `${this.baseUrl}/get?${params.toString()}`;
   }
 
-  async storage(cameras: { id: string }[]): Promise<StorageStatus> {
+  async storage(cameras: { id: string; name?: string | null }[]): Promise<StorageStatus> {
+    // Oldest footage comes from the playback API, which is authoritative about
+    // what is actually playable — a file can exist on disk that the recorder will
+    // not serve.
     let oldest: string | null = null;
     for (const camera of cameras) {
       const refs = await this.segments(camera.id).catch(() => []);
@@ -187,14 +194,36 @@ export class MediaMtxRecordings {
         if (oldest === null || ref.start < oldest) oldest = ref.start;
       }
     }
+
+    const measured = await measureRecordingStorage(this.storagePath);
+    const names = new Map(cameras.map((c) => [c.id, c.name ?? null]));
+    const dailyBytes = projectDailyBytes(measured);
+
     return {
-      // The playback server reports neither capacity nor usage, and the gateway
-      // has no view of the recorder's filesystem.
-      totalBytes: null,
-      usedBytes: null,
-      freeBytes: null,
+      ...UNKNOWN_STORAGE,
+      totalBytes: measured.totalBytes,
+      usedBytes: measured.usedBytes,
+      freeBytes: measured.freeBytes,
+      recordingsBytes: measured.recordingsBytes,
+      fileCount: measured.fileCount,
+      dailyBytes,
+      // How much more footage the free space can absorb at the current rate.
+      // Null when the rate is unknown, rather than an invented number.
+      daysRemaining:
+        dailyBytes && dailyBytes > 0 && measured.freeBytes !== null
+          ? Math.floor(measured.freeBytes / dailyBytes)
+          : null,
       retentionDays: this.retentionDays,
-      oldestRecordingAt: oldest ? new Date(oldest).toISOString() : null,
+      oldestRecordingAt: oldest ? new Date(oldest).toISOString() : measured.oldestRecordingAt,
+      newestRecordingAt: measured.newestRecordingAt,
+      perCamera: measured.cameras.map((c) => ({
+        cameraId: c.cameraId,
+        cameraName: names.get(c.cameraId) ?? null,
+        bytes: c.bytes,
+        fileCount: c.fileCount,
+        oldestAt: c.oldestAt,
+        newestAt: c.newestAt,
+      })),
     };
   }
 }
