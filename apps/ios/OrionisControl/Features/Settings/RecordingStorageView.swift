@@ -35,7 +35,9 @@ final class RecordingStorageModel {
         } catch let apiError as APIError {
             error = apiError
         } catch {
-            error = .unexpectedStatus(0, requestId: nil)
+            // `self.` is load-bearing: inside an untyped catch, `error` is the
+            // caught value, not this property.
+            self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 
@@ -53,7 +55,9 @@ final class RecordingStorageModel {
         } catch let apiError as APIError {
             error = apiError
         } catch {
-            error = .unexpectedStatus(0, requestId: nil)
+            // `self.` is load-bearing: inside an untyped catch, `error` is the
+            // caught value, not this property.
+            self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 }
