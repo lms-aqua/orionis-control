@@ -468,17 +468,64 @@ struct SystemActionResult: Codable, Sendable, Equatable {
     let ranAt: Date
 }
 
+struct CameraStorageUsage: Codable, Sendable, Equatable, Identifiable {
+    let cameraId: String
+    let cameraName: String?
+    let bytes: Double
+    let fileCount: Int
+    let oldestAt: Date?
+    let newestAt: Date?
+
+    var id: String { cameraId }
+    var displayName: String { cameraName ?? cameraId }
+}
+
 struct StorageStatus: Codable, Sendable, Equatable {
+    /// The filesystem holding recordings. Shared with everything else on the
+    /// host, so these are context rather than the headline.
     let totalBytes: Double?
     let usedBytes: Double?
     let freeBytes: Double?
+    /// What recordings themselves occupy, and the budget they are allowed.
+    let recordingsBytes: Double?
+    let quotaBytes: Double?
+    let quotaUsedRatio: Double?
+    let quotaFreeBytes: Double?
+    let fileCount: Int?
+    /// Measured write rate and how long the remaining budget lasts at it.
+    let dailyBytes: Double?
+    let daysRemaining: Int?
     let retentionDays: Int?
     let oldestRecordingAt: Date?
+    let newestRecordingAt: Date?
+    let perCamera: [CameraStorageUsage]?
 
+    /// How full the *recordings budget* is.
+    ///
+    /// Falls back to the filesystem only when no budget is configured. Showing
+    /// disk usage under a heading about recordings answered a question nobody
+    /// asked: on a shared host, "105 GB of 5.8 TB used" says nothing about how
+    /// much room recordings have left.
     var usedFraction: Double? {
+        if let ratio = quotaUsedRatio { return ratio }
+        if let quota = quotaBytes, quota > 0, let used = recordingsBytes {
+            return min(1, used / quota)
+        }
         guard let total = totalBytes, let used = usedBytes, total > 0 else { return nil }
         return used / total
     }
+
+    /// Bytes recordings occupy, whichever figure the gateway could measure.
+    var recordingsUsed: Double? { recordingsBytes ?? usedBytes }
+
+    /// The budget, or the disk when unbudgeted.
+    var recordingsCapacity: Double? { quotaBytes ?? totalBytes }
+
+    /// Space recordings may still take, honouring both budget and disk.
+    var recordingsHeadroom: Double? { quotaFreeBytes ?? freeBytes }
+
+    /// True when a real budget is in force, as opposed to falling back to the disk.
+    var isBudgeted: Bool { (quotaBytes ?? 0) > 0 }
 }
 
 // MARK: - Audit

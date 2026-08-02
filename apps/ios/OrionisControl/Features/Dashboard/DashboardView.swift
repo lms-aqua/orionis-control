@@ -225,19 +225,70 @@ struct DashboardView: View {
         DashboardCard(title: "Recording storage", systemImage: "internaldrive.fill") {
             if let storage = snapshot.storage.data {
                 if let fraction = storage.usedFraction {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         ProgressView(value: fraction)
                             .tint(fraction > 0.9 ? .red : fraction > 0.75 ? .orange : .accentColor)
-                        HStack {
-                            Text("\((storage.usedBytes ?? 0).formattedBytes) used")
+
+                        // Recordings against their budget, not the whole disk:
+                        // the filesystem is shared with everything else on the
+                        // host, so its free space says nothing about how much
+                        // room recordings actually have.
+                        HStack(alignment: .firstTextBaseline) {
+                            Text((storage.recordingsUsed ?? 0).formattedBytes)
+                                .font(.title3.weight(.semibold))
+                            if let capacity = storage.recordingsCapacity {
+                                Text("of \(capacity.formattedBytes)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
                             Spacer()
-                            Text("\((storage.freeBytes ?? 0).formattedBytes) free")
+                            Text("\(Int((fraction * 100).rounded()))%")
+                                .font(.subheadline.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
-                        .font(.caption)
+
+                        // Facts worth showing only when the gateway measured them.
+                        VStack(alignment: .leading, spacing: 3) {
+                            if let daily = storage.dailyBytes, daily > 0 {
+                                storageDetail(
+                                    "Recording about \(daily.formattedBytes) a day")
+                            }
+                            if let days = storage.daysRemaining {
+                                storageDetail(
+                                    days <= 1
+                                        ? "Under a day of room left at that rate"
+                                        : "About \(days) days of room left at that rate")
+                            }
+                            if let retention = storage.retentionDays {
+                                storageDetail(
+                                    "Footage is kept for \(retention) day\(retention == 1 ? "" : "s")")
+                            }
+                            if let oldest = storage.oldestRecordingAt {
+                                storageDetail(
+                                    "Oldest footage \(oldest.formatted(date: .abbreviated, time: .shortened))")
+                            }
+                        }
+
+                        if let cameras = storage.perCamera, !cameras.isEmpty {
+                            Divider()
+                            ForEach(cameras) { camera in
+                                HStack {
+                                    Text(camera.displayName)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(camera.bytes.formattedBytes)
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
                         if fraction > 0.9 {
                             Label(
-                                "Storage is nearly full. Older recordings will be removed sooner than the retention setting suggests.",
+                                storage.isBudgeted
+                                    ? "The recording budget is nearly full. The oldest footage will be removed to stay inside it."
+                                    : "Storage is nearly full. Older recordings will be removed sooner than the retention setting suggests.",
                                 systemImage: "exclamationmark.triangle.fill"
                             )
                             .font(.caption)
@@ -245,10 +296,9 @@ struct DashboardView: View {
                         }
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel(
-                        "Storage \(Int(fraction * 100)) percent used")
+                    .accessibilityLabel(storageAccessibilityLabel(storage, fraction: fraction))
                 } else {
-                    Text("The gateway did not report storage capacity.")
+                    Text("The gateway did not report how much space recordings are using.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -256,6 +306,21 @@ struct DashboardView: View {
                 SectionUnavailable(section: snapshot.storage.apiError, feature: "Storage")
             }
         }
+    }
+
+    private func storageDetail(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func storageAccessibilityLabel(_ storage: StorageStatus, fraction: Double) -> String {
+        var parts = ["Recordings using \(Int((fraction * 100).rounded())) percent of available space"]
+        if let used = storage.recordingsUsed, let capacity = storage.recordingsCapacity {
+            parts.append("\(used.formattedBytes) of \(capacity.formattedBytes)")
+        }
+        if let days = storage.daysRemaining { parts.append("about \(days) days of room left") }
+        return parts.joined(separator: ", ")
     }
 
     @ViewBuilder
