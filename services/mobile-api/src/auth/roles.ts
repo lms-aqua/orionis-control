@@ -34,6 +34,8 @@ export const PERMISSIONS = [
   'system.view',
   'system.actions.run',
   'audit.view',
+  'infra.view',
+  'infra.manage',
   'devices.manage',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -70,6 +72,10 @@ const ADMINISTRATOR: Permission[] = [
   'system.actions.run',
   'audit.view',
   'devices.manage',
+  // Caddy and Authelia can take every site on the host offline, so these are
+  // administrator-only and never granted to an operator.
+  'infra.view',
+  'infra.manage',
 ];
 
 const MATRIX: Record<Role, ReadonlySet<Permission>> = {

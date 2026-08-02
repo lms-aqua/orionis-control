@@ -10,6 +10,7 @@ import { AuditLog } from './audit/audit.ts';
 import { HttpOrionisAdapter } from './adapters/orionis/http.ts';
 import { Go2rtcOrionisAdapter } from './adapters/orionis/go2rtc.ts';
 import { MediaMtxRecordings } from './adapters/orionis/mediamtx-recordings.ts';
+import { CaddyManagerClient } from './adapters/infra/caddymanager.ts';
 import { UnconfiguredOrionisAdapter } from './adapters/orionis/unconfigured.ts';
 import type { OrionisAdapter } from './adapters/orionis/types.ts';
 import { HttpAdGuardAdapter, UnconfiguredAdGuardAdapter } from './adapters/adguard/http.ts';
@@ -23,6 +24,7 @@ export interface AppServices {
   oidc: OidcClient;
   audit: AuditLog;
   orionis: OrionisAdapter;
+  infra: CaddyManagerClient;
   adguard: AdGuardAdapter;
   push: PushService;
   startedAt: Date;
@@ -41,6 +43,13 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
   migrate(db);
 
   const fetchImpl = opts.fetchImpl ?? fetch;
+
+  const infra = new CaddyManagerClient(
+    config.infra.baseUrl,
+    config.infra.apiKey,
+    config.infra.timeoutMs,
+    fetchImpl,
+  );
 
   const orionis: OrionisAdapter =
     opts.orionis ??
@@ -90,6 +99,7 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
     oidc: new OidcClient(config.oidc, fetchImpl),
     audit: new AuditLog(db, config.sessionSigningKey),
     orionis,
+    infra,
     adguard,
     push: new PushService(db, config),
     startedAt: new Date(),

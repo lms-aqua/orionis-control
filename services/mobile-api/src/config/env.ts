@@ -125,6 +125,17 @@ const RawSchema = z.object({
   TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(300),
   ORIONIS_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
+  // Self-hosted Caddy manager, which owns Caddy and Authelia config. The gateway
+  // proxies to it rather than editing either itself: doing that here would need the
+  // Docker socket or write access to Authelia's secrets, both refused by ADR
+  // 0003/0005. Empty disables infrastructure management entirely.
+  CADDYMANAGER_BASE_URL: z.string().default(''),
+  CADDYMANAGER_API_KEY: z.string().default(''),
+  // The internal upstream the gateway is served from. Used to refuse any Caddy
+  // config that would stop routing to this gateway -- which would disconnect the
+  // app from the only tool able to undo it.
+  GATEWAY_UPSTREAM: z.string().default('orionis-mobile-api:8080'),
+
   ADGUARD_INTERNAL_URL: z.string().default(''),
   ADGUARD_USERNAME: z.string().default(''),
   ADGUARD_PASSWORD: z.string().default(''),
@@ -219,6 +230,13 @@ export interface Config {
   roles: RoleMapping;
   orionis: OrionisConfig;
   turn: TurnConfig;
+  infra: {
+    configured: boolean;
+    baseUrl: string;
+    apiKey: string;
+    gatewayUpstream: string;
+    timeoutMs: number;
+  };
   adguard: AdGuardConfig;
   apns: ApnsConfig;
   databaseUrl: string;
@@ -436,6 +454,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       urls: csv(e.TURN_URLS),
       staticAuthSecret: e.TURN_STATIC_AUTH_SECRET,
       credentialTtlSeconds: e.TURN_CREDENTIAL_TTL_SECONDS,
+    },
+    infra: {
+      configured: Boolean(e.CADDYMANAGER_BASE_URL && e.CADDYMANAGER_API_KEY),
+      baseUrl: e.CADDYMANAGER_BASE_URL.replace(/\/+$/, ''),
+      apiKey: e.CADDYMANAGER_API_KEY,
+      gatewayUpstream: e.GATEWAY_UPSTREAM,
+      timeoutMs: e.ORIONIS_TIMEOUT_MS,
     },
     adguard: {
       configured: adguardConfigured,

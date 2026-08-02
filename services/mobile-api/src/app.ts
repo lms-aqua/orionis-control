@@ -17,6 +17,7 @@ import { registerMetaRoutes } from './routes/meta.ts';
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerCameraRoutes } from './routes/cameras.ts';
 import { registerEventRoutes } from './routes/events.ts';
+import { registerInfraRoutes } from './routes/infra.ts';
 import { registerAdGuardRoutes } from './routes/adguard.ts';
 import { registerSystemRoutes } from './routes/system.ts';
 import { registerDeviceRoutes } from './routes/devices.ts';
@@ -152,6 +153,7 @@ export async function buildApp(services: AppServices): Promise<FastifyInstance> 
       await registerAuthRoutes(scope);
       await registerCameraRoutes(scope);
       await registerEventRoutes(scope);
+      await registerInfraRoutes(scope);
       await registerAdGuardRoutes(scope);
       await registerSystemRoutes(scope);
       await registerDeviceRoutes(scope);

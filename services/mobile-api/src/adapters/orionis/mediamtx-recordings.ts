@@ -233,7 +233,9 @@ export class MediaMtxRecordings {
       // "how long until recordings start being deleted" rather than "how long
       // until the whole server fills up".
       daysRemaining:
-        dailyBytes && dailyBytes > 0 && headroom !== null ? Math.floor(headroom / dailyBytes) : null,
+        dailyBytes && dailyBytes > 0 && headroom !== null
+          ? Math.floor(headroom / dailyBytes)
+          : null,
       retentionDays: this.retentionDays,
       oldestRecordingAt: oldest ? new Date(oldest).toISOString() : measured.oldestRecordingAt,
       newestRecordingAt: measured.newestRecordingAt,
