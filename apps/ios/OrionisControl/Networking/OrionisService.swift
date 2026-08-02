@@ -44,6 +44,9 @@ protocol EventServicing: Sendable {
     func acknowledge(eventId: String, note: String?) async throws -> CameraEvent
     func recordings(cameraIds: [String], from: Date?, to: Date?, limit: Int, offset: Int)
         async throws -> Paged<Recording>
+    func recordingStorage() async throws -> StorageStatus
+    func retention() async throws -> RetentionSettings
+    func setRetention(days: Int) async throws -> RetentionSettings
 }
 
 protocol AdGuardServicing: Sendable {
@@ -422,6 +425,32 @@ struct OrionisService: OrionisServicing {
                 isRetryable: true
             ),
             as: Paged<Recording>.self
+        )
+    }
+
+    func recordingStorage() async throws -> StorageStatus {
+        try await api.request(
+            Endpoint(path: "/recordings/storage", isRetryable: true), as: StorageStatus.self)
+    }
+
+    func retention() async throws -> RetentionSettings {
+        try await api.request(
+            Endpoint(path: "/recordings/retention", isRetryable: true),
+            as: RetentionSettings.self)
+    }
+
+    /// Shortening retention deletes footage sooner, so this is treated as
+    /// disruptive: the gateway requires an explicit confirmation header.
+    func setRetention(days: Int) async throws -> RetentionSettings {
+        try await api.request(
+            Endpoint(
+                method: .put,
+                path: "/recordings/retention",
+                body: RetentionChangeRequest(days: days),
+                idempotencyKey: UUID().uuidString,
+                confirmDisruptive: true
+            ),
+            as: RetentionSettings.self
         )
     }
 

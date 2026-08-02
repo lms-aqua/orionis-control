@@ -528,6 +528,28 @@ struct StorageStatus: Codable, Sendable, Equatable {
     var isBudgeted: Bool { (quotaBytes ?? 0) > 0 }
 }
 
+/// Recording retention, as reported by the gateway.
+///
+/// `appliedDays` is what the recorder is actually enforcing; `requestedDays` is a
+/// change that has been queued but not yet picked up. They are separate because a
+/// change is applied outside the gateway — showing one value would mean claiming a
+/// change took effect the moment it was accepted.
+struct RetentionSettings: Codable, Sendable, Equatable {
+    let appliedDays: Int?
+    let requestedDays: Int?
+    let requestedAt: Date?
+    let pending: Bool
+    let minDays: Int
+    let maxDays: Int
+    /// False when this deployment cannot change retention at all, so the UI shows
+    /// a value rather than a control that could not work.
+    let changeable: Bool
+}
+
+struct RetentionChangeRequest: Codable, Sendable, Equatable {
+    let days: Int
+}
+
 // MARK: - Audit
 
 struct AuditRecord: Codable, Sendable, Equatable, Identifiable {

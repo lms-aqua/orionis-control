@@ -178,6 +178,14 @@ struct SettingsView: View {
             Toggle("Start live view automatically", isOn: preferences.autoplayLiveView)
             Toggle("Start muted", isOn: preferences.startMuted)
             Toggle("Reduce quality on cellular", isOn: preferences.limitQualityOnCellular)
+
+            if environment.auth.state.user?.can(.recordingsView) == true {
+                NavigationLink {
+                    RecordingStorageView()
+                } label: {
+                    LabeledContent("Recordings", value: "Storage and retention")
+                }
+            }
         }
     }
 
