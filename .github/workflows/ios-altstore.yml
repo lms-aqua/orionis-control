@@ -87,10 +87,15 @@ jobs:
 
           rm -rf build/Payload && mkdir -p build/Payload
           cp -R "$APP" build/Payload/
-          (cd build && zip -qry OrionisControl.ipa Payload)
+          # Unique filename per build: overwriting one fixed asset URL let GitHub's
+          # release CDN serve a stale IPA against a fresh source.json, which AltStore
+          # rejects as a SHA-256 mismatch. A fresh URL each build has nothing stale
+          # to cache.
+          IPA_NAME="OrionisControl-${{ github.run_number }}.ipa"
+          (cd build && zip -qry "$IPA_NAME" Payload)
 
-          SIZE=$(stat -f%z build/OrionisControl.ipa)
-          SHA=$(shasum -a 256 build/OrionisControl.ipa | awk '{print $1}')
+          SIZE=$(stat -f%z "build/$IPA_NAME")
+          SHA=$(shasum -a 256 "build/$IPA_NAME" | awk '{print $1}')
           DATE=$(date -u +%Y-%m-%d)
 
           {
@@ -99,8 +104,9 @@ jobs:
             echo "size=$SIZE"
             echo "sha=$SHA"
             echo "date=$DATE"
+            echo "ipa_name=$IPA_NAME"
           } >> "$GITHUB_OUTPUT"
-          echo "Packaged OrionisControl.ipa — v$VERSION ($BUILD), ${SIZE} bytes"
+          echo "Packaged $IPA_NAME — v$VERSION ($BUILD), ${SIZE} bytes"
 
       - name: Generate the AltStore source
         env:
@@ -110,6 +116,7 @@ jobs:
           SIZE: ${{ steps.ipa.outputs.size }}
           SHA: ${{ steps.ipa.outputs.sha }}
           DATE: ${{ steps.ipa.outputs.date }}
+          IPA_NAME: ${{ steps.ipa.outputs.ipa_name }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -122,7 +129,7 @@ jobs:
           sha     = os.environ["SHA"]
           date    = os.environ["DATE"]
 
-          ipa  = f"https://github.com/{repo}/releases/download/ios_latest/OrionisControl.ipa"
+          ipa  = f"https://github.com/{repo}/releases/download/ios_latest/{os.environ['IPA_NAME']}"
           icon = f"https://raw.githubusercontent.com/{repo}/main/.github/altstore/icon.png"
           desc = (
               "Orionis Control is a native app for self-hosted infrastructure: cameras and "
@@ -193,15 +200,24 @@ jobs:
               --notes "Unsigned rolling build for AltStore / SideStore. The app is re-signed on-device with your own Apple ID. Add the AltStore source: https://github.com/${{ github.repository }}/releases/download/ios_latest/altstore-source.json"
           fi
           gh release upload ios_latest \
-            build/OrionisControl.ipa \
+            "build/${{ steps.ipa.outputs.ipa_name }}" \
             altstore-source.json \
             --clobber
+          # Prune older rolling IPAs so the release does not grow without bound;
+          # keep only the one this build just published. (source.json keeps its
+          # stable filename, so existing installs still find the source.)
+          for asset in $(gh release view ios_latest --json assets \
+            --jq '.assets[].name' | grep -E '^OrionisControl(-[0-9]+)?\.ipa$' || true); do
+            if [ "$asset" != "${{ steps.ipa.outputs.ipa_name }}" ]; then
+              gh release delete-asset ios_latest "$asset" -y || true
+            fi
+          done
 
       - name: Upload IPA as a workflow artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: orionis-control-unsigned-ipa
-          path: apps/ios/build/OrionisControl.ipa
+          path: apps/ios/build/OrionisControl-*.ipa
           if-no-files-found: ignore
           retention-days: 14
