@@ -12,6 +12,7 @@ import { ok, paged } from '../lib/envelope.ts';
 import { actorOf, requirePermission } from '../http/context.ts';
 import type { CameraEvent } from '../adapters/orionis/types.ts';
 import { decodeRecordingId } from '../adapters/orionis/mediamtx-recordings.ts';
+import { serveRecordingClip } from '../lib/recording-clip.ts';
 import type { Db } from '../db/index.ts';
 
 const EventQuerySchema = z.object({
@@ -244,35 +245,14 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
       const ref = decodeRecordingId(req.params.recordingId);
       await req.services.orionis.getRecording(req.params.recordingId);
 
-      const params = new URLSearchParams({
-        path: ref.cameraId,
+      const clip = await serveRecordingClip({
+        baseUrl: config.orionis.recordingsBaseUrl,
+        cameraId: ref.cameraId,
         start: ref.start,
-        duration: String(ref.durationSeconds),
+        duration: ref.durationSeconds,
+        range: req.headers.range,
+        timeoutMs: config.orionis.timeoutMs,
       });
-      const range = req.headers.range;
-      let upstream: Response;
-      try {
-        upstream = await fetch(`${config.orionis.recordingsBaseUrl}/get?${params.toString()}`, {
-          // Range is passed through so a player can scrub without refetching the
-          // whole clip.
-          headers: typeof range === 'string' ? { range } : undefined,
-          signal: AbortSignal.timeout(config.orionis.timeoutMs),
-        });
-      } catch {
-        throw new AppError('UPSTREAM_UNAVAILABLE', 'The recording store did not respond.');
-      }
-      if (!upstream.ok && upstream.status !== 206) {
-        throw new AppError('NOT_FOUND', 'That recording is no longer available.');
-      }
-
-      const headers: Record<string, string> = {
-        'content-type': upstream.headers.get('content-type') ?? 'video/mp4',
-        'accept-ranges': 'bytes',
-        // Recorded footage is sensitive; it must not sit in a shared cache.
-        'cache-control': 'private, no-store',
-      };
-      const contentRange = upstream.headers.get('content-range');
-      if (contentRange) headers['content-range'] = contentRange;
 
       audit.record({
         action: 'recording.played',
@@ -285,10 +265,7 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         metadata: { cameraId: ref.cameraId, startedAt: ref.start },
       });
 
-      return reply
-        .code(upstream.status === 206 ? 206 : 200)
-        .headers(headers)
-        .send(Buffer.from(await upstream.arrayBuffer()));
+      return reply.code(clip.status).headers(clip.headers).send(clip.body);
     },
   );
 
@@ -307,32 +284,14 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
       }
       const q = ClipWindowSchema.parse(req.query);
 
-      const params = new URLSearchParams({
-        path: q.cameraId,
+      const clip = await serveRecordingClip({
+        baseUrl: config.orionis.recordingsBaseUrl,
+        cameraId: q.cameraId,
         start: q.start,
-        duration: String(q.duration),
+        duration: q.duration,
+        range: req.headers.range,
+        timeoutMs: config.orionis.timeoutMs,
       });
-      const range = req.headers.range;
-      let upstream: Response;
-      try {
-        upstream = await fetch(`${config.orionis.recordingsBaseUrl}/get?${params.toString()}`, {
-          headers: typeof range === 'string' ? { range } : undefined,
-          signal: AbortSignal.timeout(config.orionis.timeoutMs),
-        });
-      } catch {
-        throw new AppError('UPSTREAM_UNAVAILABLE', 'The recording store did not respond.');
-      }
-      if (!upstream.ok && upstream.status !== 206) {
-        throw new AppError('NOT_FOUND', 'No footage is available at that time.');
-      }
-
-      const headers: Record<string, string> = {
-        'content-type': upstream.headers.get('content-type') ?? 'video/mp4',
-        'accept-ranges': 'bytes',
-        'cache-control': 'private, no-store',
-      };
-      const contentRange = upstream.headers.get('content-range');
-      if (contentRange) headers['content-range'] = contentRange;
 
       audit.record({
         action: 'recording.played',
@@ -345,10 +304,7 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         metadata: { cameraId: q.cameraId, startedAt: q.start, window: q.duration },
       });
 
-      return reply
-        .code(upstream.status === 206 ? 206 : 200)
-        .headers(headers)
-        .send(Buffer.from(await upstream.arrayBuffer()));
+      return reply.code(clip.status).headers(clip.headers).send(clip.body);
     },
   );
 }

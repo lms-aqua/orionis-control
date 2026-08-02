@@ -37,7 +37,9 @@ final class RecordingsTimelineModel {
 
     /// Where the loaded window began, so playback position maps back to wall time.
     private var windowStart: Date?
-    private let windowSeconds = 600
+    // Short windows load fast and make scrubbing responsive; playback rolls into
+    // the next one automatically, so continuity isn't lost.
+    private let windowSeconds = 90
 
     private var timeObserver: Any?
     private nonisolated(unsafe) var endToken: NSObjectProtocol?
