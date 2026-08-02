@@ -53,6 +53,8 @@ enum Permission: String, Codable, Sendable {
     case systemView = "system.view"
     case systemActionsRun = "system.actions.run"
     case auditView = "audit.view"
+    case infraView = "infra.view"
+    case infraManage = "infra.manage"
     case devicesManage = "devices.manage"
 }
 
@@ -68,6 +70,45 @@ struct CurrentUser: Codable, Sendable, Equatable, Identifiable {
     func can(_ permission: Permission) -> Bool { permissions.contains(permission) }
 
     var name: String { displayName ?? username }
+
+    init(
+        id: String,
+        username: String,
+        displayName: String?,
+        email: String?,
+        role: Role,
+        groups: [String],
+        permissions: [Permission]
+    ) {
+        self.id = id
+        self.username = username
+        self.displayName = displayName
+        self.email = email
+        self.role = role
+        self.groups = groups
+        self.permissions = permissions
+    }
+
+    /// Decodes the account, ignoring permissions this build does not recognise.
+    ///
+    /// The gateway owns the permission list and is deployed independently of the
+    /// app, so it will periodically hold names a shipped build has never heard of.
+    /// Decoding those strictly made the *whole* account undecodable, which blocked
+    /// sign-in entirely — a gateway-side feature addition could lock every older
+    /// install out of the app. An unrecognised permission is dropped instead: the
+    /// worst case is a control the app does not draw yet, and since authorisation
+    /// is enforced on the gateway, dropping one grants nothing.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        username = try container.decode(String.self, forKey: .username)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        role = try container.decode(Role.self, forKey: .role)
+        groups = try container.decodeIfPresent([String].self, forKey: .groups) ?? []
+        permissions = try container.decodeIfPresent([String].self, forKey: .permissions)?
+            .compactMap(Permission.init(rawValue:)) ?? []
+    }
 }
 
 struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
