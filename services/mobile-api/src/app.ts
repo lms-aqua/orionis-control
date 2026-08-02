@@ -20,6 +20,7 @@ import { registerEventRoutes } from './routes/events.ts';
 import { registerAdGuardRoutes } from './routes/adguard.ts';
 import { registerSystemRoutes } from './routes/system.ts';
 import { registerDeviceRoutes } from './routes/devices.ts';
+import { getAltstoreSource } from './lib/altstore-source.ts';
 import { API_VERSION } from './version.ts';
 
 export const API_PREFIX = '/api/mobile/v1';
@@ -160,6 +161,21 @@ export async function buildApp(services: AppServices): Promise<FastifyInstance> 
 
   // Unversioned liveness probe for orchestrators.
   app.get('/healthz', async () => ({ status: 'ok' }));
+
+  // Fronts the AltStore/SideStore source so a client never catches the GitHub
+  // release asset mid-upload (which fails as an unreadable-format error). Public
+  // by design — it is app-install metadata, not user data.
+  app.get('/altstore/source.json', async (_req, reply) => {
+    try {
+      const body = await getAltstoreSource();
+      return reply
+        .type('application/json')
+        .header('cache-control', 'no-cache')
+        .send(body);
+    } catch {
+      return reply.status(503).send({ error: 'The app source is temporarily unavailable.' });
+    }
+  });
 
   return app;
 }
