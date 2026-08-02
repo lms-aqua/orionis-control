@@ -59,6 +59,7 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
                   fetchImpl,
                 )
               : null,
+            config.orionis.enableWebrtc,
           )
         : new HttpOrionisAdapter(
             config.orionis.baseUrl,

@@ -91,6 +91,13 @@ const RawSchema = z.object({
   // Display names for upstreams that key cameras by an opaque id.
   // Format: `id=Name|Location` entries, comma separated. Location optional.
   ORIONIS_CAMERA_LABELS: z.string().default(''),
+  // Off by default. Advertising WebRTC makes the app prefer it, so it must not be
+  // switched on until it is verified end-to-end on a real network -- an advertised
+  // protocol that does not play renders as a black player, not as a fallback.
+  ORIONIS_ENABLE_WEBRTC: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // MediaMTX playback server, e.g. http://orionis-hls:9996. When set, the
   // gateway serves real recordings from it; blank means no recording history.
   ORIONIS_RECORDINGS_BASE_URL: z.string().default(''),
@@ -155,6 +162,8 @@ export interface OrionisConfig {
   recordingsBaseUrl: string;
   /** Recorder retention in days, or null when not configured. */
   recordingsRetentionDays: number | null;
+  /** Whether WebRTC may be advertised to clients. */
+  enableWebrtc: boolean;
   serviceToken: string;
   timeoutMs: number;
 }
@@ -397,6 +406,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       recordingsBaseUrl: e.ORIONIS_RECORDINGS_BASE_URL.replace(/\/+$/, ''),
       recordingsRetentionDays:
         e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
+      enableWebrtc: e.ORIONIS_ENABLE_WEBRTC,
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,
     },

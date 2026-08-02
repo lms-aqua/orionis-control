@@ -46,9 +46,10 @@ const CAPABILITIES = {
   sensitivity: false,
   restart: false,
   snapshot: true,
-  // WebRTC (sub-second, via the gateway's signalling proxy + TURN) is preferred;
-  // HLS (AVPlayer-native, ~seconds) is the fallback. Both keep go2rtc unexposed.
-  protocols: ['webrtc', 'hls'] as StreamProtocol[],
+  // Filled in per-instance: WebRTC is only offered when it is switched on,
+  // because the app picks the first protocol it prefers and a protocol that is
+  // advertised but not working end-to-end shows up as a black player.
+  protocols: ['hls'] as StreamProtocol[],
   qualities: ['auto'] as StreamQuality[],
 };
 
@@ -59,6 +60,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   private readonly labels: Record<string, { name: string; location: string | null }>;
   /** Present only when a MediaMTX playback server is configured. */
   private readonly recordings: MediaMtxRecordings | null;
+  private readonly protocols: StreamProtocol[];
 
   constructor(
     baseUrl: string,
@@ -66,8 +68,15 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     fetchImpl: typeof fetch = fetch,
     labels: Record<string, { name: string; location: string | null }> = {},
     recordings: MediaMtxRecordings | null = null,
+    enableWebrtc = false,
   ) {
     this.recordings = recordings;
+    // Advertising a protocol is a promise that it plays. WebRTC stays off until
+    // it is verified end-to-end on a real network, so the app is never steered
+    // onto a path that renders nothing.
+    this.protocols = enableWebrtc
+      ? (['webrtc', 'hls'] as StreamProtocol[])
+      : (['hls'] as StreamProtocol[]);
     this.client = new UpstreamClient(
       'go2rtc',
       baseUrl,
@@ -115,7 +124,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       group: null,
       model: 'go2rtc',
       firmware: null,
-      capabilities: { ...CAPABILITIES },
+      capabilities: { ...CAPABILITIES, protocols: [...this.protocols] },
       health: {
         status: online ? 'online' : 'offline',
         // MediaMTX records every camera it pulls continuously, so a live camera
@@ -185,7 +194,9 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     // HLS relay or the WebRTC signalling proxy — so go2rtc is never exposed. The
     // route fills in the token-bound playbackUrl and mints TURN ICE servers; this
     // just carries the negotiated protocol through.
-    const protocol: StreamProtocol = input.preferredProtocols[0] === 'webrtc' ? 'webrtc' : 'hls';
+    const wantsWebrtc = input.preferredProtocols[0] === 'webrtc';
+    const protocol: StreamProtocol =
+      wantsWebrtc && this.protocols.includes('webrtc') ? 'webrtc' : 'hls';
     return {
       id: `go2rtc:${input.cameraId}`,
       cameraId: input.cameraId,
