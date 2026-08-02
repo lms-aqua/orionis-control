@@ -213,7 +213,7 @@ struct CameraDetailView: View {
                     if stream.state.isLive || stream.state.showsLastFrame {
                         Group {
                             if stream.isWebRTC {
-                                WebRTCVideoView(track: stream.webrtc.remoteVideoTrack)
+                                WebRTCVideoView(renderer: stream.webrtc.videoRenderer)
                             } else {
                                 CameraVideoView(player: stream.player)
                             }

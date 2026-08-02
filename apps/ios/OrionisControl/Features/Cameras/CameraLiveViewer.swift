@@ -83,7 +83,7 @@ struct CameraLiveViewer: View {
     @ViewBuilder
     private func transportView(_ stream: CameraStreamController) -> some View {
         if stream.isWebRTC {
-            WebRTCVideoView(track: stream.webrtc.remoteVideoTrack, fills: fillsScreen)
+            WebRTCVideoView(renderer: stream.webrtc.videoRenderer, fills: fillsScreen)
         } else {
             CameraVideoView(player: stream.player, fills: fillsScreen)
         }

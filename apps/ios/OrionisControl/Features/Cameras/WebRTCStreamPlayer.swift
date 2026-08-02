@@ -30,9 +30,14 @@ enum WebRTCPlayerError: Error {
 @MainActor
 @Observable
 final class WebRTCStreamPlayer {
-    /// The remote video track, once received. The renderer observes this and
-    /// attaches itself when it appears.
+    /// The remote video track, once received.
     private(set) var remoteVideoTrack: RTCVideoTrack?
+
+    /// The Metal renderer, owned here and merely *hosted* by `WebRTCVideoView`.
+    /// Keeping it here lets the track be attached the instant it arrives, instead
+    /// of waiting on a SwiftUI re-render — the race that left the first open black
+    /// until the camera was reopened.
+    let videoRenderer = RTCMTLVideoView()
 
     /// Reported to the controller so it can drive `CameraStreamState`.
     var onConnectionState: ((WebRTCConnectionState) -> Void)?
@@ -158,6 +163,7 @@ final class WebRTCStreamPlayer {
     /// Tears the connection down. Safe to call repeatedly and from `stop()`.
     func close() {
         resumeGathering()
+        remoteVideoTrack?.remove(videoRenderer)
         remoteVideoTrack = nil
         remoteAudioTrack = nil
         peerConnection?.close()
@@ -168,7 +174,11 @@ final class WebRTCStreamPlayer {
     // MARK: - Delegate handling (already hopped to the main actor)
 
     private func attach(videoTrack: RTCVideoTrack) {
+        if let old = remoteVideoTrack, old !== videoTrack { old.remove(videoRenderer) }
         remoteVideoTrack = videoTrack
+        // Attach immediately, on the main actor, so the renderer is receiving by
+        // the time the connection reports "live" — no dependency on view timing.
+        videoTrack.add(videoRenderer)
     }
 
     private func attach(audioTrack: RTCAudioTrack) {
