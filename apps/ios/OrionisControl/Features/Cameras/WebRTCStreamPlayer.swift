@@ -84,6 +84,16 @@ final class WebRTCStreamPlayer {
         observer.onIceGatheringComplete = { [weak self] in
             Task { @MainActor in self?.resumeGathering() }
         }
+        // Waiting for gathering to *complete* meant waiting for every configured
+        // TURN URL to finish allocating -- UDP, TCP, and the IP-literal fallback --
+        // which is seconds of dead time before the offer can even be sent. A relay
+        // candidate is the one that will actually work through NAT, so the offer
+        // goes as soon as one exists and the slower servers are simply not waited
+        // on. They are still gathered; they are just no longer on the critical path.
+        observer.onIceCandidate = { [weak self] sdp in
+            guard sdp.contains(" typ relay") else { return }
+            Task { @MainActor in self?.resumeGathering() }
+        }
         observer.onRemoteVideoTrack = { [weak self] track in
             Task { @MainActor in self?.attach(videoTrack: track) }
         }
@@ -124,7 +134,9 @@ final class WebRTCStreamPlayer {
 
         // Cap the wait: a relay candidate normally gathers in well under a second;
         // if something stalls we send what we have rather than hang the viewer.
-        await awaitGathering(timeout: .seconds(3))
+        // Backstop only, for a network where no relay candidate ever appears; the
+        // relay callback above normally resumes this in a few hundred milliseconds.
+        await awaitGathering(timeout: .milliseconds(1500))
         try Task.checkCancellation()
 
         guard let local = pc.localDescription else { throw WebRTCPlayerError.noLocalDescription }
@@ -275,6 +287,9 @@ final class WebRTCStreamPlayer {
 /// to the main actor itself.
 private final class PeerConnectionObserver: NSObject, RTCPeerConnectionDelegate {
     var onIceGatheringComplete: (@Sendable () -> Void)?
+    /// The candidate's SDP line only: enough to tell a relay from a host
+    /// candidate, and Sendable, unlike RTCIceCandidate itself.
+    var onIceCandidate: (@Sendable (String) -> Void)?
     var onRemoteVideoTrack: (@Sendable (RTCVideoTrack) -> Void)?
     var onRemoteAudioTrack: (@Sendable (RTCAudioTrack) -> Void)?
     var onConnectionState: (@Sendable (RTCPeerConnectionState) -> Void)?
@@ -298,7 +313,9 @@ private final class PeerConnectionObserver: NSObject, RTCPeerConnectionDelegate 
         if newState == .complete { onIceGatheringComplete?() }
     }
 
-    func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {}
+    func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        onIceCandidate?(candidate.sdp)
+    }
 
     func peerConnection(_ pc: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
 
