@@ -32,8 +32,10 @@ final class RecordingsViewModel {
         let start = calendar.startOfDay(for: day)
         let end = calendar.date(byAdding: .day, value: 1, to: start) ?? day
         do {
+            // 200 is the gateway's max page size; a day of continuous-recording
+            // segments is far fewer than that, so one page covers it.
             let page = try await service.recordings(
-                cameraIds: [cameraId], from: start, to: end, limit: 300, offset: 0)
+                cameraIds: [cameraId], from: start, to: end, limit: 200, offset: 0)
             // Newest first: reviewing footage almost always starts from "what
             // just happened", not the small hours of the morning.
             recordings = page.items.sorted { $0.startedAt > $1.startedAt }
