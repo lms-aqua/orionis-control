@@ -213,7 +213,10 @@ final class RecordingsTimelineModel {
                 self.observeEnd(of: item)
                 self.player.replaceCurrentItem(with: item)
                 if offset > 0.1 {
-                    self.player.seek(
+                    // In an async context this resolves to the async overload of
+                    // seek, which must be awaited; the sync one is only reachable
+                    // from the non-async call sites above.
+                    _ = await self.player.seek(
                         to: CMTime(seconds: offset, preferredTimescale: 600),
                         toleranceBefore: .zero,
                         toleranceAfter: .zero)
