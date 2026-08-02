@@ -75,7 +75,6 @@ final class RecordingsTimelineModel {
         isLoading = true
         errorText = nil
         dayStart = Calendar.current.startOfDay(for: day)
-        let end = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? day
         do {
             // The gateway merges the recorder's ten-minute segments into runs and
             // reports the gaps, so this no longer pages through every segment and
