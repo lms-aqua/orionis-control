@@ -60,6 +60,8 @@ export class MediaMtxRecordings {
     private readonly fetchImpl: typeof fetch = fetch,
     /** Read-only mount of the recorder's volume; empty means sizes are unknown. */
     private readonly storagePath: string = '',
+    /** Bytes recordings may occupy, or null when unbudgeted. */
+    private readonly quotaBytes: number | null = null,
   ) {}
 
   private async segments(cameraId: string): Promise<RecordingRef[]> {
@@ -199,20 +201,39 @@ export class MediaMtxRecordings {
     const names = new Map(cameras.map((c) => [c.id, c.name ?? null]));
     const dailyBytes = projectDailyBytes(measured);
 
+    // Headroom is whichever runs out first: the budget, or the disk. A 3 TB
+    // budget on a disk with 40 GB left is not 3 TB of headroom.
+    const quotaFreeBytes =
+      this.quotaBytes === null
+        ? null
+        : Math.max(
+            0,
+            measured.freeBytes === null
+              ? this.quotaBytes - measured.recordingsBytes
+              : Math.min(this.quotaBytes - measured.recordingsBytes, measured.freeBytes),
+          );
+
+    const headroom = quotaFreeBytes ?? measured.freeBytes;
+
     return {
       ...UNKNOWN_STORAGE,
       totalBytes: measured.totalBytes,
       usedBytes: measured.usedBytes,
       freeBytes: measured.freeBytes,
       recordingsBytes: measured.recordingsBytes,
+      quotaBytes: this.quotaBytes,
+      quotaUsedRatio:
+        this.quotaBytes === null || this.quotaBytes === 0
+          ? null
+          : Math.min(1, Math.round((measured.recordingsBytes / this.quotaBytes) * 10_000) / 10_000),
+      quotaFreeBytes,
       fileCount: measured.fileCount,
       dailyBytes,
-      // How much more footage the free space can absorb at the current rate.
-      // Null when the rate is unknown, rather than an invented number.
+      // Measured against the budget when there is one, so the figure answers
+      // "how long until recordings start being deleted" rather than "how long
+      // until the whole server fills up".
       daysRemaining:
-        dailyBytes && dailyBytes > 0 && measured.freeBytes !== null
-          ? Math.floor(measured.freeBytes / dailyBytes)
-          : null,
+        dailyBytes && dailyBytes > 0 && headroom !== null ? Math.floor(headroom / dailyBytes) : null,
       retentionDays: this.retentionDays,
       oldestRecordingAt: oldest ? new Date(oldest).toISOString() : measured.oldestRecordingAt,
       newestRecordingAt: measured.newestRecordingAt,

@@ -109,6 +109,10 @@ const RawSchema = z.object({
   // change. The gateway writes one small file here and nothing else: applying it
   // needs the Docker socket, which ADR 0003/0005 refuses to give this process.
   ORIONIS_RETENTION_DIR: z.string().default(''),
+  // How much space recordings may occupy, in GB. The disk is shared with the rest
+  // of the host, so its free space is not a useful budget: this is. 0 disables it,
+  // in which case usage is reported against the filesystem instead.
+  ORIONIS_RECORDINGS_QUOTA_GB: z.coerce.number().int().min(0).max(1_000_000).default(0),
   // Must match the recorder's own retention, so retentionUntil is not a lie.
   ORIONIS_RECORDINGS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
   // TURN relay for WebRTC. Comma separated, e.g.
@@ -172,6 +176,8 @@ export interface OrionisConfig {
   recordingsPath: string;
   /** Shared directory for retention change requests; empty disables changing it. */
   retentionDir: string;
+  /** Bytes recordings may occupy, or null when unbudgeted. */
+  recordingsQuotaBytes: number | null;
   /** Recorder retention in days, or null when not configured. */
   recordingsRetentionDays: number | null;
   /** Whether WebRTC may be advertised to clients. */
@@ -418,6 +424,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       recordingsBaseUrl: e.ORIONIS_RECORDINGS_BASE_URL.replace(/\/+$/, ''),
       recordingsPath: e.ORIONIS_RECORDINGS_PATH,
       retentionDir: e.ORIONIS_RETENTION_DIR,
+      recordingsQuotaBytes:
+        e.ORIONIS_RECORDINGS_QUOTA_GB > 0 ? e.ORIONIS_RECORDINGS_QUOTA_GB * 1024 ** 3 : null,
       recordingsRetentionDays:
         e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
       enableWebrtc: e.ORIONIS_ENABLE_WEBRTC,

@@ -12,6 +12,7 @@ import { ok, paged } from '../lib/envelope.ts';
 import { actorOf, requirePermission } from '../http/context.ts';
 import type { CameraEvent } from '../adapters/orionis/types.ts';
 import { decodeRecordingId } from '../adapters/orionis/mediamtx-recordings.ts';
+import { mergeCoverage } from '../lib/coverage.ts';
 import { serveRecordingClip } from '../lib/recording-clip.ts';
 import {
   MAX_RETENTION_DAYS,
@@ -47,7 +48,23 @@ const ClipWindowSchema = z.object({
   cameraId: z.string().min(1).max(64),
   start: z.string().datetime(),
   duration: z.coerce.number().int().min(1).max(1800).default(600),
+  // Ask for it as a file rather than as something to stream inline, so saving or
+  // sharing a clip lands with a name a person can recognise later.
+  download: z.enum(['true', 'false']).optional(),
 });
+
+const CoverageQuerySchema = z.object({
+  cameraId: z.string().min(1).max(64),
+  // Any instant within the day of interest; the day is derived from it in UTC.
+  day: z.string().datetime().optional(),
+});
+
+/** `Driveway-2026-08-02-1430.mp4` — sortable, and obvious out of context. */
+function clipFilename(cameraName: string, start: string, duration: number): string {
+  const safe = cameraName.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'camera';
+  const stamp = start.replace(/[:]/g, '-').replace(/\.\d+Z$/, 'Z');
+  return `${safe}-${stamp}-${duration}s.mp4`;
+}
 
 const RetentionBody = z.object({
   days: z.coerce.number().int().min(MIN_RETENTION_DAYS).max(MAX_RETENTION_DAYS),
@@ -240,6 +257,43 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
     async (req) => ok(await req.services.orionis.getStorageStatus(), req.id),
   );
 
+  // --- GET /recordings/coverage ---------------------------------------------
+  // What the timeline actually draws: continuous runs of footage and the real
+  // gaps between them. Segment boundaries are an artefact of how the recorder
+  // rotates files, so they are merged rather than rendered as gaps, and the app
+  // no longer has to page through every segment to draw one day.
+  app.get(
+    '/recordings/coverage',
+    { preHandler: requirePermission('recordings.view') },
+    async (req) => {
+      const q = CoverageQuerySchema.parse(req.query);
+      const anchor = q.day ? new Date(q.day) : new Date();
+      const dayStart = new Date(
+        Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()),
+      );
+      const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+      // Never claim coverage for a future that has not happened yet.
+      const effectiveEnd = new Date(Math.min(dayEnd.getTime(), Date.now()));
+
+      const page = await req.services.orionis.listRecordings({
+        cameraIds: [q.cameraId],
+        from: dayStart.toISOString(),
+        to: dayEnd.toISOString(),
+        limit: 200,
+        offset: 0,
+      });
+
+      return ok(
+        mergeCoverage(page.items, {
+          cameraId: q.cameraId,
+          dayStart,
+          dayEnd: effectiveEnd,
+        }),
+        req.id,
+      );
+    },
+  );
+
   // --- GET /recordings/retention --------------------------------------------
   app.get(
     '/recordings/retention',
@@ -382,7 +436,14 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         metadata: { cameraId: q.cameraId, startedAt: q.start, window: q.duration },
       });
 
-      return reply.code(clip.status).headers(clip.headers).send(clip.body);
+      const headers = { ...clip.headers };
+      if (q.download === 'true') {
+        const camera = await req.services.orionis.getCamera(q.cameraId).catch(() => null);
+        const name = clipFilename(camera?.name ?? q.cameraId, q.start, q.duration);
+        headers['content-disposition'] = `attachment; filename="${name}"`;
+      }
+
+      return reply.code(clip.status).headers(headers).send(clip.body);
     },
   );
 }

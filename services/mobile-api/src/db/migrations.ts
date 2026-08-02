@@ -188,4 +188,20 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: '0005_account_preferences',
+    sql: `
+      -- Deliberately not keyed by device, unlike user_preferences above.
+      -- Which cameras someone has starred, and the order they want them in, is a
+      -- property of the person rather than the handset: it should follow them to
+      -- a second device instead of being re-created there.
+      CREATE TABLE account_preferences (
+        user_id     TEXT NOT NULL,
+        key         TEXT NOT NULL,
+        value_json  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+      );
+    `,
+  },
 ];

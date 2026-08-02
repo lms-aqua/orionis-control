@@ -136,6 +136,19 @@ export interface StorageStatus {
   freeBytes: number | null;
   /** Consumed by recordings specifically, as opposed to the whole filesystem. */
   recordingsBytes: number | null;
+  /**
+   * Budget recordings are allowed to occupy, independent of the disk's size.
+   *
+   * The filesystem is shared with everything else on the host, so its free space
+   * is not the number a viewer cares about — "14 GB of 3 TB used" is, and it is
+   * the figure that stays meaningful when something else fills the disk.
+   * Null means no budget is set.
+   */
+  quotaBytes: number | null;
+  /** Recordings usage as a fraction of the budget, or null without one. */
+  quotaUsedRatio: number | null;
+  /** Budget still available. Never negative, and never more than the disk has. */
+  quotaFreeBytes: number | null;
   fileCount: number | null;
   /** Average bytes written per day, or null with too little history to divide by. */
   dailyBytes: number | null;
@@ -260,6 +273,9 @@ export const UNKNOWN_STORAGE: StorageStatus = {
   usedBytes: null,
   freeBytes: null,
   recordingsBytes: null,
+  quotaBytes: null,
+  quotaUsedRatio: null,
+  quotaFreeBytes: null,
   fileCount: null,
   dailyBytes: null,
   daysRemaining: null,

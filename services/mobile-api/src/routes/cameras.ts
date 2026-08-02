@@ -12,6 +12,7 @@ import { AppError } from '../lib/errors.ts';
 import { ok } from '../lib/envelope.ts';
 import { randomId } from '../lib/crypto.ts';
 import { turnIceServers } from '../lib/turn.ts';
+import { resolveCameraPreferences, saveCameraPreferences } from '../lib/camera-preferences.ts';
 import { actorOf, requireAuth, requirePermission, withIdempotency } from '../http/context.ts';
 import type {
   Camera,
@@ -52,6 +53,11 @@ const StreamRequest = z.object({
     .default(['webrtc', 'llhls', 'hls']),
   quality: z.enum(['auto', 'low', 'medium', 'high']).default('auto'),
   lowData: z.boolean().default(false),
+});
+
+const CameraPreferencesBody = z.object({
+  favouriteIds: z.array(z.string().max(64)).max(200).optional(),
+  order: z.array(z.string().max(64)).max(200).optional(),
 });
 
 const ControlRequest = z.object({
@@ -179,6 +185,47 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     const cameras = await req.services.orionis.listCameras();
     return ok({ items: cameras, total: cameras.length }, req.id);
   });
+
+  // --- GET /cameras/preferences ---------------------------------------------
+  // Starred cameras and their order, per account rather than per device, so a
+  // second phone inherits them. Declared before /cameras/:cameraId so
+  // "preferences" is not parsed as a camera id.
+  app.get(
+    '/cameras/preferences',
+    { preHandler: requirePermission('cameras.view') },
+    async (req) => {
+      const { orionis, db } = req.services;
+      const cameras = await orionis.listCameras();
+      return ok(
+        resolveCameraPreferences(
+          db,
+          req.principal!.userId,
+          cameras.map((c) => c.id),
+        ),
+        req.id,
+      );
+    },
+  );
+
+  // --- PUT /cameras/preferences ---------------------------------------------
+  app.put(
+    '/cameras/preferences',
+    { preHandler: requirePermission('cameras.view') },
+    async (req) => {
+      const body = CameraPreferencesBody.parse(req.body ?? {});
+      const { orionis, db } = req.services;
+      const cameras = await orionis.listCameras();
+      return ok(
+        saveCameraPreferences(
+          db,
+          req.principal!.userId,
+          body,
+          cameras.map((c) => c.id),
+        ),
+        req.id,
+      );
+    },
+  );
 
   // --- GET /cameras/:cameraId ----------------------------------------------
   app.get<{ Params: { cameraId: string } }>(
