@@ -101,6 +101,7 @@ export function makeEvent(overrides: Partial<CameraEvent> = {}): CameraEvent {
 export class StubOrionisAdapter implements OrionisAdapter {
   readonly kind = 'http' as const;
   readonly configured = true;
+  readonly eventDetection = true;
 
   cameras: Camera[] = [
     makeCamera(),

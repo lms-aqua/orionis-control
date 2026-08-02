@@ -218,6 +218,15 @@ export interface Page<T> {
 export interface OrionisAdapter {
   readonly kind: 'http' | 'unconfigured';
   readonly configured: boolean;
+  /**
+   * Whether anything upstream can actually detect events.
+   *
+   * Distinct from `configured`: the events endpoint can be perfectly healthy and
+   * still be incapable of ever returning anything, because no camera or plugin
+   * performs detection. Without this the app shows "no events", which reads as a
+   * quiet day rather than a feature that cannot work.
+   */
+  readonly eventDetection: boolean;
 
   listCameras(): Promise<Camera[]>;
   getCamera(cameraId: string): Promise<Camera>;

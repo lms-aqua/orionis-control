@@ -57,6 +57,10 @@ const CAPABILITIES = {
 export class Go2rtcOrionisAdapter implements OrionisAdapter {
   readonly kind = 'http' as const;
   readonly configured = true;
+  // go2rtc restreams video; nothing in it analyses a frame. No camera behind
+  // it reports MotionSensor or ObjectDetector either, so events can never
+  // arrive and the app must say so rather than showing an empty list.
+  readonly eventDetection = false;
   private readonly client: UpstreamClient;
   private readonly labels: Record<string, { name: string; location: string | null }>;
   /** Present only when a MediaMTX playback server is configured. */

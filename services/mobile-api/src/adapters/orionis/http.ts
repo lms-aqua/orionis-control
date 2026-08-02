@@ -169,6 +169,8 @@ function parseOrThrow<S extends z.ZodTypeAny>(schema: S, value: unknown, what: s
 export class HttpOrionisAdapter implements OrionisAdapter {
   readonly kind = 'http' as const;
   readonly configured = true;
+  // Orionis Guard performs its own detection.
+  readonly eventDetection = true;
   private readonly client: UpstreamClient;
 
   constructor(

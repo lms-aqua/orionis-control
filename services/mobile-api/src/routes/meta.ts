@@ -29,6 +29,9 @@ export async function registerMetaRoutes(app: FastifyInstance): Promise<void> {
         capabilities: {
           cameras: orionis.configured,
           events: orionis.configured,
+          // Separate from `events`: the endpoint works, but nothing
+          // upstream can detect anything to put in it.
+          eventDetection: orionis.configured && orionis.eventDetection,
           recordings: orionis.configured,
           streaming: orionis.configured,
           adguard: adguard.configured,

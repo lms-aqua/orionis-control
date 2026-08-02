@@ -31,6 +31,8 @@ function unconfigured(): never {
 export class UnconfiguredOrionisAdapter implements OrionisAdapter {
   readonly kind = 'unconfigured' as const;
   readonly configured = false;
+  // Nothing is wired up at all.
+  readonly eventDetection = false;
 
   async listCameras(): Promise<Camera[]> {
     unconfigured();

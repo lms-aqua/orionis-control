@@ -13,6 +13,12 @@ import { actorOf, requirePermission } from '../http/context.ts';
 import type { CameraEvent } from '../adapters/orionis/types.ts';
 import { decodeRecordingId } from '../adapters/orionis/mediamtx-recordings.ts';
 import { serveRecordingClip } from '../lib/recording-clip.ts';
+import {
+  MAX_RETENTION_DAYS,
+  MIN_RETENTION_DAYS,
+  readRetention,
+  requestRetention,
+} from '../lib/retention.ts';
 import type { Db } from '../db/index.ts';
 
 const EventQuerySchema = z.object({
@@ -41,6 +47,10 @@ const ClipWindowSchema = z.object({
   cameraId: z.string().min(1).max(64),
   start: z.string().datetime(),
   duration: z.coerce.number().int().min(1).max(1800).default(600),
+});
+
+const RetentionBody = z.object({
+  days: z.coerce.number().int().min(MIN_RETENTION_DAYS).max(MAX_RETENTION_DAYS),
 });
 
 const AcknowledgeBody = z.object({
@@ -228,6 +238,63 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
     '/recordings/storage',
     { preHandler: requirePermission('recordings.view') },
     async (req) => ok(await req.services.orionis.getStorageStatus(), req.id),
+  );
+
+  // --- GET /recordings/retention --------------------------------------------
+  app.get(
+    '/recordings/retention',
+    { preHandler: requirePermission('recordings.view') },
+    async (req) => {
+      const { config, orionis } = req.services;
+      const storage = await orionis.getStorageStatus();
+      const state = await readRetention(config.orionis.retentionDir, storage.retentionDays);
+      return ok(
+        {
+          ...state,
+          minDays: MIN_RETENTION_DAYS,
+          maxDays: MAX_RETENTION_DAYS,
+          // Whether this deployment can change it at all, so the app shows a
+          // read-only value rather than a control that cannot work.
+          changeable: config.orionis.retentionDir !== '',
+        },
+        req.id,
+      );
+    },
+  );
+
+  // --- PUT /recordings/retention --------------------------------------------
+  // Deleting footage sooner is destructive, so this needs the same permission as
+  // deleting a recording -- administrator only.
+  app.put(
+    '/recordings/retention',
+    { preHandler: requirePermission('recordings.delete') },
+    async (req) => {
+      const body = RetentionBody.parse(req.body ?? {});
+      const { config, audit } = req.services;
+      const principal = req.principal!;
+
+      const state = await requestRetention(
+        config.orionis.retentionDir,
+        body.days,
+        principal.username,
+      );
+
+      audit.record({
+        action: 'recording.retention.requested',
+        actor: actorOf(req),
+        outcome: 'success',
+        targetType: 'recording',
+        targetId: 'retention',
+        requestId: req.id,
+        ip: req.ip,
+        metadata: { days: body.days, previousDays: state.appliedDays },
+      });
+
+      return ok(
+        { ...state, minDays: MIN_RETENTION_DAYS, maxDays: MAX_RETENTION_DAYS, changeable: true },
+        req.id,
+      );
+    },
   );
 
   // --- GET /recordings/:recordingId -----------------------------------------

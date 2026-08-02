@@ -105,6 +105,10 @@ const RawSchema = z.object({
   // unknown rather than guessed: the playback API reports neither sizes nor
   // capacity, and duration x bitrate would be an invented number.
   ORIONIS_RECORDINGS_PATH: z.string().default(''),
+  // Directory shared with a host-side applier, used to request a retention
+  // change. The gateway writes one small file here and nothing else: applying it
+  // needs the Docker socket, which ADR 0003/0005 refuses to give this process.
+  ORIONIS_RETENTION_DIR: z.string().default(''),
   // Must match the recorder's own retention, so retentionUntil is not a lie.
   ORIONIS_RECORDINGS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
   // TURN relay for WebRTC. Comma separated, e.g.
@@ -166,6 +170,8 @@ export interface OrionisConfig {
   recordingsBaseUrl: string;
   /** Read-only path to the recorder's storage; empty means unknown. */
   recordingsPath: string;
+  /** Shared directory for retention change requests; empty disables changing it. */
+  retentionDir: string;
   /** Recorder retention in days, or null when not configured. */
   recordingsRetentionDays: number | null;
   /** Whether WebRTC may be advertised to clients. */
@@ -411,6 +417,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       cameraLabels: parseCameraLabels(e.ORIONIS_CAMERA_LABELS),
       recordingsBaseUrl: e.ORIONIS_RECORDINGS_BASE_URL.replace(/\/+$/, ''),
       recordingsPath: e.ORIONIS_RECORDINGS_PATH,
+      retentionDir: e.ORIONIS_RETENTION_DIR,
       recordingsRetentionDays:
         e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
       enableWebrtc: e.ORIONIS_ENABLE_WEBRTC,
