@@ -18,6 +18,7 @@ struct StreamIncident: Encodable, Sendable, Equatable {
     enum Action: String, Encodable, Sendable {
         case observed
         case renegotiating
+        case downshifting
         case fallingBack = "falling_back"
     }
 
@@ -35,6 +36,8 @@ struct StreamIncident: Encodable, Sendable, Equatable {
         let lowData: Bool
         let lowPowerMode: Bool
         let thermalState: String
+        let requestedQuality: StreamQuality
+        let activeQuality: StreamQuality?
     }
 
     let kind: Kind
@@ -133,7 +136,7 @@ struct ReconnectPolicy: Equatable, Sendable {
 /// Separates normal jitter from a genuinely frozen WebRTC decoder and bounds
 /// how often a live view may renegotiate before choosing the stable fallback.
 struct WebRTCFrameHealthPolicy: Equatable, Sendable {
-    var staleTolerance: TimeInterval = 5
+    var staleTolerance: TimeInterval = 3
     var maxRenegotiations = 2
 
     func isFrozen(staleFor: TimeInterval?) -> Bool {
@@ -143,6 +146,22 @@ struct WebRTCFrameHealthPolicy: Equatable, Sendable {
 
     func shouldRenegotiate(afterRecoveries recoveries: Int) -> Bool {
         recoveries < maxRenegotiations
+    }
+}
+
+/// One-way quality adaptation for a live open. A degraded high/automatic stream
+/// drops to the bounded 720p rendition immediately. It intentionally does not
+/// climb again during the same open: oscillating encoders is worse than keeping
+/// a stable picture, and the next open starts at the user's preferred quality.
+struct WebRTCAdaptiveQualityPolicy: Equatable, Sendable {
+    func recoveryQuality(
+        requested: StreamQuality,
+        active: StreamQuality?,
+        lowData: Bool
+    ) -> StreamQuality? {
+        guard !lowData else { return nil }
+        let effective = active ?? requested
+        return effective == .low ? nil : .low
     }
 }
 
@@ -159,7 +178,7 @@ struct WebRTCLowFrameRateDetector: Equatable, Sendable {
     }
 
     var warmupSamples = 4
-    var degradedSamplesRequired = 5
+    var degradedSamplesRequired = 3
     var recoverySamplesRequired = 3
     var degradationRatio = 0.35
     var recoveryRatio = 0.70
@@ -260,6 +279,7 @@ struct HLSLiveEdgePolicy: Equatable, Sendable {
 /// tokens or stream URLs are ever recorded here.
 struct CameraStreamDiagnostics: Equatable, Sendable {
     var transport: StreamProtocolKind?
+    var activeQuality: StreamQuality?
     var connectionAttempts = 0
     var reconnectCount = 0
     var stallCount = 0

@@ -176,7 +176,7 @@ describe('partial upstream failure', () => {
 });
 
 describe('stream authorisation', () => {
-  it('prefers short-GOP WebRTC and falls back to the native source when unavailable', async () => {
+  it('tries 1080p then safe 720p before the native WebRTC source', async () => {
     harness = await createHarness({
       env: { ORIONIS_INTERNAL_URL: 'http://orionis.test' },
       orionis: new StubOrionisAdapter(),
@@ -200,8 +200,8 @@ describe('stream authorisation', () => {
           typeof input === 'string' ? input : input instanceof URL ? input : input.url,
         );
         requestedSources.push(url.searchParams.get('src') ?? '');
-        if (url.searchParams.get('src') === 'cam-front_ll') {
-          return new Response('low-latency source missing', { status: 404 });
+        if (url.searchParams.get('src') !== 'cam-front') {
+          return new Response('managed rendition missing', { status: 404 });
         }
         return Response.json({ type: 'answer', sdp: 'v=0\r\nnative-answer' });
       }),
@@ -216,7 +216,7 @@ describe('stream authorisation', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().data.sdp).toBe('v=0\r\nnative-answer');
-    expect(requestedSources).toEqual(['cam-front_ll', 'cam-front']);
+    expect(requestedSources).toEqual(['cam-front_hq', 'cam-front_ll', 'cam-front']);
   });
 
   it('issues a short-lived token and never returns the upstream media URL', async () => {

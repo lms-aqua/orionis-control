@@ -75,6 +75,25 @@ final class CameraStreamStateTests: XCTestCase {
         XCTAssertFalse(policy.shouldRenegotiate(afterRecoveries: 2))
     }
 
+    func testAdaptiveQualityDropsHighAndAutomaticStreamsToLow() {
+        let policy = WebRTCAdaptiveQualityPolicy()
+        XCTAssertEqual(
+            policy.recoveryQuality(requested: .auto, active: .auto, lowData: false),
+            .low)
+        XCTAssertEqual(
+            policy.recoveryQuality(requested: .high, active: .high, lowData: false),
+            .low)
+        XCTAssertEqual(
+            policy.recoveryQuality(requested: .medium, active: .medium, lowData: false),
+            .low)
+    }
+
+    func testAdaptiveQualityDoesNotOscillateOrOverrideLowData() {
+        let policy = WebRTCAdaptiveQualityPolicy()
+        XCTAssertNil(policy.recoveryQuality(requested: .low, active: .low, lowData: false))
+        XCTAssertNil(policy.recoveryQuality(requested: .high, active: .high, lowData: true))
+    }
+
     func testHLSLiveEdgePolicyCorrectsOnlyMeaningfulDrift() {
         let policy = HLSLiveEdgePolicy(maximumLag: 12, targetLag: 2)
         XCTAssertNil(policy.correction(current: 89, rangeStart: 0, rangeEnd: 100))
@@ -156,12 +175,12 @@ final class CameraStreamStateTests: XCTestCase {
         XCTAssertEqual(detector.observe(framesPerSecond: 20), .none)
         XCTAssertEqual(detector.observe(framesPerSecond: 1), .none)
         XCTAssertEqual(detector.observe(framesPerSecond: 19), .none)
-        for _ in 0..<4 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
+        for _ in 0..<2 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
     }
 
     func testLowFrameRateDetectorReportsSustainedCollapse() {
         var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
-        for _ in 0..<4 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
+        for _ in 0..<2 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
         XCTAssertEqual(
             detector.observe(framesPerSecond: 1),
             .degraded(baseline: 20, current: 1))
@@ -170,7 +189,7 @@ final class CameraStreamStateTests: XCTestCase {
 
     func testLowFrameRateDetectorUsesHysteresisForRecovery() {
         var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
-        for _ in 0..<5 { _ = detector.observe(framesPerSecond: 1) }
+        for _ in 0..<3 { _ = detector.observe(framesPerSecond: 1) }
         XCTAssertEqual(detector.observe(framesPerSecond: 18), .none)
         XCTAssertEqual(detector.observe(framesPerSecond: 5), .none)
         XCTAssertEqual(detector.observe(framesPerSecond: 18), .none)

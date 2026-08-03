@@ -51,7 +51,7 @@ const CAPABILITIES = {
   // because the app picks the first protocol it prefers and a protocol that is
   // advertised but not working end-to-end shows up as a black player.
   protocols: ['hls'] as StreamProtocol[],
-  qualities: ['auto'] as StreamQuality[],
+  qualities: ['auto', 'low', 'medium', 'high'] as StreamQuality[],
 };
 
 export class Go2rtcOrionisAdapter implements OrionisAdapter {
@@ -97,12 +97,14 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       path: '/api/streams',
     });
     const all = data ?? {};
-    // Hide internal transcode twins: "<id>_aac" feeds the recorder/HLS with AAC
-    // audio, "<id>_ll" is the short-keyframe re-encode for WebRTC. They are not
-    // cameras in their own right; without this they show as duplicate cameras.
+    // Hide internal transcode twins: "<id>_aac" feeds the recorder/HLS with AAC,
+    // while "<id>_ll" and "<id>_hq" are WebRTC renditions. They are not cameras
+    // in their own right; without this they show as duplicate cameras.
     const visible: Record<string, Go2rtcStream> = {};
     for (const [id, stream] of Object.entries(all)) {
-      if (!id.endsWith('_aac') && !id.endsWith('_ll')) visible[id] = stream;
+      if (!id.endsWith('_aac') && !id.endsWith('_ll') && !id.endsWith('_hq')) {
+        visible[id] = stream;
+      }
     }
     return visible;
   }
@@ -220,11 +222,12 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       protocol,
       playbackUrl: '',
       expiresAt: new Date(Date.now() + input.ttlSeconds * 1000).toISOString(),
-      // This adapter exposes one passthrough source and cannot apply quality
-      // variants. Report what was actually selected instead of echoing a wish.
-      quality: 'auto',
+      // The signalling proxy resolves this value to the matching go2rtc
+      // rendition. Preserve it in the stream row so WHEP negotiation can choose
+      // 1080p or the safer 720p source deterministically.
+      quality: protocol === 'webrtc' ? input.quality : 'auto',
       iceServers: [],
-      supportedQualities: ['auto'],
+      supportedQualities: ['auto', 'low', 'medium', 'high'],
     };
   }
 

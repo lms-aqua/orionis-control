@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { joinAtLiveEdge, webRTCSource, webRTCSourceCandidates } from '../../src/routes/cameras.ts';
+import {
+  joinAtLiveEdge,
+  webRTCHighQualitySource,
+  webRTCSource,
+  webRTCSourceCandidates,
+} from '../../src/routes/cameras.ts';
 
 const PLAYLIST = [
   '#EXTM3U',
@@ -55,7 +60,22 @@ describe('webRTCSource', () => {
     expect(webRTCSource('cam-front')).toBe('cam-front_ll');
   });
 
-  it('retains the native source as a compatibility fallback', () => {
-    expect(webRTCSourceCandidates('cam-front')).toEqual(['cam-front_ll', 'cam-front']);
+  it('starts automatic and high quality at 1080p with safe fallbacks', () => {
+    expect(webRTCHighQualitySource('cam-front')).toBe('cam-front_hq');
+    expect(webRTCSourceCandidates('cam-front')).toEqual([
+      'cam-front_hq',
+      'cam-front_ll',
+      'cam-front',
+    ]);
+    expect(webRTCSourceCandidates('cam-front', 'high')).toEqual([
+      'cam-front_hq',
+      'cam-front_ll',
+      'cam-front',
+    ]);
+  });
+
+  it('keeps low and medium quality on the bounded 720p rendition', () => {
+    expect(webRTCSourceCandidates('cam-front', 'low')).toEqual(['cam-front_ll', 'cam-front']);
+    expect(webRTCSourceCandidates('cam-front', 'medium')).toEqual(['cam-front_ll', 'cam-front']);
   });
 });

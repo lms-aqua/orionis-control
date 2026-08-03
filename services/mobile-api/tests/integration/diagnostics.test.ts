@@ -7,7 +7,7 @@ afterEach(async () => Promise.all(open.splice(0).map((h) => h.close())));
 
 const incident = {
   kind: 'webrtc_low_frame_rate',
-  action: 'renegotiating',
+  action: 'downshifting',
   cameraId: 'front',
   transport: 'webrtc',
   occurredAt: '2026-08-03T18:00:00.000Z',
@@ -20,7 +20,13 @@ const incident = {
     reconnectCount: 1,
     stallCount: 1,
   },
-  context: { lowData: false, lowPowerMode: false, thermalState: 'nominal' },
+  context: {
+    lowData: false,
+    lowPowerMode: false,
+    thermalState: 'nominal',
+    requestedQuality: 'auto',
+    activeQuality: 'high',
+  },
 };
 
 describe('client media incidents', () => {
@@ -63,6 +69,24 @@ describe('client media incidents', () => {
     });
     expect(records.items[0]!.reason).toContain('webrtc low frame rate');
     expect(records.items[0]!.metadata).toMatchObject(incident);
+  });
+
+  it('accepts reports from clients released before quality adaptation', async () => {
+    const h = await createHarness();
+    open.push(h);
+    const tokens = await h.signIn();
+    const legacyContext = {
+      lowData: incident.context.lowData,
+      lowPowerMode: incident.context.lowPowerMode,
+      thermalState: incident.context.thermalState,
+    };
+    const response = await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/diagnostics/incidents`,
+      headers: h.auth(tokens.accessToken),
+      payload: { ...incident, action: 'renegotiating', context: legacyContext },
+    });
+    expect(response.statusCode).toBe(200);
   });
 
   it('rejects arbitrary messages and out-of-range metrics', async () => {

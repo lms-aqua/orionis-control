@@ -34,12 +34,14 @@ final class CameraStreamController {
     private let service: any CameraServicing
     private let policy: ReconnectPolicy
     private let webRTCHealthPolicy = WebRTCFrameHealthPolicy()
+    private let webRTCAdaptiveQualityPolicy = WebRTCAdaptiveQualityPolicy()
     private let hlsLiveEdgePolicy = HLSLiveEdgePolicy()
 
     private var session: StreamSession?
     private var camera: Camera?
     private var quality: StreamQuality = .auto
     private var lowData = false
+    private var adaptiveQualityOverride: StreamQuality?
     private var detector = FrozenFrameDetector()
     private var attempt = 0
     private var wasPlayingBeforeBackground = false
@@ -126,7 +128,8 @@ final class CameraStreamController {
         webRTCFrameRetries = 0
         webRTCStallRecoveries = 0
         webRTCLowFPSRecoveries = 0
-        webRTCLowFPSDetector.reset(expectedFrameRate: camera.health.frameRate)
+        adaptiveQualityOverride = nil
+        webRTCLowFPSDetector.reset(expectedFrameRate: expectedWebRTCFrameRate(for: camera))
         lastIncidentReportAt.removeAll(keepingCapacity: true)
         diagnostics = CameraStreamDiagnostics()
         diagnostics.baselineFrameRate = webRTCLowFPSDetector.baseline
@@ -321,7 +324,7 @@ final class CameraStreamController {
 
                 let newSession = try await self.service.createStreamSession(
                     cameraId: self.cameraId,
-                    quality: self.quality,
+                    quality: self.adaptiveQualityOverride ?? self.quality,
                     lowData: self.lowData,
                     preferredProtocols: self.preferredProtocols)
                 guard !Task.isCancelled, generation == self.connectionGeneration else {
@@ -343,6 +346,7 @@ final class CameraStreamController {
     }
 
     private func play(session: StreamSession) {
+        diagnostics.activeQuality = session.quality
         if !isMuted { configureAudioPlayback() }
         switch session.protocol {
         case .hls, .llhls:
@@ -559,24 +563,30 @@ final class CameraStreamController {
     }
 
     private func recoverLowFrameRateWebRTC(baseline: Double, current: Double) {
-        guard isWebRTC, state.isLive, let session else { return }
+        guard isWebRTC, state.isLive else { return }
         diagnostics.lowFrameRateEvents += 1
         diagnostics.stallCount += 1
         diagnostics.reconnectCount += 1
         transition(to: .reconnecting(attempt: webRTCLowFPSRecoveries + 1))
 
-        if webRTCLowFPSRecoveries == 0 {
+        if let recoveryQuality = webRTCAdaptiveQualityPolicy.recoveryQuality(
+            requested: quality,
+            active: diagnostics.activeQuality,
+            lowData: lowData
+        ) {
             reportMediaIncident(
                 kind: .lowFrameRate,
-                action: .renegotiating,
+                action: .downshifting,
                 framesPerSecond: current,
                 baselineFramesPerSecond: baseline)
-            webRTCLowFPSRecoveries = 1
+            webRTCLowFPSRecoveries += 1
+            adaptiveQualityOverride = recoveryQuality
             diagnostics.lastErrorSummary = String(
-                format: "WebRTC frame rate dropped to %.1f fps from %.1f; renegotiating",
+                format: "WebRTC frame rate dropped to %.1f fps from %.1f; reducing quality",
                 current, baseline)
-            webRTCLowFPSDetector.reset(keepingBaseline: true)
-            playWebRTC(session)
+            webRTCLowFPSDetector.reset(
+                expectedFrameRate: camera.flatMap { expectedWebRTCFrameRate(for: $0) })
+            connect(isRetry: false)
         } else {
             reportMediaIncident(
                 kind: .lowFrameRate,
@@ -627,7 +637,7 @@ final class CameraStreamController {
         webRTCHealthTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(2))
+                    try await Task.sleep(for: .seconds(1))
                 } catch {
                     return
                 }
@@ -646,7 +656,22 @@ final class CameraStreamController {
         diagnostics.reconnectCount += 1
         diagnostics.lastErrorSummary = "WebRTC stopped delivering frames"
         transition(to: .reconnecting(attempt: webRTCStallRecoveries + 1))
-        if webRTCHealthPolicy.shouldRenegotiate(afterRecoveries: webRTCStallRecoveries) {
+        if let recoveryQuality = webRTCAdaptiveQualityPolicy.recoveryQuality(
+            requested: quality,
+            active: diagnostics.activeQuality,
+            lowData: lowData
+        ) {
+            reportMediaIncident(
+                kind: .framesStalled,
+                action: .downshifting,
+                staleSeconds: webrtc.framesStaleFor())
+            webRTCStallRecoveries += 1
+            adaptiveQualityOverride = recoveryQuality
+            diagnostics.lastErrorSummary = "WebRTC frames stalled; reducing quality"
+            webRTCLowFPSDetector.reset(
+                expectedFrameRate: camera.flatMap { expectedWebRTCFrameRate(for: $0) })
+            connect(isRetry: false)
+        } else if webRTCHealthPolicy.shouldRenegotiate(afterRecoveries: webRTCStallRecoveries) {
             reportMediaIncident(
                 kind: .framesStalled,
                 action: .renegotiating,
@@ -732,9 +757,18 @@ final class CameraStreamController {
             context: .init(
                 lowData: lowData,
                 lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
-                thermalState: thermalState))
+                thermalState: thermalState,
+                requestedQuality: quality,
+                activeQuality: diagnostics.activeQuality))
         let service = service
         Task { try? await service.reportStreamIncident(incident) }
+    }
+
+    private func expectedWebRTCFrameRate(for camera: Camera) -> Double? {
+        // The managed go2rtc renditions are fixed at 20 fps. Supplying that
+        // baseline prevents an already-degraded first few seconds (for example
+        // 6 fps) from being learned as healthy and escaping recovery forever.
+        camera.health.frameRate ?? (camera.model == "go2rtc" ? 20 : nil)
     }
 
     /// Bounds how long a WebRTC negotiation may sit before "connected". Without it

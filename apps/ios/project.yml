@@ -71,6 +71,7 @@ targets:
         # user-visible name is set via CFBundleDisplayName below.
         PRODUCT_NAME: OrionisControl
         INFOPLIST_FILE: OrionisControl/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MAC_CATALYST: NO
@@ -92,7 +93,7 @@ targets:
       path: OrionisControl/Info.plist
       properties:
         CFBundleDisplayName: Orionis Control
-        CFBundleShortVersionString: "0.2.3"
+        CFBundleShortVersionString: "0.2.4"
         CFBundleVersion: "1"
         UILaunchScreen:
           UIColorName: ""

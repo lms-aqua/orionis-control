@@ -53,9 +53,25 @@ export function webRTCSource(cameraId: string): string {
   return `${cameraId}_ll`;
 }
 
-/** A site that has not provisioned the low-latency source must still play. */
-export function webRTCSourceCandidates(cameraId: string): string[] {
-  return [webRTCSource(cameraId), cameraId];
+/** 1080p, short-GOP rendition used only when the client has enough headroom. */
+export function webRTCHighQualitySource(cameraId: string): string {
+  return `${cameraId}_hq`;
+}
+
+/**
+ * Resolve a quality request to real go2rtc renditions. High/automatic starts at
+ * 1080p, then safely falls through to the 720p short-GOP stream. Low/medium
+ * never touch the high-bitrate source. The native camera remains the last-resort
+ * compatibility path for sites that have not provisioned either rendition.
+ */
+export function webRTCSourceCandidates(
+  cameraId: string,
+  quality: StreamQuality = 'auto',
+): string[] {
+  const safe = webRTCSource(cameraId);
+  return quality === 'high' || quality === 'auto'
+    ? [webRTCHighQualitySource(cameraId), safe, cameraId]
+    : [safe, cameraId];
 }
 
 const StreamRequest = z.object({
@@ -695,7 +711,8 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       // Prefer the site's on-demand short-GOP source. The native camera stream is
       // retained as an automatic compatibility fallback, so a missing `_ll`
       // mapping never turns a performance enhancement into an outage.
-      const sources = webRTCSourceCandidates(String(row.camera_id));
+      const quality = z.enum(['auto', 'low', 'medium', 'high']).catch('auto').parse(row.quality);
+      const sources = webRTCSourceCandidates(String(row.camera_id), quality);
       try {
         for (const src of sources) {
           const upstream = await fetch(

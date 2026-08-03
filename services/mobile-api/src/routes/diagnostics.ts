@@ -17,7 +17,7 @@ const IncidentBody = z
       'hls_playback_failed',
       'stream_recovery_exhausted',
     ]),
-    action: z.enum(['observed', 'renegotiating', 'falling_back']),
+    action: z.enum(['observed', 'renegotiating', 'downshifting', 'falling_back']),
     cameraId: z.string().min(1).max(128),
     transport: z.enum(['webrtc', 'hls', 'llhls', 'mjpeg']),
     occurredAt: z.string().datetime(),
@@ -40,6 +40,10 @@ const IncidentBody = z
         lowData: z.boolean(),
         lowPowerMode: z.boolean(),
         thermalState: z.enum(['nominal', 'fair', 'serious', 'critical', 'unknown']),
+        // Optional for compatibility with clients released before quality
+        // adaptation. New clients always include it.
+        requestedQuality: z.enum(['auto', 'low', 'medium', 'high']).optional(),
+        activeQuality: z.enum(['auto', 'low', 'medium', 'high']).optional(),
       })
       .strict(),
   })

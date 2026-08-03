@@ -29,11 +29,32 @@ describe('Go2rtcOrionisAdapter camera identity', () => {
       streams({
         front: { producers: [{ url: 'rtsp://camera.invalid' }] },
         front_ll: { producers: [{ url: 'ffmpeg:front' }] },
+        front_hq: { producers: [{ url: 'ffmpeg:front' }] },
         front_aac: { producers: [{ url: 'ffmpeg:front' }] },
       }),
     );
 
     expect((await adapter.listCameras()).map((camera) => camera.id)).toEqual(['front']);
+  });
+
+  it('preserves WebRTC quality so signalling can select the matching rendition', async () => {
+    const adapter = new Go2rtcOrionisAdapter(
+      'http://go2rtc.invalid',
+      1_000,
+      streams({}),
+      {},
+      null,
+      true,
+    );
+
+    const session = await adapter.createStreamSession({
+      cameraId: 'front',
+      preferredProtocols: ['webrtc'],
+      quality: 'high',
+      ttlSeconds: 60,
+    });
+    expect(session.quality).toBe('high');
+    expect(session.supportedQualities).toEqual(['auto', 'low', 'medium', 'high']);
   });
 
   it('reports audio only when active producer metadata proves an audio track', async () => {

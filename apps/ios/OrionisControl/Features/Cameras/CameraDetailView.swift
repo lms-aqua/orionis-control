@@ -511,6 +511,9 @@ struct CameraDetailView: View {
                 diagnosticRow("Reconnects", "\(d.reconnectCount)")
                 diagnosticRow("Stalls", "\(d.stallCount)")
                 diagnosticRow("Low-FPS recoveries", "\(d.lowFrameRateEvents)")
+                if let quality = d.activeQuality {
+                    diagnosticRow("Active quality", quality.displayName)
+                }
                 if let stale = d.framesStaleFor() {
                     diagnosticRow("Last frame", String(format: "%.0fs ago", stale))
                 }
