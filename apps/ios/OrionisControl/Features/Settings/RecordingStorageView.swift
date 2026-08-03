@@ -18,23 +18,34 @@ final class RecordingStorageModel {
     private(set) var savedMessage: String?
 
     private let service: any EventServicing
+    private var loadGeneration = 0
 
     init(service: any EventServicing) {
         self.service = service
     }
 
     func load() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if storage == nil { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
+        async let retentionRequest = service.retention()
         do {
             // Retention is secondary: a deployment that cannot report it should
             // still show storage rather than failing the whole screen.
-            storage = try await service.recordingStorage()
-            retention = try? await service.retention()
+            let loadedStorage = try await service.recordingStorage()
+            let loadedRetention = try? await retentionRequest
+            guard generation == loadGeneration else { return }
+            storage = loadedStorage
+            if let loadedRetention { retention = loadedRetention }
             error = nil
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             // `self.` is load-bearing: inside an untyped catch, `error` is the
             // caught value, not this property.
             self.error = .unexpectedStatus(0, requestId: nil)
@@ -42,6 +53,8 @@ final class RecordingStorageModel {
     }
 
     func setRetention(days: Int) async {
+        loadGeneration &+= 1
+        isLoading = false
         isSaving = true
         savedMessage = nil
         defer { isSaving = false }

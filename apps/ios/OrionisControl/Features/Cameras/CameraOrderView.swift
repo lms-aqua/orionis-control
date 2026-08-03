@@ -14,6 +14,7 @@ struct CameraOrderView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var ordered: [Camera] = []
     @State private var isSaving = false
+    @State private var error: APIError?
 
     var body: some View {
         NavigationStack {
@@ -42,6 +43,9 @@ struct CameraOrderView: View {
                     "Drag to reorder. This order is saved to your account and applies on every device."
                 )
             }
+            if let error {
+                Section { ErrorSummary(error: error) }
+            }
         }
     }
 
@@ -67,7 +71,9 @@ struct CameraOrderView: View {
             Button("Cancel") { dismiss() }
         }
         ToolbarItem(placement: .confirmationAction) {
-            Button("Save") { save() }
+            Button { save() } label: {
+                if isSaving { ProgressView() } else { Text("Save") }
+            }
                 .disabled(isSaving)
         }
     }
@@ -76,9 +82,14 @@ struct CameraOrderView: View {
         let ids = ordered.map(\.id)
         Task {
             isSaving = true
-            await model.saveOrder(ids)
+            error = nil
+            let failure = await model.saveOrder(ids)
             isSaving = false
-            dismiss()
+            if let failure {
+                error = failure
+            } else {
+                dismiss()
+            }
         }
     }
 }

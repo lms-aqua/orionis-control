@@ -55,6 +55,7 @@ final class WebRTCStreamPlayer {
     private var observer: PeerConnectionObserver?
     private var gatheringContinuation: CheckedContinuation<Void, Never>?
     private var gatheringResumed = false
+    private var gatheringTimeoutTask: Task<Void, Never>?
     private var muted = true
 
     /// One factory process-wide. `RTCInitializeSSL()` must run once before any
@@ -225,6 +226,8 @@ final class WebRTCStreamPlayer {
     private func resumeGathering() {
         guard !gatheringResumed else { return }
         gatheringResumed = true
+        gatheringTimeoutTask?.cancel()
+        gatheringTimeoutTask = nil
         gatheringContinuation?.resume()
         gatheringContinuation = nil
     }
@@ -239,9 +242,15 @@ final class WebRTCStreamPlayer {
                 resumeGathering()
                 return
             }
-            Task { [weak self] in
-                try? await Task.sleep(for: timeout)
-                await MainActor.run { self?.resumeGathering() }
+            gatheringTimeoutTask?.cancel()
+            gatheringTimeoutTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                self?.resumeGathering()
             }
         }
     }

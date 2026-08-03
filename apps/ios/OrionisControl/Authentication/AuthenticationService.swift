@@ -85,6 +85,7 @@ final class AuthenticationService: NSObject {
 
     /// Guarantees a single in-flight refresh.
     private var refreshTask: Task<String, Error>?
+    private var refreshGeneration = 0
     private var webSession: ASWebAuthenticationSession?
     private var cachedDeviceId: String?
 
@@ -357,6 +358,7 @@ final class AuthenticationService: NSObject {
         }
         clearSessionSecrets()
         refreshTask?.cancel()
+        refreshGeneration &+= 1
         refreshTask = nil
         state = .signedOut(reason: reason)
     }
@@ -524,9 +526,16 @@ extension AuthenticationService: TokenProviding {
     private func startRefreshIfNeeded() -> Task<String, Error> {
         if let existing = refreshTask { return existing }
 
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         let task = Task<String, Error> { [weak self] in
             guard let self else { throw APIError.cancelled }
-            defer { Task { @MainActor in self.refreshTask = nil } }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self, self.refreshGeneration == generation else { return }
+                    self.refreshTask = nil
+                }
+            }
 
             guard let refresh = try? self.secrets.get(.refreshToken) else {
                 throw APIError.server(

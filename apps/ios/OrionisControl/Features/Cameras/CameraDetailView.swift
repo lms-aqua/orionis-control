@@ -22,6 +22,8 @@ final class CameraDetailViewModel {
     private let cameraId: String
     private let cameras: any CameraServicing
     private let eventsService: any EventServicing
+    private var loadGeneration = 0
+    private var snapshotGeneration = 0
 
     init(cameraId: String, cameras: any CameraServicing, events: any EventServicing) {
         self.cameraId = cameraId
@@ -30,13 +32,19 @@ final class CameraDetailViewModel {
     }
 
     func load() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         do {
-            camera = try await cameras.camera(id: cameraId)
+            let loadedCamera = try await cameras.camera(id: cameraId)
+            guard generation == loadGeneration else { return }
+            camera = loadedCamera
             loadError = nil
         } catch let error as APIError {
+            guard generation == loadGeneration else { return }
             loadError = error
             return
         } catch {
+            guard generation == loadGeneration else { return }
             loadError = .unexpectedStatus(0, requestId: nil)
             return
         }
@@ -48,6 +56,7 @@ final class CameraDetailViewModel {
         async let cameraWall = cameras.cameras()
         let page = try? await eventPage
         let all = try? await cameraWall
+        guard generation == loadGeneration else { return }
         if let page {
             events = page.items
         }
@@ -57,7 +66,11 @@ final class CameraDetailViewModel {
     }
 
     func loadSnapshot() async {
-        snapshot = try? await cameras.snapshot(cameraId: cameraId)
+        snapshotGeneration &+= 1
+        let generation = snapshotGeneration
+        guard let loaded = try? await cameras.snapshot(cameraId: cameraId) else { return }
+        guard generation == snapshotGeneration else { return }
+        snapshot = loaded
     }
 
     func invoke(_ request: CameraControlRequest) async {
@@ -70,7 +83,9 @@ final class CameraDetailViewModel {
             controlMessage =
                 result.message ?? (result.applied ? "Applied." : "The camera did not apply it.")
             // Reflect any state change the camera reports.
-            camera = try? await cameras.camera(id: cameraId)
+            if let refreshed = try? await cameras.camera(id: cameraId) {
+                camera = refreshed
+            }
         } catch let error as APIError {
             controlMessage = "\(error.title): \(error.message)"
         } catch {

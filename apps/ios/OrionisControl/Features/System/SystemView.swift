@@ -12,26 +12,41 @@ final class SystemViewModel {
     private(set) var actionError: APIError?
 
     private let service: any SystemServicing
+    private var loadGeneration = 0
 
     init(service: any SystemServicing) {
         self.service = service
     }
 
     func load(showSpinner: Bool = true) async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if showSpinner && snapshot == nil { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
+        async let availableActions = service.availableActions()
         do {
-            snapshot = try await service.services()
-            actions = (try? await service.availableActions()) ?? []
+            let loadedSnapshot = try await service.services()
+            let loadedActions = try? await availableActions
+            guard generation == loadGeneration else { return }
+            snapshot = loadedSnapshot
+            if let loadedActions { actions = loadedActions }
             error = nil
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 
     func run(_ action: SystemAction, serviceId: String? = nil) async {
+        // A snapshot requested before this mutation must not overwrite the
+        // post-action refresh when it eventually returns.
+        loadGeneration &+= 1
+        isLoading = false
         runningActionId = action.id
         actionError = nil
         lastResult = nil

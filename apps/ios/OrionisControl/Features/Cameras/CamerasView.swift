@@ -11,6 +11,8 @@ final class CamerasViewModel {
     /// Favourites and order as the account holds them, so a second device inherits
     /// them instead of starting empty. Nil until the gateway has answered.
     private(set) var accountPreferences: CameraPreferences?
+    private(set) var preferenceError: APIError?
+    private(set) var isSavingPreferences = false
 
     var searchText = ""
     var statusFilter: StatusFilter = .all
@@ -32,6 +34,7 @@ final class CamerasViewModel {
     private let service: any CameraServicing
     /// Prevents a slower, older refresh from overwriting a newer result.
     private var loadGeneration = 0
+    private var preferenceGeneration = 0
 
     init(service: any CameraServicing) {
         self.service = service
@@ -103,17 +106,43 @@ final class CamerasViewModel {
 
     /// Mirrors a favourite change to the account, so the other device agrees.
     ///
-    /// The local toggle has already happened by the time this runs: a star should
-    /// respond instantly and not wait on the network. A failure here leaves the
-    /// device ahead of the account, which the next successful load reconciles.
-    func syncFavourites(_ ids: [String]) async {
-        accountPreferences = try? await service.setCameraPreferences(
+    /// The view applies the star optimistically and rolls it back only if this
+    /// exact request fails. A newer toggle supersedes an older response.
+    @discardableResult
+    func syncFavourites(_ ids: [String]) async -> APIError? {
+        await savePreferences(
             CameraPreferencesUpdate(favouriteIds: ids, order: nil))
     }
 
-    func saveOrder(_ ids: [String]) async {
-        accountPreferences = try? await service.setCameraPreferences(
+    @discardableResult
+    func saveOrder(_ ids: [String]) async -> APIError? {
+        await savePreferences(
             CameraPreferencesUpdate(favouriteIds: nil, order: ids))
+    }
+
+    private func savePreferences(_ update: CameraPreferencesUpdate) async -> APIError? {
+        preferenceGeneration &+= 1
+        let generation = preferenceGeneration
+        isSavingPreferences = true
+        preferenceError = nil
+        defer {
+            if generation == preferenceGeneration { isSavingPreferences = false }
+        }
+        do {
+            let saved = try await service.setCameraPreferences(update)
+            guard generation == preferenceGeneration else { return nil }
+            accountPreferences = saved
+            return nil
+        } catch let apiError as APIError {
+            guard generation == preferenceGeneration else { return nil }
+            preferenceError = apiError
+            return apiError
+        } catch {
+            guard generation == preferenceGeneration else { return nil }
+            let failure = APIError.unexpectedStatus(0, requestId: nil)
+            preferenceError = failure
+            return failure
+        }
     }
 
     func load(showSpinner: Bool = true) async {
@@ -137,7 +166,10 @@ final class CamerasViewModel {
             error = nil
             // Secondary: a gateway that cannot report preferences should still
             // show the cameras, falling back to whatever this device remembers.
-            accountPreferences = loadedPreferences
+            if let loadedPreferences {
+                accountPreferences = loadedPreferences
+                preferenceError = nil
+            }
         } catch let apiError as APIError {
             guard generation == loadGeneration else { return }
             error = apiError
@@ -282,6 +314,9 @@ struct CamerasView: View {
             ScrollView {
                 LazyVStack(spacing: 14) {
                     systemStatusBanner(model.cameras)
+                    if let preferenceError = model.preferenceError {
+                        preferenceSyncBanner(preferenceError)
+                    }
 
                     if visible.isEmpty {
                         noMatches(model)
@@ -331,9 +366,16 @@ struct CamerasView: View {
             }
         }
         Button {
+            let previous = environment.preferences.favouriteCameraIds
             environment.preferences.toggleFavourite(camera.id)
-            let ids = environment.preferences.favouriteCameraIds
-            Task { await model?.syncFavourites(ids) }
+            let intended = environment.preferences.favouriteCameraIds
+            Task {
+                if await model?.syncFavourites(intended) != nil,
+                    environment.preferences.favouriteCameraIds == intended
+                {
+                    environment.preferences.favouriteCameraIds = previous
+                }
+            }
         } label: {
             Label(
                 environment.preferences.isFavourite(camera.id)
@@ -345,6 +387,24 @@ struct CamerasView: View {
         } label: {
             Label("Refresh image", systemImage: "arrow.clockwise")
         }
+    }
+
+    private func preferenceSyncBanner(_ error: APIError) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "icloud.slash.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Account changes weren't saved")
+                    .font(.subheadline.weight(.medium))
+                Text(error.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
     }
 
     /// A single honest line about the system, shown only when something is wrong.

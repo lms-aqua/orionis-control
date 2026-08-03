@@ -20,29 +20,44 @@ final class InfrastructureModel {
     private(set) var isWorking = false
 
     private let service: any InfraServicing
+    private var loadGeneration = 0
 
     init(service: any InfraServicing) {
         self.service = service
     }
 
     func load() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if status == nil { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
+        async let usersRequest = service.autheliaUsers()
+        async let backupsRequest = service.autheliaBackups()
         do {
-            status = try await service.infraStatus()
+            let loadedStatus = try await service.infraStatus()
+            let loadedUsers = try? await usersRequest
+            let loadedBackups = try? await backupsRequest
+            guard generation == loadGeneration else { return }
+            status = loadedStatus
             error = nil
             // Users and backups are secondary: failing to read them should not
-            // hide whether Caddy and Authelia are up.
-            users = (try? await service.autheliaUsers()) ?? []
-            backups = (try? await service.autheliaBackups()) ?? []
+            // hide whether Caddy and Authelia are up or erase prior good data.
+            if let loadedUsers { users = loadedUsers }
+            if let loadedBackups { backups = loadedBackups }
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 
     func requestRestart() async {
+        loadGeneration &+= 1
+        isLoading = false
         isWorking = true
         notice = nil
         defer { isWorking = false }
@@ -60,6 +75,8 @@ final class InfrastructureModel {
     }
 
     func restore(backup: String) async {
+        loadGeneration &+= 1
+        isLoading = false
         isWorking = true
         notice = nil
         defer { isWorking = false }

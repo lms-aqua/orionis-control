@@ -10,6 +10,8 @@ final class DeviceSessionsModel {
     private(set) var notice: String?
 
     private let service: any DeviceServicing
+    private var loadGeneration = 0
+    private var removedSessionIds = Set<String>()
 
     init(service: any DeviceServicing) {
         self.service = service
@@ -26,14 +28,22 @@ final class DeviceSessionsModel {
     }
 
     func load() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if sessions.isEmpty { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
         do {
-            sessions = try await service.devices()
+            let loadedSessions = try await service.devices()
+            guard generation == loadGeneration else { return }
+            sessions = loadedSessions.filter { !removedSessionIds.contains($0.id) }
             error = nil
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
@@ -46,6 +56,7 @@ final class DeviceSessionsModel {
         defer { removingId = nil }
         do {
             try await service.removeDevice(sessionId: session.id)
+            removedSessionIds.insert(session.id)
             sessions.removeAll { $0.id == session.id }
             let name = session.deviceName ?? "That device"
             notice = "\(name) has been signed out."

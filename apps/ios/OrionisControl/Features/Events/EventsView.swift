@@ -9,6 +9,7 @@ final class EventsViewModel {
     private(set) var isLoadingMore = false
     private(set) var hasMore = false
     private(set) var lastLoadedAt: Date?
+    private(set) var paginationError: APIError?
 
     var filter = EventFilter()
     var searchText = ""
@@ -50,6 +51,7 @@ final class EventsViewModel {
             hasMore = page.page.hasMore
             lastLoadedAt = Date()
             error = nil
+            paginationError = nil
         } catch let apiError as APIError {
             guard generation == loadGeneration else { return }
             error = apiError
@@ -63,17 +65,25 @@ final class EventsViewModel {
         guard hasMore, !isLoadingMore else { return }
         let generation = loadGeneration
         isLoadingMore = true
+        paginationError = nil
         defer {
             if generation == loadGeneration { isLoadingMore = false }
         }
         var next = filter
         next.offset = events.count
-        if let page = try? await service.events(filter: next) {
+        do {
+            let page = try await service.events(filter: next)
             guard generation == loadGeneration else { return }
             let existingIds = Set(events.map(\.id))
             let newItems = page.items.filter { !existingIds.contains($0.id) }
             events.append(contentsOf: newItems)
             hasMore = page.page.hasMore
+        } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
+            paginationError = apiError
+        } catch {
+            guard generation == loadGeneration else { return }
+            paginationError = .unexpectedStatus(0, requestId: nil)
         }
     }
 
@@ -97,6 +107,7 @@ struct EventsView: View {
     @Environment(DeepLinkRouter.self) private var router
     @State private var model: EventsViewModel?
     @State private var selected: CameraEvent?
+    @State private var navigationError: APIError?
 
     var body: some View {
         NavigationStack {
@@ -118,12 +129,27 @@ struct EventsView: View {
         .onChange(of: router.pendingDestination) { _, destination in
             if case .event(let id) = destination {
                 Task {
-                    if let event = try? await environment.service.event(id: id) {
+                    do {
+                        let event = try await environment.service.event(id: id)
                         selected = event
+                    } catch let apiError as APIError {
+                        navigationError = apiError
+                    } catch {
+                        navigationError = .unexpectedStatus(0, requestId: nil)
                     }
                     _ = router.consume()
                 }
             }
+        }
+        .alert(
+            "Couldn't open event",
+            isPresented: Binding(
+                get: { navigationError != nil },
+                set: { if !$0 { navigationError = nil } })
+        ) {
+            Button("OK", role: .cancel) { navigationError = nil }
+        } message: {
+            Text(navigationError?.message ?? "The event could not be loaded.")
         }
     }
 
@@ -231,7 +257,17 @@ struct EventsView: View {
                     Button { selected = event } label: { EventRow(event: event) }
                         .buttonStyle(.plain)
                 }
-                if model.hasMore {
+                if let paginationError = model.paginationError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("More events couldn't be loaded", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(paginationError.message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Try again") { Task { await model.loadMore() } }
+                    }
+                    .padding(.vertical, 6)
+                } else if model.hasMore {
                     HStack {
                         Spacer()
                         ProgressView()

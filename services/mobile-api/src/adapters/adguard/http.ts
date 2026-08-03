@@ -96,12 +96,22 @@ function bucketSeries(
   }));
 }
 
-function mapQueryStatus(reason: string | undefined, filtered: boolean): QueryStatus {
+export function mapQueryStatus(reason: string | undefined, filtered: boolean): QueryStatus {
   const r = (reason ?? '').toLowerCase();
   if (r.includes('rewrite')) return 'rewritten';
-  if (r.includes('safesearch')) return 'safe_search';
+  if (r.includes('safesearch') || r.includes('safe_search')) return 'safe_search';
+  // AdGuard's normal allowed reasons are names such as
+  // `NotFilteredNotFound`. They contain "filtered", so allowed cases must be
+  // classified before the broader blocked check.
+  if (
+    r.includes('notfiltered') ||
+    r.includes('whitelist') ||
+    r.includes('allowlist') ||
+    (r === '' && !filtered)
+  ) {
+    return 'allowed';
+  }
   if (r.includes('filtered') || r.includes('blocked') || filtered) return 'blocked';
-  if (r.includes('notfiltered') || r === '') return 'allowed';
   return 'unknown';
 }
 
@@ -243,6 +253,23 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
     const raw = Array.isArray(data.data) ? (data.data as Record<string, unknown>[]) : [];
     const items: DnsQuery[] = raw.map((r, index) => {
       const question = (r.question ?? {}) as Record<string, unknown>;
+      const matchedRules = Array.isArray(r.rules) ? (r.rules as Record<string, unknown>[]) : [];
+      const firstRule = matchedRules[0];
+      const legacyFilterId =
+        typeof r.filterId === 'number'
+          ? r.filterId
+          : typeof r.filter_id === 'number'
+            ? r.filter_id
+            : null;
+      const ruleFilterId =
+        legacyFilterId ??
+        (typeof firstRule?.filter_list_id === 'number' ? firstRule.filter_list_id : null);
+      const ruleText =
+        typeof r.rule === 'string'
+          ? r.rule
+          : typeof firstRule?.text === 'string'
+            ? firstRule.text
+            : null;
       const at = typeof r.time === 'string' ? r.time : new Date().toISOString();
       const domain = String(question.name ?? question.host ?? '');
       return {
@@ -262,14 +289,14 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
             : typeof r.elapsedMs === 'number'
               ? r.elapsedMs
               : null,
-        status: mapQueryStatus(r.reason as string | undefined, Boolean(r.filterId)),
-        rule:
-          typeof r.rule === 'string'
-            ? r.rule
-            : Array.isArray(r.rules) && r.rules.length > 0
-              ? String((r.rules[0] as Record<string, unknown>).text ?? '')
-              : null,
-        ruleFilterId: typeof r.filterId === 'number' ? r.filterId : null,
+        status: mapQueryStatus(
+          r.reason as string | undefined,
+          // Filter id 0 is a valid custom-list id, not a useful boolean. A
+          // concrete rule is stronger legacy evidence when reason is absent.
+          Boolean(ruleText && !ruleText.trim().startsWith('@@')),
+        ),
+        rule: ruleText,
+        ruleFilterId,
         responseCode: typeof r.status === 'string' ? r.status : null,
         answers: Array.isArray(r.answer)
           ? (r.answer as Record<string, unknown>[]).map((a) => String(a.value ?? ''))

@@ -46,6 +46,9 @@ final class RecordingsTimelineModel {
     /// Bumped per load so a slow request that lost the race cannot yank the
     /// viewer back to a moment they already scrubbed away from.
     private var loadGeneration = 0
+    /// Coverage and media loads advance independently: installing a media item
+    /// must not make the surrounding day load look stale to its own cleanup.
+    private var coverageGeneration = 0
     // Short windows load fast and make scrubbing responsive; playback rolls into
     // the next one automatically, so continuity isn't lost.
     private let windowSeconds = 90
@@ -77,18 +80,29 @@ final class RecordingsTimelineModel {
         // suspension and briefly replace the player with footage from the wrong
         // date. The eventual loadWindow call gets its own newer generation.
         loadGeneration &+= 1
+        coverageGeneration &+= 1
+        let generation = coverageGeneration
         player.pause()
         player.replaceCurrentItem(with: nil)
         windowStart = nil
         isPlaying = false
         isLoading = true
+        defer {
+            if generation == coverageGeneration { isLoading = false }
+        }
         errorText = nil
+        exportedClip = nil
+        coverage = []
+        gaps = []
+        coverageRatio = 0
+        hasFootage = false
         dayStart = Calendar.current.startOfDay(for: day)
         do {
             // The gateway merges the recorder's ten-minute segments into runs and
             // reports the gaps, so this no longer pages through every segment and
             // the seams where files rotate are not drawn as missing footage.
             let summary = try await service.coverage(cameraId: cameraId, day: dayStart)
+            guard generation == coverageGeneration else { return }
             coverage = summary.runs.map(\.interval)
             gaps = summary.gaps.map(\.interval)
             coverageRatio = summary.coverageRatio
@@ -102,11 +116,12 @@ final class RecordingsTimelineModel {
                 player.replaceCurrentItem(with: nil)
             }
         } catch let error as APIError {
+            guard generation == coverageGeneration else { return }
             errorText = error.message
         } catch {
+            guard generation == coverageGeneration else { return }
             errorText = "Couldn't load recordings."
         }
-        isLoading = false
     }
 
     /// Exports the window under the playhead as a file to share or save.
@@ -261,6 +276,9 @@ final class RecordingsTimelineModel {
                 }
             } catch {
                 guard generation == self.loadGeneration else { return }
+                self.player.replaceCurrentItem(with: nil)
+                self.windowStart = nil
+                self.isPlaying = false
                 self.errorText = "Couldn't load footage at that time."
             }
         }
@@ -278,8 +296,13 @@ final class RecordingsTimelineModel {
     private func windowDidEnd() {
         // Roll straight into the next window so continuous footage plays through
         // segment boundaries without the user lifting a finger.
-        guard isPlaying else { return }
-        seek(to: currentTime, autoplay: true)
+        guard isPlaying, let finishedWindow = windowStart else { return }
+        let next = finishedWindow.addingTimeInterval(Double(windowSeconds))
+        // Clear the old item first so seek cannot take its in-buffer fast path and
+        // replay the final frame of the window that just ended.
+        player.replaceCurrentItem(with: nil)
+        windowStart = nil
+        seek(to: next, autoplay: true)
     }
 
     private func tick() {

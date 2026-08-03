@@ -33,14 +33,15 @@ final class AdGuardViewModel {
         defer {
             if generation == loadGeneration { isLoading = false }
         }
+        async let statsTask = service.adGuardStats(range: range)
         do {
-            async let statusTask = service.adGuardStatus()
-            async let statsTask = service.adGuardStats(range: range)
-            let loadedStatus = try await statusTask
-            let loadedStats = try await statsTask
+            // Protection state is operationally important; a chart/statistics
+            // failure must not hide whether filtering is actually enabled.
+            let loadedStatus = try await service.adGuardStatus()
+            let loadedStats = try? await statsTask
             guard generation == loadGeneration else { return }
             status = loadedStatus
-            stats = loadedStats
+            if let loadedStats { stats = loadedStats }
             lastLoadedAt = Date()
             error = nil
         } catch let apiError as APIError {
@@ -80,6 +81,8 @@ final class AdGuardViewModel {
     }
 
     func setProtection(enabled: Bool, durationSeconds: Int?, reason: String?) async -> APIError? {
+        loadGeneration &+= 1
+        isLoading = false
         do {
             status = try await service.setProtection(
                 ProtectionChangeRequest(

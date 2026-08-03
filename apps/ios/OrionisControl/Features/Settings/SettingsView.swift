@@ -430,14 +430,21 @@ struct NotificationSettingsView: View {
 
     private func save() async {
         guard preferences != savedPreferences, !isSaving else { return }
+        let submitted = preferences
         isSaving = true
         error = nil
         saveConfirmation = nil
         defer { isSaving = false }
         do {
-            try await environment.service.updateNotificationPreferences(preferences)
-            savedPreferences = preferences
-            saveConfirmation = "Notification preferences saved."
+            try await environment.service.updateNotificationPreferences(submitted)
+            // The controls remain editable while the request is in flight. Mark
+            // only the exact payload the server accepted as saved, so a newer
+            // local edit does not silently lose its dirty state.
+            savedPreferences = submitted
+            saveConfirmation =
+                preferences == submitted
+                ? "Notification preferences saved."
+                : "Saved. You have newer changes that still need saving."
         } catch let apiError as APIError {
             error = apiError
         } catch {
