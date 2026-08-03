@@ -9,9 +9,10 @@ name: iOS AltStore
 #   IPA:    https://github.com/<owner>/<repo>/releases/download/ios_latest/OrionisControl.ipa
 
 on:
-  push:
+  workflow_run:
+    workflows: ["iOS CI"]
     branches: [main]
-    paths: ["apps/ios/**", ".github/workflows/ios-altstore.yml", ".github/altstore/**"]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
@@ -24,6 +25,7 @@ permissions:
 jobs:
   package:
     name: Package unsigned IPA and publish source
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: macos-15
     timeout-minutes: 45
     defaults:
@@ -32,6 +34,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Package exactly what iOS CI validated, even if main advances while
+          # this downstream workflow is waiting for a runner.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Select the newest available Xcode
         run: |
@@ -200,11 +206,12 @@ jobs:
       - name: Publish the rolling ios_latest release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           if ! gh release view ios_latest >/dev/null 2>&1; then
             gh release create ios_latest \
-              --target "${{ github.sha }}" \
+              --target "$RELEASE_SHA" \
               --prerelease \
               --latest=false \
               --title "Orionis Control — iOS (rolling, unsigned)" \

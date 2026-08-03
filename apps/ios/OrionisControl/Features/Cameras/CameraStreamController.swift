@@ -51,6 +51,10 @@ final class CameraStreamController {
     /// How many times this open has renegotiated WebRTC because it connected but
     /// painted no video. Bounded, then it gives up to HLS.
     private var webRTCFrameRetries = 0
+    /// Invalidates connection work that outlives a stop, pause, camera switch or
+    /// newer retry. A cancelled URLSession call may still finish successfully;
+    /// its server-side stream must then be explicitly revoked instead of leaked.
+    private var connectionGeneration = 0
 
     /// Touched from the nonisolated `deinit` purely to cancel and deregister.
     /// `Task.cancel()` and `NotificationCenter.removeObserver` are both safe from
@@ -122,6 +126,7 @@ final class CameraStreamController {
 
     /// Viewer-initiated pause. Distinct from a stall: no recovery is attempted.
     func pause() {
+        connectionGeneration &+= 1
         player.pause()
         recoveryTask?.cancel()
         // WebRTC has no "pause": stop pulling media entirely. `resume()` rejoins
@@ -150,6 +155,7 @@ final class CameraStreamController {
     /// decoding, drops the item, and revokes the gateway session so no stream is
     /// left running for a screen nobody is looking at.
     func stop() async {
+        connectionGeneration &+= 1
         connectTask?.cancel()
         recoveryTask?.cancel()
         connectTask = nil
@@ -168,6 +174,7 @@ final class CameraStreamController {
 
     /// Backgrounding: stop pulling video, remembering whether to rejoin later.
     func suspendForBackground() {
+        connectionGeneration &+= 1
         wasPlayingBeforeBackground = state.isLive || state == .buffering || state == .connecting
         recoveryTask?.cancel()
         connectTask?.cancel()
@@ -201,6 +208,9 @@ final class CameraStreamController {
         webRTCFrameWatchdog?.cancel()
         guard let camera else { return }
 
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
+
         // An offline camera is not a stream failure, and retrying it is pointless.
         guard camera.health.status.isUsable else {
             transition(to: .offline(reason: camera.health.message ?? "\(camera.name) is offline"))
@@ -213,13 +223,38 @@ final class CameraStreamController {
         connectTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let session = try await self.service.createStreamSession(
+                // Reconnects replace, rather than accumulate, gateway sessions.
+                // Keep the reference visible until revocation finishes so a
+                // simultaneous stop can also perform a best-effort cleanup.
+                if let previous = self.session {
+                    do {
+                        try await self.service.endStreamSession(
+                            cameraId: self.cameraId, streamId: previous.id)
+                    } catch {
+                        // Cancellation means a newer connection owns cleanup;
+                        // leave the reference intact for that task. A current
+                        // task may continue after a best-effort server failure.
+                        guard !Task.isCancelled, generation == self.connectionGeneration else {
+                            return
+                        }
+                    }
+                    if self.session?.id == previous.id { self.session = nil }
+                }
+                guard !Task.isCancelled, generation == self.connectionGeneration else { return }
+
+                let newSession = try await self.service.createStreamSession(
                     cameraId: self.cameraId,
                     quality: self.quality,
                     lowData: self.lowData,
                     preferredProtocols: self.preferredProtocols)
-                guard !Task.isCancelled else { return }
-                self.play(session: session)
+                guard !Task.isCancelled, generation == self.connectionGeneration else {
+                    // The gateway created this stream after the viewer moved on.
+                    // Revoke it immediately so cancellation cannot leak sessions.
+                    try? await self.service.endStreamSession(
+                        cameraId: self.cameraId, streamId: newSession.id)
+                    return
+                }
+                self.play(session: newSession)
             } catch let error as APIError {
                 guard !Task.isCancelled else { return }
                 self.handle(error: error)

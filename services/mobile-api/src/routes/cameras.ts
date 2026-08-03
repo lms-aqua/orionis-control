@@ -166,7 +166,10 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
   const mintHlsSession = async (
     streamId: string,
     src: string,
-    config: { orionis: { baseUrl: string; hlsBaseUrl: string; timeoutMs: number } },
+    config: {
+      orionis: { baseUrl: string; hlsBaseUrl: string; timeoutMs: number };
+      streamTokenTtlSeconds: number;
+    },
   ): Promise<string> => {
     const { baseUrl, hlsBaseUrl, timeoutMs } = config.orionis;
     const masterUrl = hlsBaseUrl
@@ -188,6 +191,11 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       throw new AppError('STREAM_UNAVAILABLE', 'The camera stream is not available.');
     }
     hlsSessions.set(streamId, variant);
+    const cleanup = setTimeout(() => {
+      // A later re-mint may have replaced this variant. Its newer timer owns it.
+      if (hlsSessions.get(streamId) === variant) hlsSessions.delete(streamId);
+    }, config.streamTokenTtlSeconds * 1000);
+    cleanup.unref();
     return variant;
   };
 
@@ -403,8 +411,12 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       const { db, orionis } = req.services;
       const principal = req.principal!;
       const row = db
-        .prepare('SELECT * FROM stream_sessions WHERE id = ? AND user_id = ?')
-        .get(req.params.streamId, principal.userId) as Record<string, unknown> | undefined;
+        .prepare(
+          `SELECT * FROM stream_sessions
+             WHERE id = ? AND user_id = ? AND session_id = ? AND camera_id = ?`,
+        )
+        .get(req.params.streamId, principal.userId, principal.sessionId, req.params.cameraId) as
+        Record<string, unknown> | undefined;
       if (!row) throw AppError.notFound('That stream session');
 
       db.prepare('UPDATE stream_sessions SET revoked_at = ? WHERE id = ?').run(
@@ -455,12 +467,24 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
     }
 
+    const routeStreamId = (r.params as { streamId?: string }).streamId;
+    if (!routeStreamId || String(claims.str) !== routeStreamId) {
+      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
+    }
+
     const row = db.prepare('SELECT * FROM stream_sessions WHERE id = ?').get(String(claims.str)) as
       Record<string, unknown> | undefined;
     if (!row || row.revoked_at) {
       throw new AppError('STREAM_UNAVAILABLE', 'This stream session was revoked.');
     }
-    if (new Date(String(row.expires_at)).getTime() < Date.now()) {
+    if (
+      String(claims.sub) !== String(row.user_id) ||
+      String(claims.sid) !== String(row.session_id) ||
+      String(claims.cam) !== String(row.camera_id)
+    ) {
+      throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
+    }
+    if (new Date(String(row.expires_at)).getTime() <= Date.now()) {
       throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream session has expired.');
     }
     if (!r.services.sessions.isActive(String(row.session_id))) {
@@ -595,44 +619,56 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     Params: { streamId: string };
     Querystring: { token?: string };
     Body: { type?: string; sdp?: string };
-  }>('/stream/:streamId/webrtc', async (req) => {
-    const { config } = req.services;
-    const { row } = await resolveStream(req);
+  }>(
+    '/stream/:streamId/webrtc',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (req) => {
+      const { config } = req.services;
+      const { row } = await resolveStream(req);
 
-    const offer = req.body ?? {};
-    if (offer.type !== 'offer' || typeof offer.sdp !== 'string' || offer.sdp.length < 8) {
-      throw new AppError('VALIDATION_FAILED', 'A WebRTC offer is required.');
-    }
+      const offer = req.body ?? {};
+      if (
+        offer.type !== 'offer' ||
+        typeof offer.sdp !== 'string' ||
+        offer.sdp.length < 8 ||
+        offer.sdp.length > 256_000
+      ) {
+        throw new AppError('VALIDATION_FAILED', 'A WebRTC offer is required.');
+      }
 
-    // Relay the camera's native stream. Forcing every viewer through a software
-    // transcode makes frame pacing depend on host CPU headroom and can introduce
-    // persistent stutter under load. WebRTC already handles packet loss; sites
-    // that need a different source can map the camera in go2rtc itself without
-    // the gateway silently changing its identity.
-    const src = webRTCSource(String(row.camera_id));
-    try {
-      const upstream = await fetch(
-        `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ type: 'offer', sdp: offer.sdp }),
-          signal: AbortSignal.timeout(config.orionis.timeoutMs),
-        },
-      );
-      if (!upstream.ok) {
-        throw new AppError('STREAM_UNAVAILABLE', 'The camera could not negotiate a WebRTC stream.');
+      // Relay the camera's native stream. Forcing every viewer through a software
+      // transcode makes frame pacing depend on host CPU headroom and can introduce
+      // persistent stutter under load. WebRTC already handles packet loss; sites
+      // that need a different source can map the camera in go2rtc itself without
+      // the gateway silently changing its identity.
+      const src = webRTCSource(String(row.camera_id));
+      try {
+        const upstream = await fetch(
+          `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ type: 'offer', sdp: offer.sdp }),
+            signal: AbortSignal.timeout(config.orionis.timeoutMs),
+          },
+        );
+        if (!upstream.ok) {
+          throw new AppError(
+            'STREAM_UNAVAILABLE',
+            'The camera could not negotiate a WebRTC stream.',
+          );
+        }
+        const answer = (await upstream.json()) as { type?: string; sdp?: string };
+        if (typeof answer.sdp !== 'string') {
+          throw new AppError('UPSTREAM_ERROR', 'The media plane returned no WebRTC answer.');
+        }
+        return ok({ type: 'answer', sdp: answer.sdp }, req.id);
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');
       }
-      const answer = (await upstream.json()) as { type?: string; sdp?: string };
-      if (typeof answer.sdp !== 'string') {
-        throw new AppError('UPSTREAM_ERROR', 'The media plane returned no WebRTC answer.');
-      }
-      return ok({ type: 'answer', sdp: answer.sdp }, req.id);
-    } catch (err) {
-      if (err instanceof AppError) throw err;
-      throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');
-    }
-  });
+    },
+  );
 
   // --- POST /cameras/:cameraId/controls -------------------------------------
   app.post<{ Params: { cameraId: string } }>(

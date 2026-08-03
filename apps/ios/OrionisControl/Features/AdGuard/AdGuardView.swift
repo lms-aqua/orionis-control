@@ -440,6 +440,11 @@ struct QueryLogView: View {
                         Spacer()
                         Label("\(blockedCount) blocked", systemImage: "hand.raised.circle.fill")
                             .foregroundStyle(.red)
+                        if otherCount > 0 {
+                            Spacer()
+                            Label("\(otherCount) other", systemImage: "questionmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .font(.subheadline.weight(.medium))
                 }
@@ -467,7 +472,6 @@ struct QueryLogView: View {
         .navigationTitle("Query log")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.querySearch, prompt: "Search domain or client")
-        .onSubmit(of: .search) { Task { await model.loadQueries() } }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Picker("Filter", selection: $model.queryFilter) {
@@ -479,7 +483,20 @@ struct QueryLogView: View {
             }
         }
         .refreshable { await model.loadQueries() }
-        .task { await model.loadQueries() }
+        .task(id: model.querySearch) {
+            // Debounce typing, while still reloading immediately when the view
+            // first opens. Clearing search now restores the full log without
+            // requiring an extra keyboard submit.
+            if !model.querySearch.isEmpty {
+                do {
+                    try await Task.sleep(for: .milliseconds(300))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await model.loadQueries()
+        }
         .sheet(item: $selected) { query in
             QueryDetailSheet(query: query) { domain, kind in
                 let result = await model.addRule(domain, kind: kind)
@@ -495,21 +512,34 @@ struct QueryLogView: View {
     }
 
     private var blockedCount: Int { model.queries.filter { $0.status == .blocked }.count }
-    private var allowedCount: Int { model.queries.count - blockedCount }
+    private var allowedCount: Int { model.queries.filter { $0.status == .allowed }.count }
+    private var otherCount: Int { model.queries.count - blockedCount - allowedCount }
 }
 
 struct QueryRow: View {
     let query: DnsQuery
 
+    private var presentation: (label: String, symbol: String, tint: Color) {
+        switch query.status {
+        case .allowed:
+            ("ALLOWED", "checkmark.circle.fill", .green)
+        case .blocked:
+            ("BLOCKED", "hand.raised.fill", .red)
+        case .rewritten:
+            ("REWRITTEN", "arrow.triangle.swap", .blue)
+        case .safeSearch:
+            ("SAFE SEARCH", "checkmark.shield.fill", .indigo)
+        case .unknown:
+            ("UNKNOWN", "questionmark.circle.fill", .secondary)
+        }
+    }
+
     var body: some View {
-        let isBlocked = query.status == .blocked
+        let style = presentation
         HStack(spacing: 10) {
-            Image(
-                systemName: isBlocked
-                    ? "hand.raised.fill" : "checkmark.circle"
-            )
+            Image(systemName: style.symbol)
             .font(.caption)
-            .foregroundStyle(isBlocked ? .red : .green)
+            .foregroundStyle(style.tint)
             .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -527,9 +557,9 @@ struct QueryRow: View {
             Spacer(minLength: 0)
 
             VStack(alignment: .trailing, spacing: 3) {
-                Text(isBlocked ? "BLOCKED" : "ALLOWED")
+                Text(style.label)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(isBlocked ? .red : .green)
+                    .foregroundStyle(style.tint)
                 Text(query.type)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
@@ -539,7 +569,7 @@ struct QueryRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(query.domain), \(isBlocked ? "blocked" : "allowed"), from \(query.clientName ?? query.client)"
+            "\(query.domain), \(query.status.displayName), from \(query.clientName ?? query.client)"
         )
     }
 }

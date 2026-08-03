@@ -3,9 +3,19 @@ name: iOS CI
 on:
   push:
     branches: [main]
-    paths: ["apps/ios/**", ".github/workflows/ios-ci.yml"]
+    paths:
+      [
+        "apps/ios/**",
+        ".github/workflows/ios-ci.yml",
+        ".github/workflows/ios-altstore.yml",
+      ]
   pull_request:
-    paths: ["apps/ios/**", ".github/workflows/ios-ci.yml"]
+    paths:
+      [
+        "apps/ios/**",
+        ".github/workflows/ios-ci.yml",
+        ".github/workflows/ios-altstore.yml",
+      ]
   workflow_dispatch:
 
 concurrency:
@@ -89,18 +99,7 @@ jobs:
           echo "Using simulator: $DEVICE"
           echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
 
-      - name: Build (Debug, unsigned)
-        run: |
-          set -o pipefail
-          xcodebuild build \
-            -project OrionisControl.xcodeproj \
-            -scheme OrionisControl \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
-            CODE_SIGNING_ALLOWED=NO \
-            | tee build-debug.log
-
-      - name: Unit tests
+      - name: Build and run unit tests
         run: |
           set -o pipefail
           xcodebuild test \
@@ -113,23 +112,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | tee test-unit.log
 
-      - name: UI tests
-        # UI tests are slower and simulator-flaky; they must not gate a merge,
-        # but their failure is still surfaced rather than hidden.
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          xcodebuild test \
-            -project OrionisControl.xcodeproj \
-            -scheme OrionisControl \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
-            -only-testing:OrionisControlUITests \
-            -resultBundlePath TestResults-ui.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            | tee test-ui.log
-
       - name: Release-style unsigned build
+        # Main pushes are release-built by the downstream AltStore workflow.
+        # Keep this check on PRs, where AltStore intentionally does not run.
+        if: github.event_name == 'pull_request'
         run: |
           set -o pipefail
           xcodebuild build \
@@ -145,10 +131,10 @@ jobs:
       - name: Report new warnings
         if: always()
         run: |
-          COUNT=$(grep -c "warning:" build-debug.log || true)
+          COUNT=$(grep -c "warning:" test-unit.log || true)
           echo "Compiler warnings: $COUNT"
           if [ "$COUNT" -gt 0 ]; then
-            grep "warning:" build-debug.log | sort -u | head -50
+            grep "warning:" test-unit.log | sort -u | head -50
             echo "::warning::$COUNT compiler warning(s). Resolve or document them."
           fi
 
@@ -159,7 +145,6 @@ jobs:
           name: ios-test-results
           path: |
             apps/ios/TestResults-unit.xcresult
-            apps/ios/TestResults-ui.xcresult
           if-no-files-found: ignore
           retention-days: 14
 
@@ -171,3 +156,68 @@ jobs:
           path: apps/ios/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  ui-tests:
+    name: UI tests (advisory)
+    # Simulator UI tests remain visible but cannot block a release. Running them
+    # beside unit tests removes a second serial simulator/build cycle from CI.
+    continue-on-error: true
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/ios
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest available Xcode
+        run: |
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$LATEST" ]; then echo "::error::No Xcode on runner"; exit 1; fi
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the CI project
+        run: |
+          mkdir -p Config
+          cp Config/Development.xcconfig.example Config/Development.xcconfig
+          xcodegen generate --spec project.yml
+
+      - name: Pick a simulator
+        id: sim
+        run: |
+          DEVICE=$(xcrun simctl list devices available --json \
+            | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)['devices']
+          choices = [d['name'] for runtime, devices in data.items() if 'iOS' in runtime for d in devices if d.get('isAvailable') and 'iPhone' in d['name']]
+          print(choices[-1] if choices else '')
+          ")
+          if [ -z "$DEVICE" ]; then echo "::error::No iPhone simulator"; exit 1; fi
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+
+      - name: Build and run UI tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -only-testing:OrionisControlUITests \
+            -resultBundlePath TestResults-ui.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee test-ui.log
+
+      - name: Upload UI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-test-results
+          path: apps/ios/TestResults-ui.xcresult
+          if-no-files-found: ignore
+          retention-days: 14

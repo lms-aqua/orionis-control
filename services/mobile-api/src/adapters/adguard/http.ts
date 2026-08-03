@@ -5,6 +5,7 @@
  * credentials stay on this server; the iOS app never sees them and never talks
  * to AdGuard directly.
  */
+import { createHash } from 'node:crypto';
 import { AppError } from '../../lib/errors.ts';
 import { UpstreamClient } from '../../lib/http-upstream.ts';
 import type {
@@ -113,6 +114,23 @@ export function mapQueryStatus(reason: string | undefined, filtered: boolean): Q
   }
   if (r.includes('filtered') || r.includes('blocked') || filtered) return 'blocked';
   return 'unknown';
+}
+
+/**
+ * Stable identity for one upstream log record.
+ *
+ * Never include the array position: a new query inserted at the top would then
+ * change every row id and force SwiftUI to discard/recreate the whole list.
+ */
+export function queryLogId(fields: {
+  at: string;
+  client: string;
+  domain: string;
+  type: string;
+  reason?: string;
+  rule?: string | null;
+}): string {
+  return createHash('sha256').update(JSON.stringify(fields)).digest('base64url').slice(0, 24);
 }
 
 /**
@@ -251,7 +269,7 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
     });
 
     const raw = Array.isArray(data.data) ? (data.data as Record<string, unknown>[]) : [];
-    const items: DnsQuery[] = raw.map((r, index) => {
+    const items: DnsQuery[] = raw.map((r) => {
       const question = (r.question ?? {}) as Record<string, unknown>;
       const matchedRules = Array.isArray(r.rules) ? (r.rules as Record<string, unknown>[]) : [];
       const firstRule = matchedRules[0];
@@ -272,16 +290,19 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
             : null;
       const at = typeof r.time === 'string' ? r.time : new Date().toISOString();
       const domain = String(question.name ?? question.host ?? '');
+      const client = String(r.client ?? '');
+      const type = String(question.type ?? '');
+      const reason = typeof r.reason === 'string' ? r.reason : undefined;
       return {
-        id: `${at}:${domain}:${index}`,
+        id: queryLogId({ at, client, domain, type, reason, rule: ruleText }),
         at,
-        client: String(r.client ?? ''),
+        client,
         clientName:
           typeof r.client_info === 'object' && r.client_info
             ? (((r.client_info as Record<string, unknown>).name as string) ?? null)
             : null,
         domain,
-        type: String(question.type ?? ''),
+        type,
         upstream: typeof r.upstream === 'string' ? r.upstream : null,
         processingMs:
           typeof r.elapsedMs === 'string'
@@ -290,7 +311,7 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
               ? r.elapsedMs
               : null,
         status: mapQueryStatus(
-          r.reason as string | undefined,
+          reason,
           // Filter id 0 is a valid custom-list id, not a useful boolean. A
           // concrete rule is stronger legacy evidence when reason is absent.
           Boolean(ruleText && !ruleText.trim().startsWith('@@')),

@@ -278,6 +278,61 @@ describe('stream authorisation', () => {
     expect(res.json().error.code).toBe('VALIDATION_FAILED');
   });
 
+  it('binds a stream token to the stream id in the playback URL', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const session = (
+      await harness.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+        headers: harness.auth(tokens.accessToken),
+        payload: { preferredProtocols: ['webrtc'] },
+      })
+    ).json().data;
+
+    const res = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/stream/str_wrong/webrtc`,
+      headers: { authorization: `Bearer ${session.streamToken}` },
+      payload: { type: 'offer', sdp: 'v=0\r\nvalid' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('STREAM_TOKEN_EXPIRED');
+  });
+
+  it('only lets the creating device revoke a stream through its real camera path', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const session = (
+      await harness.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+        headers: harness.auth(tokens.accessToken),
+        payload: { preferredProtocols: ['hls'] },
+      })
+    ).json().data;
+
+    const wrongCamera = await harness.app.inject({
+      method: 'DELETE',
+      url: `${API_PREFIX}/cameras/cam-yard/stream-sessions/${session.id}`,
+      headers: harness.auth(tokens.accessToken),
+    });
+    expect(wrongCamera.statusCode).toBe(404);
+
+    const correct = await harness.app.inject({
+      method: 'DELETE',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions/${session.id}`,
+      headers: harness.auth(tokens.accessToken),
+    });
+    expect(correct.statusCode).toBe(200);
+  });
+
   it('rejects playback once the owning session is revoked', async () => {
     harness = await createHarness({
       orionis: new StubOrionisAdapter(),
