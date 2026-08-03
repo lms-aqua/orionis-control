@@ -112,22 +112,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | tee test-unit.log
 
-      - name: Release-style unsigned build
-        # Main pushes are release-built by the downstream AltStore workflow.
-        # Keep this check on PRs, where AltStore intentionally does not run.
-        if: github.event_name == 'pull_request'
-        run: |
-          set -o pipefail
-          xcodebuild build \
-            -project OrionisControl.xcodeproj \
-            -scheme OrionisControl \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            | tee build-release.log
-
       - name: Report new warnings
         if: always()
         run: |
@@ -154,6 +138,57 @@ jobs:
         with:
           name: ios-build-logs
           path: apps/ios/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release-build:
+    name: Release build verification
+    # Compile the production configuration in parallel with both test suites.
+    # AltStore still performs its own archive after the whole workflow passes.
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/ios
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest available Xcode
+        run: |
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$LATEST" ]; then echo "::error::No Xcode on runner"; exit 1; fi
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the production project
+        run: |
+          mkdir -p Config
+          cp Config/Development.xcconfig.example Config/Development.xcconfig
+          cp Config/Production.xcconfig.example Config/Production.xcconfig
+          xcodegen generate --spec project.yml
+
+      - name: Build Release (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OrionisControl.xcodeproj \
+            -scheme OrionisControl \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee build-release.log
+
+      - name: Upload Release log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-build-log
+          path: apps/ios/build-release.log
           if-no-files-found: ignore
           retention-days: 7
 
