@@ -53,7 +53,7 @@ final class RecordingsTimelineModel {
     private let service: any EventServicing
     private let api: APIClient
 
-    nonisolated(unsafe) let player = AVPlayer()
+    let player = AVPlayer()
 
     private(set) var coverage: [DateInterval] = []
     /// Real gaps between runs, so the scrubber can show where footage is missing
@@ -96,8 +96,8 @@ final class RecordingsTimelineModel {
     // the next one automatically, so continuity isn't lost.
     private let windowSeconds = 90
 
-    private nonisolated(unsafe) var timeObserver: Any?
-    private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
+    private nonisolated var timeObserver: Any?
+    private nonisolated var itemTokens: [NSObjectProtocol] = []
 
     init(cameraId: String, cameraName: String, service: any EventServicing, api: APIClient) {
         self.cameraId = cameraId

@@ -466,7 +466,7 @@ struct OrionisService: OrionisServicing {
         let calendar = Calendar.current
         let dayStart = calendar.startOfDay(for: day)
         let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
-        try await api.request(
+        return try await api.request(
             Endpoint(
                 path: "/recordings/coverage",
                 query: [

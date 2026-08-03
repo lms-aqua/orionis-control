@@ -300,7 +300,8 @@
                 "type": "boolean"
               },
               "audio": {
-                "type": "boolean"
+                "type": "boolean",
+                "nullable": true
               },
               "recordingToggle": {
                 "type": "boolean"
@@ -338,7 +339,8 @@
                 "$ref": "#/components/schemas/CameraStatus"
               },
               "recording": {
-                "type": "boolean"
+                "type": "boolean",
+                "nullable": true
               },
               "streaming": {
                 "type": "boolean"

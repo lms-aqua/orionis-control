@@ -513,14 +513,14 @@ struct DnsQueryInsights: Sendable, Equatable {
             guard !key.isEmpty else { return }
             result[key, default: 0] += 1
         }
-        return counts.map { NameCount(name: $0.key, count: $0.value) }
-            .sorted {
-                $0.count == $1.count
-                    ? $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                    : $0.count > $1.count
-            }
-            .prefix(limit)
-            .map { $0 }
+        let namedCounts: [NameCount] = counts.map { entry in
+            NameCount(name: entry.key, count: entry.value)
+        }
+        let sortedCounts = namedCounts.sorted { left, right in
+            if left.count != right.count { return left.count > right.count }
+            return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+        }
+        return Array(sortedCounts.prefix(limit))
     }
 }
 

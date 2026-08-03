@@ -472,7 +472,9 @@ actor APIClient {
 /// Type-erasing wrapper so `Endpoint.body` can hold any Encodable.
 private struct AnyEncodable: Encodable, @unchecked Sendable {
     private let encodeClosure: @Sendable (Encoder) throws -> Void
-    init(_ wrapped: any Encodable & Sendable) { encodeClosure = wrapped.encode }
+    init(_ wrapped: any Encodable & Sendable) {
+        encodeClosure = { encoder in try wrapped.encode(to: encoder) }
+    }
     func encode(to encoder: Encoder) throws { try encodeClosure(encoder) }
 }
 

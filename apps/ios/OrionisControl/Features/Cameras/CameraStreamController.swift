@@ -19,7 +19,7 @@ final class CameraStreamController {
 
     /// Created once and reused across reconnects, so renegotiating a stream never
     /// rebuilds the view hierarchy. Used for the HLS transport (and the fallback).
-    nonisolated(unsafe) let player = AVPlayer()
+    let player = AVPlayer()
 
     /// The sub-second transport. Parallel to `player`; exactly one is active at a
     /// time, chosen by the negotiated protocol. The view renders whichever
@@ -67,16 +67,16 @@ final class CameraStreamController {
     /// Touched from the nonisolated `deinit` purely to cancel and deregister.
     /// `Task.cancel()` and `NotificationCenter.removeObserver` are both safe from
     /// any isolation domain.
-    private nonisolated(unsafe) var connectTask: Task<Void, Never>?
-    private nonisolated(unsafe) var recoveryTask: Task<Void, Never>?
-    private nonisolated(unsafe) var renewalTask: Task<Void, Never>?
-    private nonisolated(unsafe) var webRTCWatchdog: Task<Void, Never>?
-    private nonisolated(unsafe) var webRTCFrameWatchdog: Task<Void, Never>?
-    private nonisolated(unsafe) var webRTCHealthTask: Task<Void, Never>?
-    private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
-    private nonisolated(unsafe) var audioTokens: [NSObjectProtocol] = []
+    private nonisolated var connectTask: Task<Void, Never>?
+    private nonisolated var recoveryTask: Task<Void, Never>?
+    private nonisolated var renewalTask: Task<Void, Never>?
+    private nonisolated var webRTCWatchdog: Task<Void, Never>?
+    private nonisolated var webRTCFrameWatchdog: Task<Void, Never>?
+    private nonisolated var webRTCHealthTask: Task<Void, Never>?
+    private nonisolated var itemTokens: [NSObjectProtocol] = []
+    private nonisolated var audioTokens: [NSObjectProtocol] = []
 
-    private nonisolated(unsafe) var timeObserver: Any?
+    private nonisolated var timeObserver: Any?
 
     init(
         cameraId: String,
