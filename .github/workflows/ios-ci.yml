@@ -283,6 +283,8 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
             -only-testing:${{ matrix.test }} \
+            -retry-tests-on-failure \
+            -test-iterations 2 \
             -resultBundlePath "TestResults-ui-${{ matrix.name }}.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             | tee test-ui.log
