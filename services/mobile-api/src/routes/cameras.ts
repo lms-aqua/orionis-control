@@ -593,7 +593,11 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       throw new AppError('VALIDATION_FAILED', 'A WebRTC offer is required.');
     }
 
-    const src = String(row.camera_id);
+    // WebRTC is served from the short-keyframe re-encode ("<id>_ll"), not the raw
+    // stream: its 0.5s GOP lets a lost packet recover almost instantly instead of
+    // freezing until the camera's 2s keyframe. It is an on-demand go2rtc exec
+    // source, so it only costs CPU while someone is actually watching.
+    const src = `${String(row.camera_id)}_ll`;
     try {
       const upstream = await fetch(
         `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,

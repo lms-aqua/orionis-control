@@ -97,13 +97,12 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       path: '/api/streams',
     });
     const all = data ?? {};
-    // Hide internal transcode twins (e.g. "56_aac"): they exist only to feed the
-    // recorder and HLS with AAC audio the camera does not natively provide, and
-    // are not cameras in their own right. Without this they show up as duplicate
-    // cameras in the app.
+    // Hide internal transcode twins: "<id>_aac" feeds the recorder/HLS with AAC
+    // audio, "<id>_ll" is the short-keyframe re-encode for WebRTC. They are not
+    // cameras in their own right; without this they show as duplicate cameras.
     const visible: Record<string, Go2rtcStream> = {};
     for (const [id, stream] of Object.entries(all)) {
-      if (!id.endsWith('_aac')) visible[id] = stream;
+      if (!id.endsWith('_aac') && !id.endsWith('_ll')) visible[id] = stream;
     }
     return visible;
   }
