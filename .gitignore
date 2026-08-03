@@ -26,9 +26,13 @@ CHANGELOG.md
 *_PLAN.md
 *_PROGRESS.md
 *_NOTES.md
+!apps/ios/RELEASE_NOTES.md
 AI_CONTEXT.md
 CLAUDE.md
 CODEX.md
+
+# Generated local code-graph analysis
+graphify-out/
 
 # --- node ---
 node_modules/

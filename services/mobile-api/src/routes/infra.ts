@@ -30,6 +30,7 @@ import {
   summariseCaddyChange,
 } from '../lib/infra-guards.ts';
 import { requestAutheliaRestart, readAutheliaRestart } from '../lib/infra-control.ts';
+import type { AuditInput } from '../audit/audit.ts';
 
 const CaddyConfigBody = z.object({
   serverId: z.string().min(1).max(64),
@@ -126,24 +127,25 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    audit.record({
-      action: 'infra.caddy.config_applied',
-      actor: actorOf(req),
-      outcome: 'success',
-      targetType: 'caddy',
-      targetId: body.serverId,
-      requestId: req.id,
-      ip: req.ip,
-      metadata: {
-        removedHosts: summary.removedHosts,
-        addedHosts: summary.addedHosts,
-        bytes: body.content.length,
-      },
-    });
-
     // 3. caddymanager keeps its own backup and validates on apply; a rejected
     //    config surfaces as a typed error rather than a broken server.
-    await infra.caddyApplyConfig(body.configId, body.content);
+    await auditMutation(
+      audit,
+      {
+        action: 'infra.caddy.config_applied',
+        actor: actorOf(req),
+        targetType: 'caddy',
+        targetId: body.serverId,
+        requestId: req.id,
+        ip: req.ip,
+        metadata: {
+          removedHosts: summary.removedHosts,
+          addedHosts: summary.addedHosts,
+          bytes: body.content.length,
+        },
+      },
+      () => infra.caddyApplyConfig(body.configId, body.content),
+    );
     return ok({ applied: true, ...summary }, req.id);
   });
 
@@ -177,18 +179,19 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      audit.record({
-        action: 'infra.authelia.config_applied',
-        actor: actorOf(req),
-        outcome: 'success',
-        targetType: 'authelia',
-        targetId: 'configuration',
-        requestId: req.id,
-        ip: req.ip,
-        metadata: { bytes: body.content.length },
-      });
-
-      await infra.autheliaApply(body.content);
+      await auditMutation(
+        audit,
+        {
+          action: 'infra.authelia.config_applied',
+          actor: actorOf(req),
+          targetType: 'authelia',
+          targetId: 'configuration',
+          requestId: req.id,
+          ip: req.ip,
+          metadata: { bytes: body.content.length },
+        },
+        () => infra.autheliaApply(body.content),
+      );
 
       // Applying writes the file; Authelia only reads it at start. Say so rather
       // than letting the change look live when it is not.
@@ -218,19 +221,20 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
       const { infra, audit } = req.services;
       const username = req.params.username;
 
-      audit.record({
-        action: 'infra.authelia.password_reset',
-        actor: actorOf(req),
-        outcome: 'success',
-        targetType: 'authelia_user',
-        targetId: username,
-        requestId: req.id,
-        ip: req.ip,
-        // The password itself is never recorded, only that it changed.
-        metadata: { username },
-      });
-
-      await infra.autheliaSetPassword(username, body.password);
+      await auditMutation(
+        audit,
+        {
+          action: 'infra.authelia.password_reset',
+          actor: actorOf(req),
+          targetType: 'authelia_user',
+          targetId: username,
+          requestId: req.id,
+          ip: req.ip,
+          // The password itself is never recorded, only that it changed.
+          metadata: { username },
+        },
+        () => infra.autheliaSetPassword(username, body.password),
+      );
       return ok({ updated: true, username }, req.id);
     },
   );
@@ -248,18 +252,19 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
       const body = RestoreBody.parse(req.body ?? {});
       const { infra, audit } = req.services;
 
-      audit.record({
-        action: 'infra.authelia.backup_restored',
-        actor: actorOf(req),
-        outcome: 'success',
-        targetType: 'authelia',
-        targetId: body.name,
-        requestId: req.id,
-        ip: req.ip,
-        metadata: { backup: body.name },
-      });
-
-      await infra.autheliaRestoreBackup(body.name);
+      await auditMutation(
+        audit,
+        {
+          action: 'infra.authelia.backup_restored',
+          actor: actorOf(req),
+          targetType: 'authelia',
+          targetId: body.name,
+          requestId: req.id,
+          ip: req.ip,
+          metadata: { backup: body.name },
+        },
+        () => infra.autheliaRestoreBackup(body.name),
+      );
       return ok(
         {
           restored: true,
@@ -321,4 +326,25 @@ async function firstCaddyServerId(services: {
 /** Upstream failures are reported per-section rather than failing the whole page. */
 function describe(error: unknown): string {
   return error instanceof AppError ? error.message : 'This service could not be reached.';
+}
+
+/**
+ * Records exactly what an infrastructure mutation actually did.
+ *
+ * These operations cross a process boundary and can fail after validation. The
+ * audit trail must therefore be written after the awaited result, while failures
+ * still receive their own record before the original error is rethrown.
+ */
+export async function auditMutation(
+  audit: { record(input: AuditInput): unknown },
+  input: Omit<AuditInput, 'outcome' | 'reason'>,
+  operation: () => Promise<void>,
+): Promise<void> {
+  try {
+    await operation();
+    audit.record({ ...input, outcome: 'success' });
+  } catch (error) {
+    audit.record({ ...input, outcome: 'failure', reason: describe(error) });
+    throw error;
+  }
 }

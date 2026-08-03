@@ -124,6 +124,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import json, os
+          from pathlib import Path
 
           repo    = os.environ["REPO"]
           version = os.environ["VERSION"]
@@ -140,7 +141,14 @@ jobs:
               f"authentication. Unsigned rolling build (CI run {build}); AltStore signs it "
               "on-device with your own Apple ID."
           )
-          notes = f"Rolling development build (CI run {build})."
+          release_notes = Path("RELEASE_NOTES.md")
+          notes = (
+              release_notes.read_text(encoding="utf-8").strip()
+              if release_notes.exists()
+              else f"Rolling development build (CI run {build})."
+          )
+          if not notes:
+              notes = f"Rolling development build (CI run {build})."
 
           version_entry = {
               "version": version,

@@ -118,6 +118,26 @@ struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     let createdAt: Date?
     let lastUsedAt: Date?
     let expiresAt: Date?
+    let revoked: Bool
+    let current: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, deviceId, deviceName, createdAt, lastUsedAt, expiresAt, revoked, current
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        deviceName = try container.decodeIfPresent(String.self, forKey: .deviceName)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt)
+        expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        // Older gateways did not expose these flags. Treat those sessions as
+        // active/non-current so a mobile update remains backward compatible.
+        revoked = try container.decodeIfPresent(Bool.self, forKey: .revoked) ?? false
+        current = try container.decodeIfPresent(Bool.self, forKey: .current) ?? false
+    }
 }
 
 // MARK: - Cameras

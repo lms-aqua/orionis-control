@@ -3,7 +3,7 @@
  * IDs, structured logging with redaction, the versioned route prefix and the
  * single error handler that converts everything into the response envelope.
  */
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -34,9 +34,7 @@ export async function buildApp(services: AppServices): Promise<FastifyInstance> 
     trustProxy: true,
     // Fastify's automatic per-request logging is replaced by the onResponse
     // hook below, which adds the principal and drops query strings.
-    // NOTE: Fastify 5 deprecates this in favour of `logController`, but that
-    // option requires supplying all ten controller members; revisit at v6.
-    disableRequestLogging: true,
+    logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 1_048_576,
     logger: {
       level: config.logLevel,

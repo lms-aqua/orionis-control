@@ -284,6 +284,32 @@ final class DecodingTests: XCTestCase {
         XCTAssertNotNil(try decode(Wrapper.self, #"{"at":"2026-07-31T12:00:00Z"}"#).at)
     }
 
+    func testDeviceSessionDecodesCurrentAndRevokedState() throws {
+        let session = try decode(
+            SessionSummary.self,
+            """
+            {
+              "id": "session-1", "deviceId": "device-1", "deviceName": "My iPhone",
+              "createdAt": "2026-07-31T12:00:00Z", "lastUsedAt": null, "expiresAt": null,
+              "revoked": false, "current": true
+            }
+            """)
+
+        XCTAssertEqual(session.id, "session-1")
+        XCTAssertEqual(session.deviceName, "My iPhone")
+        XCTAssertFalse(session.revoked)
+        XCTAssertTrue(session.current)
+    }
+
+    func testDeviceSessionDefaultsFlagsForOlderGateways() throws {
+        let session = try decode(
+            SessionSummary.self,
+            #"{"id":"session-1","deviceId":"device-1","deviceName":null,"createdAt":null,"lastUsedAt":null,"expiresAt":null}"#)
+
+        XCTAssertFalse(session.revoked)
+        XCTAssertFalse(session.current)
+    }
+
     func testUnknownEnumValueFailsLoudlyRatherThanSilently() {
         XCTAssertThrowsError(
             try decode(

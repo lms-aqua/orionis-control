@@ -177,6 +177,10 @@ final class AppEnvironment {
             throw APIError.configuration(first.description)
         }
 
+        // Capture the actual active URL, not only the persisted preference. On
+        // first launch the latter can be empty while the build configuration is
+        // active; a failed connection test must still roll back correctly.
+        let previousURL = await api.currentBaseURL
         await api.setBaseURL(url)
         do {
             let meta = try await service.meta()
@@ -203,9 +207,7 @@ final class AppEnvironment {
         } catch {
             // Roll back so a failed test does not leave the app pointing at a
             // gateway that never answered.
-            if let previous = URL(string: preferences.serverURLString) {
-                await api.setBaseURL(previous)
-            }
+            await api.setBaseURL(previousURL)
             throw error
         }
     }

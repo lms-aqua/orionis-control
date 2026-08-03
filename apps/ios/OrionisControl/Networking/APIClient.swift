@@ -68,7 +68,13 @@ actor NetworkMonitor {
 
     private func update(_ path: NWPath) { current = path }
 
-    var isConnected: Bool { current?.status == .satisfied }
+    /// Until the first NWPath callback arrives, connectivity is unknown rather
+    /// than offline. Be optimistic and let URLSession make the real request;
+    /// otherwise a cold launch can fail immediately with a false offline error.
+    var isConnected: Bool {
+        guard let current else { return true }
+        return current.status == .satisfied
+    }
     var isExpensive: Bool { current?.isExpensive ?? false }
     var isConstrained: Bool { current?.isConstrained ?? false }
 
@@ -185,7 +191,10 @@ actor APIClient {
     /// For endpoints that return no body.
     func requestVoid(_ endpoint: Endpoint) async throws {
         struct Empty: Decodable, Sendable {}
-        _ = try? await perform(endpoint, as: Empty.self, authenticated: true, allowRefresh: true)
+        // `Empty` ignores fields in the server's data object, but transport,
+        // authentication and server errors must still reach the caller. The old
+        // `try?` made every destructive write appear successful when it failed.
+        _ = try await perform(endpoint, as: Empty.self, authenticated: true, allowRefresh: true)
     }
 
     /// Raw bytes (snapshots).

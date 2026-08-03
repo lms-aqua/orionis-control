@@ -72,6 +72,11 @@ struct SettingsView: View {
                 Button("Sign in again") {
                     Task { await environment.auth.beginSignIn() }
                 }
+                NavigationLink {
+                    DeviceSessionsView()
+                } label: {
+                    LabeledContent("Signed-in devices", value: "Manage")
+                }
             }
         }
     }
@@ -311,11 +316,22 @@ struct NotificationSettingsView: View {
     @State private var availableKinds: [String] = []
     @State private var pushConfigured = false
     @State private var isLoading = true
+    @State private var isSaving = false
     @State private var error: APIError?
+    @State private var savedPreferences = NotificationPreferences.default
+    @State private var saveConfirmation: String?
 
     var body: some View {
         Form {
             if let error { Section { ErrorSummary(error: error) } }
+
+            if let saveConfirmation {
+                Section {
+                    Label(saveConfirmation, systemImage: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                }
+            }
 
             if !pushConfigured && !isLoading {
                 Section {
@@ -367,9 +383,25 @@ struct NotificationSettingsView: View {
         }
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(isLoading || isSaving || preferences == savedPreferences)
+            }
+        }
         .task { await load() }
-        .onDisappear { Task { await save() } }
-        .overlay { if isLoading { LoadingStateView() } }
+        .onChange(of: preferences) { _, updated in
+            if updated != savedPreferences { saveConfirmation = nil }
+        }
+        .overlay {
+            if isLoading {
+                LoadingStateView()
+            } else if isSaving {
+                ProgressView("Saving…")
+                    .padding()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
     }
 
     private func minuteLabel(_ minute: Int) -> String {
@@ -385,8 +417,10 @@ struct NotificationSettingsView: View {
         do {
             let response = try await environment.service.notificationPreferences()
             preferences = response.preferences
+            savedPreferences = response.preferences
             availableKinds = response.availableKinds
             pushConfigured = response.pushConfigured
+            error = nil
         } catch let apiError as APIError {
             error = apiError
         } catch {
@@ -395,6 +429,19 @@ struct NotificationSettingsView: View {
     }
 
     private func save() async {
-        try? await environment.service.updateNotificationPreferences(preferences)
+        guard preferences != savedPreferences, !isSaving else { return }
+        isSaving = true
+        error = nil
+        saveConfirmation = nil
+        defer { isSaving = false }
+        do {
+            try await environment.service.updateNotificationPreferences(preferences)
+            savedPreferences = preferences
+            saveConfirmation = "Notification preferences saved."
+        } catch let apiError as APIError {
+            error = apiError
+        } catch {
+            error = .unexpectedStatus(0, requestId: nil)
+        }
     }
 }

@@ -43,12 +43,15 @@ final class CameraDetailViewModel {
 
         // Events and the sibling list are secondary: a failure in either must not
         // blank the live view.
-        if let page = try? await eventsService.events(
+        async let eventPage = eventsService.events(
             filter: EventFilter(cameraIds: [cameraId], limit: 10))
-        {
+        async let cameraWall = cameras.cameras()
+        let page = try? await eventPage
+        let all = try? await cameraWall
+        if let page {
             events = page.items
         }
-        if let all = try? await cameras.cameras() {
+        if let all {
             siblings = all
         }
     }

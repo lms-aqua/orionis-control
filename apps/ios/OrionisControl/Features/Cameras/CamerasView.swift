@@ -30,6 +30,8 @@ final class CamerasViewModel {
     }
 
     private let service: any CameraServicing
+    /// Prevents a slower, older refresh from overwriting a newer result.
+    private var loadGeneration = 0
 
     init(service: any CameraServicing) {
         self.service = service
@@ -115,18 +117,32 @@ final class CamerasViewModel {
     }
 
     func load(showSpinner: Bool = true) async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if showSpinner && cameras.isEmpty { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
+
+        // Preferences are independent of camera discovery. Fetching them beside
+        // the main request makes the first grid appear sooner on higher-latency
+        // self-hosted connections.
+        async let preferences = service.cameraPreferences()
         do {
-            cameras = try await service.cameras()
+            let loadedCameras = try await service.cameras()
+            let loadedPreferences = try? await preferences
+            guard generation == loadGeneration else { return }
+            cameras = loadedCameras
             lastLoadedAt = Date()
             error = nil
             // Secondary: a gateway that cannot report preferences should still
             // show the cameras, falling back to whatever this device remembers.
-            accountPreferences = try? await service.cameraPreferences()
+            accountPreferences = loadedPreferences
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = .unexpectedStatus(0, requestId: nil)
         }
     }

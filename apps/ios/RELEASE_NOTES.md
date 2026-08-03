@@ -1,0 +1,1 @@
+Camera playback and browsing are smoother and more reliable. This release prevents stale camera and recording loads, makes failed server writes visible, adds explicit notification-save confirmation, improves first-launch connection handling, and lets you review and sign out old device sessions. Infrastructure changes now produce accurate success and failure audit records.
