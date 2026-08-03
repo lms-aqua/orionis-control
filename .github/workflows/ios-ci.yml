@@ -37,6 +37,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify every UI test has a parallel lane
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          ui_tests = set()
+          for source in pathlib.Path("OrionisControlUITests").glob("*.swift"):
+              ui_tests.update(re.findall(r"func\s+(test[A-Za-z0-9_]+)\s*\(", source.read_text()))
+          workflow = pathlib.Path("../../.github/workflows/ios-ci.yml").read_text()
+          lanes = set(re.findall(r"test:\s+OrionisControlUITests/[^/]+/(test[A-Za-z0-9_]+)", workflow))
+          missing = sorted(ui_tests - lanes)
+          if missing:
+              print(f"::error::UI tests missing matrix lanes: {', '.join(missing)}")
+              sys.exit(1)
+          print(f"Every UI test has a matrix lane ({len(ui_tests)} total).")
+          PY
+
       - name: Select the newest available Xcode
         run: |
           ls /Applications | grep -i '^Xcode' || true
@@ -193,12 +210,27 @@ jobs:
           retention-days: 7
 
   ui-tests:
-    name: UI tests (advisory)
-    # Simulator UI tests remain visible but cannot block a release. Running them
-    # beside unit tests removes a second serial simulator/build cycle from CI.
+    name: UI — ${{ matrix.name }} (advisory)
+    # Each UI test gets its own macOS runner. This keeps every flow visible while
+    # avoiding five serial app launches and network waits on one simulator.
     continue-on-error: true
     runs-on: macos-15
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - name: first-launch
+            test: OrionisControlUITests/LaunchUITests/testFirstLaunchShowsWelcomeAndExplainsPrivacy
+          - name: gateway-entry
+            test: OrionisControlUITests/LaunchUITests/testGettingStartedRevealsTheGatewayField
+          - name: unreachable-gateway
+            test: OrionisControlUITests/LaunchUITests/testUnreachableGatewayProducesAnActionableError
+          - name: dynamic-type
+            test: OrionisControlUITests/LaunchUITests/testWelcomeScreenSupportsLargeDynamicType
+          - name: credential-privacy
+            test: OrionisControlUITests/LaunchUITests/testNoPasswordFieldIsEverPresented
     defaults:
       run:
         working-directory: apps/ios
@@ -243,10 +275,8 @@ jobs:
             -scheme OrionisControl \
             -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
-            -only-testing:OrionisControlUITests \
-            -parallel-testing-enabled YES \
-            -parallel-testing-worker-count 3 \
-            -resultBundlePath TestResults-ui.xcresult \
+            -only-testing:${{ matrix.test }} \
+            -resultBundlePath "TestResults-ui-${{ matrix.name }}.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             | tee test-ui.log
 
@@ -254,7 +284,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ui-test-results
-          path: apps/ios/TestResults-ui.xcresult
+          name: ios-ui-test-results-${{ matrix.name }}
+          path: apps/ios/TestResults-ui-${{ matrix.name }}.xcresult
           if-no-files-found: ignore
           retention-days: 14
