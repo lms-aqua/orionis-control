@@ -438,6 +438,8 @@ struct DnsQuery: Codable, Sendable, Equatable, Identifiable {
     let rule: String?
     let ruleFilterId: Int?
     let responseCode: String?
+    /// Exact result reported by AdGuard Home for transparent diagnostics.
+    let reason: String?
     let answers: [String]
 }
 

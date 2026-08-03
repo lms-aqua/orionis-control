@@ -240,6 +240,7 @@ export function buildOpenApiDocument(): object {
             rule: { type: 'string', nullable: true },
             ruleFilterId: { type: 'integer', nullable: true },
             responseCode: { type: 'string', nullable: true },
+            reason: { type: 'string', nullable: true },
             answers: { type: 'array', items: { type: 'string' } },
           },
         },

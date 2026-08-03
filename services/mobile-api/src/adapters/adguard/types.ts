@@ -49,6 +49,8 @@ export interface DnsQuery {
   rule: string | null;
   ruleFilterId: number | null;
   responseCode: string | null;
+  /** Exact upstream filtering reason, retained for honest diagnostics. */
+  reason: string | null;
   answers: string[];
 }
 
@@ -96,7 +98,7 @@ export interface AdGuardAdapter {
     olderThan?: string;
     search?: string;
     status?: 'all' | 'blocked' | 'allowed';
-  }): Promise<{ items: DnsQuery[]; oldest: string | null }>;
+  }): Promise<{ items: DnsQuery[]; oldest: string | null; scannedCount: number }>;
   listClients(): Promise<DnsClient[]>;
   listFilters(): Promise<FilterList[]>;
   getCustomRules(): Promise<CustomRules>;

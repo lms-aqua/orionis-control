@@ -69,7 +69,10 @@ protocol EventServicing: Sendable {
 protocol AdGuardServicing: Sendable {
     func adGuardStatus() async throws -> AdGuardStatus
     func adGuardStats(range: AdGuardRange) async throws -> AdGuardStats
-    func queryLog(search: String?, status: QueryLogFilter, client: String?, limit: Int)
+    func queryLog(
+        search: String?, status: QueryLogFilter, client: String?, limit: Int,
+        olderThan: String?
+    )
         async throws -> Paged<DnsQuery>
     func adGuardClients() async throws -> [DnsClient]
     func adGuardFilters() async throws -> [FilterList]
@@ -526,7 +529,10 @@ struct OrionisService: OrionisServicing {
         )
     }
 
-    func queryLog(search: String?, status: QueryLogFilter, client: String?, limit: Int)
+    func queryLog(
+        search: String?, status: QueryLogFilter, client: String?, limit: Int,
+        olderThan: String? = nil
+    )
         async throws -> Paged<DnsQuery>
     {
         try await api.request(
@@ -537,6 +543,7 @@ struct OrionisService: OrionisServicing {
                     "status": status.rawValue,
                     "client": client,
                     "limit": String(limit),
+                    "olderThan": olderThan,
                 ],
                 isRetryable: true
             ),

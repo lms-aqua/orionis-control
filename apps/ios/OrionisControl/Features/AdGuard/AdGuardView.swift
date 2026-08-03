@@ -12,6 +12,8 @@ final class AdGuardViewModel {
     private(set) var lastLoadedAt: Date?
     private(set) var actionMessage: String?
     private(set) var isLoadingQueries = false
+    private(set) var isLoadingMoreQueries = false
+    private(set) var hasMoreQueries = false
     private(set) var queryError: APIError?
 
     var range: AdGuardRange = .today
@@ -21,6 +23,7 @@ final class AdGuardViewModel {
     private let service: any AdGuardServicing
     private var loadGeneration = 0
     private var queryGeneration = 0
+    private var nextQueryCursor: String?
 
     init(service: any AdGuardServicing) {
         self.service = service
@@ -65,11 +68,45 @@ final class AdGuardViewModel {
                 search: querySearch.isEmpty ? nil : querySearch,
                 status: queryFilter,
                 client: nil,
-                limit: 100
+                limit: 100,
+                olderThan: nil
             )
             guard generation == queryGeneration else { return }
             var seen = Set<String>()
             queries = page.items.filter { seen.insert($0.id).inserted }
+            nextQueryCursor = page.page.nextCursor
+            hasMoreQueries = page.page.hasMore && nextQueryCursor != nil
+            queryError = nil
+        } catch let apiError as APIError {
+            guard generation == queryGeneration else { return }
+            queryError = apiError
+        } catch {
+            guard generation == queryGeneration else { return }
+            queryError = .unexpectedStatus(0, requestId: nil)
+        }
+    }
+
+    func loadOlderQueries() async {
+        guard let cursor = nextQueryCursor, hasMoreQueries, !isLoadingMoreQueries else { return }
+        queryGeneration &+= 1
+        let generation = queryGeneration
+        isLoadingMoreQueries = true
+        defer {
+            if generation == queryGeneration { isLoadingMoreQueries = false }
+        }
+        do {
+            let page = try await service.queryLog(
+                search: querySearch.isEmpty ? nil : querySearch,
+                status: queryFilter,
+                client: nil,
+                limit: 100,
+                olderThan: cursor
+            )
+            guard generation == queryGeneration else { return }
+            var seen = Set(queries.map(\.id))
+            queries.append(contentsOf: page.items.filter { seen.insert($0.id).inserted })
+            nextQueryCursor = page.page.nextCursor
+            hasMoreQueries = page.page.hasMore && nextQueryCursor != nil
             queryError = nil
         } catch let apiError as APIError {
             guard generation == queryGeneration else { return }
@@ -434,6 +471,9 @@ struct QueryLogView: View {
             }
             if !model.queries.isEmpty {
                 Section {
+                    Text("Latest \(model.queries.count) loaded results")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     HStack {
                         Label("\(allowedCount) allowed", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -447,6 +487,14 @@ struct QueryLogView: View {
                         }
                     }
                     .font(.subheadline.weight(.medium))
+                    if model.queryFilter == .all && blockedCount == model.queries.count {
+                        Label(
+                            "Every loaded result is blocked. This is a recent sample, not the all-time total.",
+                            systemImage: "info.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
             if model.isLoadingQueries && model.queries.isEmpty {
@@ -465,6 +513,22 @@ struct QueryLogView: View {
                 ForEach(model.queries) { query in
                     Button { selected = query } label: { QueryRow(query: query) }
                         .buttonStyle(.plain)
+                }
+                if model.hasMoreQueries {
+                    Button {
+                        Task { await model.loadOlderQueries() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if model.isLoadingMoreQueries {
+                                ProgressView()
+                            } else {
+                                Label("Load 100 older queries", systemImage: "clock.arrow.circlepath")
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(model.isLoadingMoreQueries)
                 }
             }
         }
@@ -594,6 +658,9 @@ struct QueryDetailSheet: View {
                     LabeledContent("Client", value: query.clientName ?? query.client)
                     LabeledContent("Type", value: query.type)
                     LabeledContent("Result", value: query.status.displayName)
+                    if let reason = query.reason, !reason.isEmpty {
+                        LabeledContent("AdGuard reason", value: reason)
+                    }
                     LabeledContent(
                         "Time", value: query.at.formatted(date: .abbreviated, time: .standard))
                     if let ms = query.processingMs {
@@ -607,6 +674,12 @@ struct QueryDetailSheet: View {
                 if let rule = query.rule {
                     Section("Matching rule") {
                         Text(rule).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }
+
+                Section {
+                    ShareLink(item: query.domain) {
+                        Label("Share domain", systemImage: "square.and.arrow.up")
                     }
                 }
 

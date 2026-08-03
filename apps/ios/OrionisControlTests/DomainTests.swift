@@ -314,6 +314,36 @@ final class DecodingTests: XCTestCase {
         XCTAssertFalse(session.current)
     }
 
+    func testDnsQueryPreservesTheExactAdGuardReason() throws {
+        let query = try decode(
+            DnsQuery.self,
+            """
+            {
+              "id": "query-1", "at": "2026-08-03T12:00:00Z",
+              "client": "192.0.2.1", "clientName": "phone",
+              "domain": "example.com", "type": "A", "upstream": null,
+              "processingMs": 1.5, "status": "allowed", "rule": null,
+              "ruleFilterId": null, "responseCode": "NOERROR",
+              "reason": "NotFilteredNotFound", "answers": ["192.0.2.2"]
+            }
+            """)
+
+        XCTAssertEqual(query.status, .allowed)
+        XCTAssertEqual(query.reason, "NotFilteredNotFound")
+    }
+
+    func testPageMetadataKeepsCursorOptionalForOlderGateways() throws {
+        let legacy = try decode(
+            PageMeta.self,
+            #"{"total":null,"limit":100,"offset":0,"hasMore":false}"#)
+        let cursor = try decode(
+            PageMeta.self,
+            #"{"total":null,"limit":100,"offset":0,"hasMore":true,"nextCursor":"cursor-1"}"#)
+
+        XCTAssertNil(legacy.nextCursor)
+        XCTAssertEqual(cursor.nextCursor, "cursor-1")
+    }
+
     func testUnknownEnumValueFailsLoudlyRatherThanSilently() {
         XCTAssertThrowsError(
             try decode(

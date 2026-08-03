@@ -43,13 +43,13 @@ describe('deep generated invariants (200 cases)', () => {
     const variant = index % 5;
     const [reason, expected] =
       variant === 0
-        ? ([`NotFilteredNotFound-${index}`, 'allowed'] as const)
+        ? ([index % 2 === 0 ? 'NotFilteredNotFound' : 'NotFilteredWhiteList', 'allowed'] as const)
         : variant === 1
-          ? ([`FilteredBlackList-${index}`, 'blocked'] as const)
+          ? ([index % 2 === 0 ? 'FilteredBlackList' : 'FilteredBlockedService', 'blocked'] as const)
           : variant === 2
-            ? ([`Rewrite-${index}`, 'rewritten'] as const)
+            ? ([index % 2 === 0 ? 'Rewrite' : 'RewriteRule', 'rewritten'] as const)
             : variant === 3
-              ? ([`SafeSearch-${index}`, 'safe_search'] as const)
+              ? (['FilteredSafeSearch', 'safe_search'] as const)
               : ([`UpstreamError-${index}`, 'unknown'] as const);
     expect(mapQueryStatus(reason, false)).toBe(expected);
   });

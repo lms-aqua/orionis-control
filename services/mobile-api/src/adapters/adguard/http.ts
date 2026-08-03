@@ -36,7 +36,7 @@ export class UnconfiguredAdGuardAdapter implements AdGuardAdapter {
   async getStats(): Promise<AdGuardStats> {
     this.fail();
   }
-  async getQueryLog(): Promise<{ items: DnsQuery[]; oldest: string | null }> {
+  async getQueryLog(): Promise<{ items: DnsQuery[]; oldest: string | null; scannedCount: number }> {
     this.fail();
   }
   async listClients(): Promise<DnsClient[]> {
@@ -99,21 +99,47 @@ function bucketSeries(
 
 export function mapQueryStatus(reason: string | undefined, filtered: boolean): QueryStatus {
   const r = (reason ?? '').toLowerCase();
-  if (r.includes('rewrite')) return 'rewritten';
-  if (r.includes('safesearch') || r.includes('safe_search')) return 'safe_search';
-  // AdGuard's normal allowed reasons are names such as
-  // `NotFilteredNotFound`. They contain "filtered", so allowed cases must be
-  // classified before the broader blocked check.
-  if (
-    r.includes('notfiltered') ||
-    r.includes('whitelist') ||
-    r.includes('allowlist') ||
-    (r === '' && !filtered)
-  ) {
-    return 'allowed';
+  if (r === 'rewrite' || r === 'rewriteetchosts' || r === 'rewriterule') return 'rewritten';
+  if (r === 'filteredsafesearch' || r === 'safesearch' || r === 'safe_search') {
+    return 'safe_search';
   }
-  if (r.includes('filtered') || r.includes('blocked') || filtered) return 'blocked';
+  // Match AdGuard's documented enum exactly. Substring matching is unsafe:
+  // every normal result begins with "NotFiltered", which still contains the
+  // word "filtered".
+  if (
+    r === 'notfilterednotfound' ||
+    r === 'notfilteredwhitelist' ||
+    r === 'notfilteredallowlist' ||
+    r === 'notfilterederror' ||
+    r === 'filteredwhitelist'
+  )
+    return 'allowed';
+  if (
+    r === 'filteredblacklist' ||
+    r === 'filteredsafebrowsing' ||
+    r === 'filteredparental' ||
+    r === 'filteredinvalid' ||
+    r === 'filteredblockedservice' ||
+    r === 'blockedservice'
+  )
+    return 'blocked';
+  // Only use legacy rule evidence when old AdGuard omitted the reason. Never
+  // let an unfamiliar future reason be painted red.
+  if (r === '') return filtered ? 'blocked' : 'allowed';
   return 'unknown';
+}
+
+function isClearlyBlockingRule(rule: string | null): boolean {
+  if (!rule) return false;
+  const value = rule.trim().toLowerCase();
+  if (!value || value.startsWith('@@') || value.includes('$dnsrewrite')) return false;
+  return (
+    value.startsWith('||') ||
+    value.startsWith('/') ||
+    value.startsWith('0.0.0.0 ') ||
+    value.startsWith('127.0.0.1 ') ||
+    value.startsWith(':: ')
+  );
 }
 
 /**
@@ -256,20 +282,21 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
     olderThan?: string;
     search?: string;
     status?: 'all' | 'blocked' | 'allowed';
-  }): Promise<{ items: DnsQuery[]; oldest: string | null }> {
+  }): Promise<{ items: DnsQuery[]; oldest: string | null; scannedCount: number }> {
     const { data } = await this.client.request<Record<string, unknown>>({
       path: '/control/querylog',
       query: {
         limit: opts.limit,
         older_than: opts.olderThan,
         search: opts.search,
-        response_status:
-          opts.status === 'blocked' ? 'blocked' : opts.status === 'allowed' ? 'processed' : 'all',
+        // Do not use AdGuard's deprecated response_status filter. "processed"
+        // excludes allowlists, while "blocked" excludes some safety results.
+        // Classify the mixed page below, then apply the user's filter locally.
       },
     });
 
     const raw = Array.isArray(data.data) ? (data.data as Record<string, unknown>[]) : [];
-    const items: DnsQuery[] = raw.map((r) => {
+    const normalised: DnsQuery[] = raw.map((r) => {
       const question = (r.question ?? {}) as Record<string, unknown>;
       const matchedRules = Array.isArray(r.rules) ? (r.rules as Record<string, unknown>[]) : [];
       const firstRule = matchedRules[0];
@@ -310,22 +337,29 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
             : typeof r.elapsedMs === 'number'
               ? r.elapsedMs
               : null,
-        status: mapQueryStatus(
-          reason,
-          // Filter id 0 is a valid custom-list id, not a useful boolean. A
-          // concrete rule is stronger legacy evidence when reason is absent.
-          Boolean(ruleText && !ruleText.trim().startsWith('@@')),
-        ),
+        status: mapQueryStatus(reason, isClearlyBlockingRule(ruleText)),
         rule: ruleText,
         ruleFilterId,
         responseCode: typeof r.status === 'string' ? r.status : null,
+        reason: reason ?? null,
         answers: Array.isArray(r.answer)
           ? (r.answer as Record<string, unknown>[]).map((a) => String(a.value ?? ''))
           : [],
       };
     });
 
-    return { items, oldest: typeof data.oldest === 'string' ? data.oldest : null };
+    const items =
+      opts.status === 'blocked'
+        ? normalised.filter((item) => item.status === 'blocked')
+        : opts.status === 'allowed'
+          ? normalised.filter((item) => item.status === 'allowed')
+          : normalised;
+
+    return {
+      items,
+      oldest: typeof data.oldest === 'string' ? data.oldest : null,
+      scannedCount: raw.length,
+    };
   }
 
   async listClients(): Promise<DnsClient[]> {

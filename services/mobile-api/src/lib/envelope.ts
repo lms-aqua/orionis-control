@@ -30,6 +30,8 @@ export interface PageMeta {
   limit: number;
   offset: number;
   hasMore: boolean;
+  /** Opaque upstream cursor for cursor-based feeds such as the DNS query log. */
+  nextCursor?: string | null;
 }
 
 export interface Paged<T> {

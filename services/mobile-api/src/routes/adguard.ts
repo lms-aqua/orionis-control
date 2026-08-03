@@ -97,7 +97,13 @@ export async function registerAdGuardRoutes(app: FastifyInstance): Promise<void>
 
     return paged(
       items,
-      { total: null, limit: q.limit, offset: 0, hasMore: result.items.length === q.limit },
+      {
+        total: null,
+        limit: q.limit,
+        offset: 0,
+        hasMore: result.scannedCount === q.limit && result.oldest !== null,
+        nextCursor: result.oldest,
+      },
       req.id,
     );
   });

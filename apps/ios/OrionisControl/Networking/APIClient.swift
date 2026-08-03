@@ -26,6 +26,7 @@ struct PageMeta: Decodable, Sendable, Equatable {
     let limit: Int
     let offset: Int
     let hasMore: Bool
+    let nextCursor: String?
 }
 
 struct Paged<T: Decodable & Sendable>: Decodable, Sendable {

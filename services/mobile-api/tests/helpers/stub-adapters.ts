@@ -288,7 +288,7 @@ export class StubAdGuardAdapter implements AdGuardAdapter {
   }
   async getQueryLog(opts: {
     limit: number;
-  }): Promise<{ items: DnsQuery[]; oldest: string | null }> {
+  }): Promise<{ items: DnsQuery[]; oldest: string | null; scannedCount: number }> {
     this.guard();
     const items: DnsQuery[] = [
       {
@@ -304,10 +304,12 @@ export class StubAdGuardAdapter implements AdGuardAdapter {
         rule: '||ads.example.invalid^',
         ruleFilterId: 1,
         responseCode: 'NOERROR',
+        reason: 'FilteredBlackList',
         answers: [],
       },
     ];
-    return { items: items.slice(0, opts.limit), oldest: null };
+    const page = items.slice(0, opts.limit);
+    return { items: page, oldest: null, scannedCount: page.length };
   }
   async listClients(): Promise<DnsClient[]> {
     this.guard();
