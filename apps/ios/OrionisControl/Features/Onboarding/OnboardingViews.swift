@@ -270,6 +270,7 @@ struct ErrorSummary: View {
         .padding(14)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("error-summary")
     }
 }
 

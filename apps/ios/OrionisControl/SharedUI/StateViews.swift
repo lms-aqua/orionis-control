@@ -216,7 +216,7 @@ struct StaleDataBanner: View {
         .padding(.vertical, 10)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("error-summary")
+        .accessibilityIdentifier("stale-data-banner")
     }
 }
 

@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify every UI test has a parallel lane
+      - name: Verify every UI test has a blocking parallel lane
         run: |
           python3 - <<'PY'
           import pathlib, re, sys
@@ -51,7 +51,16 @@ jobs:
           if missing:
               print(f"::error::UI tests missing matrix lanes: {', '.join(missing)}")
               sys.exit(1)
-          print(f"Every UI test has a matrix lane ({len(ui_tests)} total).")
+          ui_job = workflow.split("\n  ui-tests:\n", 1)[1]
+          if re.search(r"^    continue-on-error:\s*true\s*$", ui_job, re.MULTILINE):
+              print("::error::The UI test job must block releases when XCTest fails.")
+              sys.exit(1)
+          build_step = ui_job.split("- name: Build and run UI tests", 1)[1]
+          build_step = build_step.split("\n      - name:", 1)[0]
+          if "continue-on-error: true" in build_step:
+              print("::error::The UI test execution step must not hide XCTest failures.")
+              sys.exit(1)
+          print(f"Every UI test has a blocking matrix lane ({len(ui_tests)} total).")
           PY
 
       - name: Select the newest available Xcode
@@ -210,10 +219,9 @@ jobs:
           retention-days: 7
 
   ui-tests:
-    name: UI — ${{ matrix.name }} (advisory)
+    name: UI — ${{ matrix.name }}
     # Each UI test gets its own macOS runner. This keeps every flow visible while
     # avoiding five serial app launches and network waits on one simulator.
-    continue-on-error: true
     runs-on: macos-15
     timeout-minutes: 30
     strategy:
@@ -267,7 +275,6 @@ jobs:
           echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
 
       - name: Build and run UI tests
-        continue-on-error: true
         run: |
           set -o pipefail
           xcodebuild test \
