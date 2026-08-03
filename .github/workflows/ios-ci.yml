@@ -244,6 +244,8 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
             -only-testing:OrionisControlUITests \
+            -parallel-testing-enabled YES \
+            -parallel-testing-worker-count 3 \
             -resultBundlePath TestResults-ui.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             | tee test-ui.log
