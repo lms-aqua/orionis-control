@@ -43,8 +43,9 @@ private func iceURLPriority(_ url: String) -> Int {
     let value = url.lowercased()
     if value.contains("transport=udp") { return 0 }
     if value.hasPrefix("turn:") && !value.contains("transport=tcp") { return 1 }
-    if value.contains("transport=tcp") { return 2 }
-    return 3
+    if value.hasPrefix("turn:") && value.contains("transport=tcp") { return 2 }
+    if value.hasPrefix("turns:") { return 3 }
+    return 4
 }
 
 /// Owns one camera's `RTCPeerConnection` — the sub-second media plane.
