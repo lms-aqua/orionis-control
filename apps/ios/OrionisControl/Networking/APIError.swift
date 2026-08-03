@@ -45,6 +45,9 @@ enum APIError: Error, Equatable, Sendable {
     case offline
     /// The request exceeded its deadline.
     case timedOut
+    /// The device has a network path, but the configured gateway cannot be
+    /// resolved or contacted.
+    case unreachable
     /// TLS or certificate validation failed. Never bypassed.
     case insecureConnection(String)
     /// The response did not match the contract.
@@ -97,6 +100,7 @@ enum APIError: Error, Equatable, Sendable {
         case .unexpectedStatus: "Unexpected response"
         case .offline: "No connection"
         case .timedOut: "Timed out"
+        case .unreachable: "Gateway unavailable"
         case .insecureConnection: "Insecure connection"
         case .decoding: "Unreadable response"
         case .configuration: "Configuration problem"
@@ -114,6 +118,8 @@ enum APIError: Error, Equatable, Sendable {
             "This device has no network connection, so the request was not sent."
         case .timedOut:
             "The gateway did not respond in time. It may be busy or unreachable from this network."
+        case .unreachable:
+            "The gateway could not be reached. Check its address and make sure the server is online."
         case .insecureConnection(let detail):
             "The connection could not be verified as secure (\(detail)). Orionis Control will not send credentials over an unverified connection."
         case .decoding(let detail):
@@ -154,6 +160,7 @@ enum APIError: Error, Equatable, Sendable {
         case .unexpectedStatus: "Try again shortly, or check the System screen for service health."
         case .offline: "Reconnect to Wi-Fi or cellular and try again."
         case .timedOut: "Check your connection and try again."
+        case .unreachable: "Check the gateway address, server, and network, then try again."
         case .insecureConnection: "Check the gateway's TLS certificate."
         case .decoding: "Update the app, or ask an administrator to check the gateway version."
         case .configuration: "Review the server connection in Settings."
@@ -166,7 +173,7 @@ enum APIError: Error, Equatable, Sendable {
     var isRetryable: Bool {
         switch self {
         case .server(_, _, let recoverable, _): recoverable
-        case .offline, .timedOut: true
+        case .offline, .timedOut, .unreachable: true
         case .unexpectedStatus(let status, _): status >= 500
         case .insecureConnection, .decoding, .configuration, .cancelled: false
         }
@@ -206,6 +213,8 @@ enum APIError: Error, Equatable, Sendable {
             .offline
         case .timedOut:
             .timedOut
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .resourceUnavailable:
+            .unreachable
         case .cancelled:
             .cancelled
         case .secureConnectionFailed, .serverCertificateHasBadDate,

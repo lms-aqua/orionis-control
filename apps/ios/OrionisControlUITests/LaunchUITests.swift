@@ -46,15 +46,10 @@ final class LaunchUITests: XCTestCase {
 
         app.buttons["Test connection"].tap()
 
-        // Either a connection failure or a configuration rejection is correct;
-        // what matters is that the user is told, not left staring at a spinner.
-        let failed = app.staticTexts.matching(
-            NSPredicate(
-                format:
-                    "label CONTAINS[c] 'could not' OR label CONTAINS[c] 'not HTTPS' OR label CONTAINS[c] 'no network' OR label CONTAINS[c] 'did not respond' OR label CONTAINS[c] 'refuse'"
-            )
-        ).firstMatch
-        XCTAssertTrue(failed.waitForExistence(timeout: 30))
+        // A host that cannot resolve is different from a device with no network
+        // and must not be rendered as a nonsense HTTP status such as -1003.
+        XCTAssertTrue(app.staticTexts["Gateway unavailable"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["error-summary"].exists)
     }
 
     func testWelcomeScreenSupportsLargeDynamicType() {

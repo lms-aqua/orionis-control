@@ -28,6 +28,7 @@ final class ErrorMappingTests: XCTestCase {
         XCTAssertFalse(server(.insufficientRole, recoverable: false).isRetryable)
         XCTAssertTrue(APIError.offline.isRetryable)
         XCTAssertTrue(APIError.timedOut.isRetryable)
+        XCTAssertTrue(APIError.unreachable.isRetryable)
         // A validation problem is never fixed by pressing the button again.
         XCTAssertFalse(APIError.decoding("bad shape").isRetryable)
         XCTAssertFalse(APIError.insecureConnection("bad cert").isRetryable)
@@ -36,7 +37,7 @@ final class ErrorMappingTests: XCTestCase {
 
     func testEveryErrorHasATitleAndMessage() {
         let cases: [APIError] = [
-            .offline, .timedOut, .cancelled,
+            .offline, .timedOut, .unreachable, .cancelled,
             .insecureConnection("x"), .decoding("y"), .configuration("z"),
             .unexpectedStatus(503, requestId: nil),
             server(.cameraOffline), server(.insufficientRole), server(.serviceNotConfigured),
@@ -66,6 +67,9 @@ final class ErrorMappingTests: XCTestCase {
         }
         XCTAssertEqual(APIError.from(urlError: URLError(.notConnectedToInternet)), .offline)
         XCTAssertEqual(APIError.from(urlError: URLError(.timedOut)), .timedOut)
+        XCTAssertEqual(APIError.from(urlError: URLError(.cannotFindHost)), .unreachable)
+        XCTAssertEqual(APIError.from(urlError: URLError(.cannotConnectToHost)), .unreachable)
+        XCTAssertEqual(APIError.from(urlError: URLError(.dnsLookupFailed)), .unreachable)
         XCTAssertEqual(APIError.from(urlError: URLError(.cancelled)), .cancelled)
     }
 
