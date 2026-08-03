@@ -72,6 +72,15 @@ final class RecordingsTimelineModel {
     // MARK: Loading
 
     func load(day: Date) async {
+        // Invalidate any clip URL/header request from the previous day before
+        // awaiting coverage. Otherwise that older task can finish during this
+        // suspension and briefly replace the player with footage from the wrong
+        // date. The eventual loadWindow call gets its own newer generation.
+        loadGeneration &+= 1
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        windowStart = nil
+        isPlaying = false
         isLoading = true
         errorText = nil
         dayStart = Calendar.current.startOfDay(for: day)

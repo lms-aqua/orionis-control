@@ -315,8 +315,8 @@ struct CameraLiveViewer: View {
     @ViewBuilder
     private func switcherThumbnail(_ item: Camera, isCurrent: Bool) -> some View {
         ZStack(alignment: .bottomLeading) {
-            if let frame = thumbnails?.frame(for: item.id), let image = UIImage(data: frame.data) {
-                Image(uiImage: image)
+            if let frame = thumbnails?.frame(for: item.id) {
+                Image(uiImage: frame.image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .grayscale(item.health.status == .offline ? 1 : 0)

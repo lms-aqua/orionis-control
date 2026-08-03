@@ -74,7 +74,9 @@ final class WebRTCStreamPlayer {
     /// fails, so the controller can fall back to HLS.
     func connect(session: StreamSession) async throws {
         close()
-        muted = true
+        // Preserve the controller's current audio preference across reconnects.
+        // `playWebRTC` applies it before calling connect; resetting it here made
+        // every retry silently mute a stream the viewer had explicitly unmuted.
         // `close()` resumes any prior wait (setting the flag); arm a fresh one.
         gatheringResumed = false
         // Arm first-frame detection for this connection.

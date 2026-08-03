@@ -46,6 +46,17 @@ export function joinAtLiveEdge(playlist: string): string {
   );
 }
 
+/**
+ * Keep WebRTC on the camera's native go2rtc source.
+ *
+ * Source selection is deliberately explicit and unit-tested: appending an
+ * internal transcode suffix here once made every viewer pay a CPU-heavy encode
+ * cost, which degraded frame pacing under load.
+ */
+export function webRTCSource(cameraId: string): string {
+  return cameraId;
+}
+
 const StreamRequest = z.object({
   preferredProtocols: z
     .array(z.enum(['webrtc', 'llhls', 'hls', 'mjpeg']))
@@ -593,11 +604,12 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       throw new AppError('VALIDATION_FAILED', 'A WebRTC offer is required.');
     }
 
-    // WebRTC is served from the short-keyframe re-encode ("<id>_ll"), not the raw
-    // stream: its 0.5s GOP lets a lost packet recover almost instantly instead of
-    // freezing until the camera's 2s keyframe. It is an on-demand go2rtc exec
-    // source, so it only costs CPU while someone is actually watching.
-    const src = `${String(row.camera_id)}_ll`;
+    // Relay the camera's native stream. Forcing every viewer through a software
+    // transcode makes frame pacing depend on host CPU headroom and can introduce
+    // persistent stutter under load. WebRTC already handles packet loss; sites
+    // that need a different source can map the camera in go2rtc itself without
+    // the gateway silently changing its identity.
+    const src = webRTCSource(String(row.camera_id));
     try {
       const upstream = await fetch(
         `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,

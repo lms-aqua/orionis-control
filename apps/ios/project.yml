@@ -92,7 +92,7 @@ targets:
       path: OrionisControl/Info.plist
       properties:
         CFBundleDisplayName: Orionis Control
-        CFBundleShortVersionString: "0.1.6"
+        CFBundleShortVersionString: "0.1.7"
         CFBundleVersion: "1"
         UILaunchScreen:
           UIColorName: ""

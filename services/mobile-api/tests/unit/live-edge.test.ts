@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { joinAtLiveEdge } from '../../src/routes/cameras.ts';
+import { joinAtLiveEdge, webRTCSource } from '../../src/routes/cameras.ts';
 
 const PLAYLIST = [
   '#EXTM3U',
@@ -47,5 +47,12 @@ describe('joinAtLiveEdge', () => {
       expect(out).toContain(line);
     }
     expect(out).toContain('#EXT-X-MEDIA-SEQUENCE:195');
+  });
+});
+
+describe('webRTCSource', () => {
+  it('keeps the native camera source instead of forcing a software transcode', () => {
+    expect(webRTCSource('cam-front')).toBe('cam-front');
+    expect(webRTCSource('cam-front')).not.toContain('_ll');
   });
 });

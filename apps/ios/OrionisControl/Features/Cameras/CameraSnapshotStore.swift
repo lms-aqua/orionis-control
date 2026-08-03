@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Keeps recent snapshot frames for the camera grid.
 ///
@@ -9,8 +10,11 @@ import Foundation
 @MainActor
 @Observable
 final class CameraSnapshotStore {
-    struct Frame: Equatable {
-        let data: Data
+    struct Frame {
+        /// Decode each JPEG once when it arrives. Keeping compressed bytes here
+        /// made every SwiftUI body update run `UIImage(data:)` again, which was
+        /// especially visible as hitching while scrolling a multi-camera grid.
+        let image: UIImage
         let capturedAt: Date
     }
 
@@ -18,6 +22,9 @@ final class CameraSnapshotStore {
     /// Cameras whose first frame has not arrived yet, so the grid can show a
     /// skeleton rather than an empty box.
     private(set) var pending: Set<String> = []
+    /// Manual refresh and the periodic loop can meet at the same suspension
+    /// point. Coalesce them so one camera never has duplicate downloads/decodes.
+    private var inFlight: Set<String> = []
 
     private let service: any CameraServicing
     /// Snapshots are full-resolution JPEGs; a handful in flight at once is plenty
@@ -63,15 +70,21 @@ final class CameraSnapshotStore {
     }
 
     private func fetch(cameraId: String) async {
+        guard inFlight.insert(cameraId).inserted else { return }
+        defer { inFlight.remove(cameraId) }
         if frames[cameraId] == nil { pending.insert(cameraId) }
         defer { pending.remove(cameraId) }
         // A camera that cannot produce a frame keeps its previous one, which the
         // grid then marks as stale. Failing loudly per tile would make a busy
         // wall unreadable.
-        guard let data = try? await service.snapshot(cameraId: cameraId), !data.isEmpty else {
+        guard
+            let data = try? await service.snapshot(cameraId: cameraId),
+            !data.isEmpty,
+            let image = UIImage(data: data)
+        else {
             return
         }
-        frames[cameraId] = Frame(data: data, capturedAt: Date())
+        frames[cameraId] = Frame(image: image, capturedAt: Date())
     }
 
     private func chunk(_ ids: [String], size: Int) -> [[String]] {

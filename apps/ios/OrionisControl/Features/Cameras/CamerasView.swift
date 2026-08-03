@@ -479,8 +479,8 @@ struct CameraCard: View {
 
     @ViewBuilder
     private var image: some View {
-        if let frame, let uiImage = UIImage(data: frame.data) {
-            Image(uiImage: uiImage)
+        if let frame {
+            Image(uiImage: frame.image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 // An offline camera's last frame is history, not the present.
