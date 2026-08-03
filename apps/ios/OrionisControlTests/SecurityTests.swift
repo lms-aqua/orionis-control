@@ -81,6 +81,58 @@ final class KeychainStoreTests: XCTestCase {
     }
 }
 
+private final class UnavailableSecretStore: SecretStoring, @unchecked Sendable {
+    func set(_ value: String, for key: SecretKey) throws { throw KeychainError.invalidData }
+    func get(_ key: SecretKey) throws -> String? { nil }
+    func remove(_ key: SecretKey) throws {}
+    func removeAll() throws {}
+}
+
+final class AuthenticationStorageTests: XCTestCase {
+    private func configuration() -> AppConfiguration {
+        AppConfiguration(
+            apiBaseURL: URL(string: "https://gateway.example.com"),
+            oauthClientID: "orionis-control-mobile",
+            oauthRedirectScheme: "orioniscontrol",
+            environment: .development,
+            displayName: "Orionis Control",
+            version: "0.1.9",
+            build: "1")
+    }
+
+    @MainActor
+    func testDeviceIdentifierRemainsStableWhenSecureStorageIsUnavailable() {
+        let auth = AuthenticationService(
+            configuration: configuration(),
+            api: APIClient(baseURL: URL(string: "https://gateway.example.com")!),
+            secrets: UnavailableSecretStore())
+
+        XCTAssertEqual(auth.deviceId, auth.deviceId)
+    }
+
+    @MainActor
+    func testSignOutPreservesPerInstallDeviceIdentifier() async throws {
+        let secrets = InMemorySecretStore(seed: [
+            .deviceId: "install-1",
+            .accessToken: "access",
+            .refreshToken: "refresh",
+            .accessTokenExpiry: "9999999999",
+            .sessionId: "session-1",
+        ])
+        let auth = AuthenticationService(
+            configuration: configuration(),
+            api: APIClient(baseURL: URL(string: "https://gateway.example.com")!),
+            secrets: secrets)
+
+        await auth.signOut()
+
+        XCTAssertEqual(try secrets.get(.deviceId), "install-1")
+        XCTAssertNil(try secrets.get(.accessToken))
+        XCTAssertNil(try secrets.get(.refreshToken))
+        XCTAssertNil(try secrets.get(.sessionId))
+    }
+}
+
 final class PermissionTests: XCTestCase {
     private func user(role: Role, permissions: [Permission]) -> CurrentUser {
         CurrentUser(

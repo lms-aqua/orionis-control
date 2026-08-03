@@ -86,6 +86,7 @@ final class AuthenticationService: NSObject {
     /// Guarantees a single in-flight refresh.
     private var refreshTask: Task<String, Error>?
     private var webSession: ASWebAuthenticationSession?
+    private var cachedDeviceId: String?
 
     init(configuration: AppConfiguration, api: APIClient, secrets: SecretStoring) {
         self.configuration = configuration
@@ -97,10 +98,15 @@ final class AuthenticationService: NSObject {
     /// A stable per-install identifier. Not a device fingerprint: it is random,
     /// app-scoped, and destroyed when the app data is cleared.
     var deviceId: String {
+        if let cachedDeviceId { return cachedDeviceId }
         if let existing = try? secrets.get(.deviceId), !existing.isEmpty {
+            cachedDeviceId = existing
             return existing
         }
         let generated = UUID().uuidString.lowercased()
+        // Keep the identifier stable for this process even if Keychain is
+        // temporarily unavailable. A second read must not mint a new device.
+        cachedDeviceId = generated
         try? secrets.set(generated, for: .deviceId)
         return generated
     }
@@ -125,7 +131,7 @@ final class AuthenticationService: NSObject {
             state = .signedIn(user)
         } catch let error as APIError {
             logger.notice("session restore failed: \(String(describing: error.title), privacy: .public)")
-            try? secrets.removeAll()
+            clearSessionSecrets()
             state = .signedOut(reason: reason(for: error))
         } catch {
             state = .signedOut(reason: .failed("The saved session could not be restored."))
@@ -346,10 +352,10 @@ final class AuthenticationService: NSObject {
     func signOut(reason: SignedOutReason = .userInitiated) async {
         // Best effort: a failed network call must never trap the user in a
         // signed-in state locally.
-        if case .signedIn = state {
+        if state.isSignedIn {
             try? await api.requestVoid(Endpoint(method: .post, path: "/auth/logout"))
         }
-        try? secrets.removeAll()
+        clearSessionSecrets()
         refreshTask?.cancel()
         refreshTask = nil
         state = .signedOut(reason: reason)
@@ -370,10 +376,25 @@ final class AuthenticationService: NSObject {
     // MARK: - Tokens
 
     private func store(_ tokens: TokenSet, sessionId: String?) throws {
-        try secrets.set(tokens.accessToken, for: .accessToken)
-        try secrets.set(tokens.refreshToken, for: .refreshToken)
-        try secrets.set(String(tokens.expiresAt.timeIntervalSince1970), for: .accessTokenExpiry)
-        if let sessionId { try secrets.set(sessionId, for: .sessionId) }
+        do {
+            // Access token last: readers never observe a new access token paired
+            // with an old refresh token if secure storage fails midway.
+            try secrets.set(tokens.refreshToken, for: .refreshToken)
+            try secrets.set(String(tokens.expiresAt.timeIntervalSince1970), for: .accessTokenExpiry)
+            if let sessionId { try secrets.set(sessionId, for: .sessionId) }
+            try secrets.set(tokens.accessToken, for: .accessToken)
+        } catch {
+            clearSessionSecrets()
+            throw error
+        }
+    }
+
+    /// Clears account/session material while preserving the random per-install
+    /// device identifier. Signing out is not the same as deleting the app.
+    private func clearSessionSecrets() {
+        for key in SecretKey.allCases where key != .deviceId {
+            try? secrets.remove(key)
+        }
     }
 
     private func currentTokens() -> TokenSet? {
@@ -491,10 +512,12 @@ extension AuthenticationService: TokenProviding {
     }
 
     nonisolated func handleAuthenticationFailure(_ error: APIError) async {
-        await MainActor.run {
+        let reason = await MainActor.run {
             self.lastError = error
-            Task { await self.signOut(reason: self.reason(for: error)) }
+            return self.reason(for: error)
         }
+        // Do not return while stale credentials are still usable by callers.
+        await self.signOut(reason: reason)
     }
 
     /// Coalesces concurrent refreshes into one network call.

@@ -34,7 +34,7 @@ final class DeviceSessionsModel {
         } catch let apiError as APIError {
             error = apiError
         } catch {
-            error = .unexpectedStatus(0, requestId: nil)
+            self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 
@@ -52,7 +52,7 @@ final class DeviceSessionsModel {
         } catch let apiError as APIError {
             error = apiError
         } catch {
-            error = .unexpectedStatus(0, requestId: nil)
+            self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 }

@@ -14,6 +14,7 @@ final class EventsViewModel {
     var searchText = ""
 
     private let service: any EventServicing
+    private var loadGeneration = 0
 
     init(service: any EventServicing) {
         self.service = service
@@ -34,30 +35,44 @@ final class EventsViewModel {
     var visible: [CameraEvent] { Self.search(events, text: searchText) }
 
     func load(showSpinner: Bool = true) async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if showSpinner && events.isEmpty { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
         filter.offset = 0
+        let requestedFilter = filter
         do {
-            let page = try await service.events(filter: filter)
+            let page = try await service.events(filter: requestedFilter)
+            guard generation == loadGeneration else { return }
             events = page.items
             hasMore = page.page.hasMore
             lastLoadedAt = Date()
             error = nil
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 
     func loadMore() async {
         guard hasMore, !isLoadingMore else { return }
+        let generation = loadGeneration
         isLoadingMore = true
-        defer { isLoadingMore = false }
+        defer {
+            if generation == loadGeneration { isLoadingMore = false }
+        }
         var next = filter
         next.offset = events.count
         if let page = try? await service.events(filter: next) {
-            events.append(contentsOf: page.items)
+            guard generation == loadGeneration else { return }
+            let existingIds = Set(events.map(\.id))
+            let newItems = page.items.filter { !existingIds.contains($0.id) }
+            events.append(contentsOf: newItems)
             hasMore = page.page.hasMore
         }
     }

@@ -19,6 +19,7 @@ final class DashboardViewModel {
     private(set) var cached: DashboardSnapshot?
 
     private let service: any SystemServicing
+    private var loadGeneration = 0
 
     init(service: any SystemServicing) {
         self.service = service
@@ -35,15 +36,20 @@ final class DashboardViewModel {
     }
 
     func load(showSpinner: Bool = true) async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if showSpinner, cached == nil { state = .loading }
         do {
             let snapshot = try await service.dashboard()
+            guard generation == loadGeneration else { return }
             cached = snapshot
             lastLoadedAt = Date()
             state = .loaded(snapshot)
         } catch let error as APIError {
+            guard generation == loadGeneration else { return }
             state = .failed(error)
         } catch {
+            guard generation == loadGeneration else { return }
             state = .failed(.unexpectedStatus(0, requestId: nil))
         }
     }

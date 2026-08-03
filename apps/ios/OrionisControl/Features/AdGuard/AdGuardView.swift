@@ -11,42 +11,72 @@ final class AdGuardViewModel {
     private(set) var isLoading = false
     private(set) var lastLoadedAt: Date?
     private(set) var actionMessage: String?
+    private(set) var isLoadingQueries = false
+    private(set) var queryError: APIError?
 
     var range: AdGuardRange = .today
     var queryFilter: QueryLogFilter = .all
     var querySearch = ""
 
     private let service: any AdGuardServicing
+    private var loadGeneration = 0
+    private var queryGeneration = 0
 
     init(service: any AdGuardServicing) {
         self.service = service
     }
 
     func load(showSpinner: Bool = true) async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if showSpinner && status == nil { isLoading = true }
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
         do {
             async let statusTask = service.adGuardStatus()
             async let statsTask = service.adGuardStats(range: range)
-            status = try await statusTask
-            stats = try await statsTask
+            let loadedStatus = try await statusTask
+            let loadedStats = try await statsTask
+            guard generation == loadGeneration else { return }
+            status = loadedStatus
+            stats = loadedStats
             lastLoadedAt = Date()
             error = nil
         } catch let apiError as APIError {
+            guard generation == loadGeneration else { return }
             error = apiError
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = .unexpectedStatus(0, requestId: nil)
         }
     }
 
     func loadQueries() async {
-        queries =
-            (try? await service.queryLog(
+        queryGeneration &+= 1
+        let generation = queryGeneration
+        isLoadingQueries = true
+        defer {
+            if generation == queryGeneration { isLoadingQueries = false }
+        }
+        do {
+            let page = try await service.queryLog(
                 search: querySearch.isEmpty ? nil : querySearch,
                 status: queryFilter,
                 client: nil,
                 limit: 100
-            ).items) ?? []
+            )
+            guard generation == queryGeneration else { return }
+            var seen = Set<String>()
+            queries = page.items.filter { seen.insert($0.id).inserted }
+            queryError = nil
+        } catch let apiError as APIError {
+            guard generation == queryGeneration else { return }
+            queryError = apiError
+        } catch {
+            guard generation == queryGeneration else { return }
+            queryError = .unexpectedStatus(0, requestId: nil)
+        }
     }
 
     func setProtection(enabled: Bool, durationSeconds: Int?, reason: String?) async -> APIError? {
@@ -396,7 +426,24 @@ struct QueryLogView: View {
             if let message {
                 Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
             }
-            if model.queries.isEmpty {
+            if let error = model.queryError {
+                Section { ErrorSummary(error: error) }
+            }
+            if !model.queries.isEmpty {
+                Section {
+                    HStack {
+                        Label("\(allowedCount) allowed", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Spacer()
+                        Label("\(blockedCount) blocked", systemImage: "hand.raised.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                    .font(.subheadline.weight(.medium))
+                }
+            }
+            if model.isLoadingQueries && model.queries.isEmpty {
+                Section { ProgressView("Loading query activity...") }
+            } else if model.queries.isEmpty && model.queryError == nil {
                 Section {
                     EmptyStateView(
                         title: "No queries",
@@ -443,19 +490,23 @@ struct QueryLogView: View {
             }
         }
     }
+
+    private var blockedCount: Int { model.queries.filter { $0.status == .blocked }.count }
+    private var allowedCount: Int { model.queries.count - blockedCount }
 }
 
 struct QueryRow: View {
     let query: DnsQuery
 
     var body: some View {
+        let isBlocked = query.status == .blocked
         HStack(spacing: 10) {
             Image(
-                systemName: query.status == .blocked
+                systemName: isBlocked
                     ? "hand.raised.fill" : "checkmark.circle"
             )
             .font(.caption)
-            .foregroundStyle(query.status == .blocked ? .orange : .green)
+            .foregroundStyle(isBlocked ? .red : .green)
             .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -472,15 +523,21 @@ struct QueryRow: View {
 
             Spacer(minLength: 0)
 
-            Text(query.type)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(isBlocked ? "BLOCKED" : "ALLOWED")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(isBlocked ? .red : .green)
+                Text(query.type)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(query.domain), \(query.status.displayName), from \(query.clientName ?? query.client)")
+            "\(query.domain), \(isBlocked ? "blocked" : "allowed"), from \(query.clientName ?? query.client)"
+        )
     }
 }
 
