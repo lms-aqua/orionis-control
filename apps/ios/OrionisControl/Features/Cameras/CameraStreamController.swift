@@ -48,6 +48,9 @@ final class CameraStreamController {
     /// fallback retry does not just land back on WebRTC and loop.
     private var preferredProtocols: [StreamProtocolKind] = StreamProtocolKind.preferenceOrder
     private var webRTCFallbackUsed = false
+    /// How many times this open has renegotiated WebRTC because it connected but
+    /// painted no video. Bounded, then it gives up to HLS.
+    private var webRTCFrameRetries = 0
 
     /// Touched from the nonisolated `deinit` purely to cancel and deregister.
     /// `Task.cancel()` and `NotificationCenter.removeObserver` are both safe from
@@ -55,6 +58,7 @@ final class CameraStreamController {
     private nonisolated(unsafe) var connectTask: Task<Void, Never>?
     private nonisolated(unsafe) var recoveryTask: Task<Void, Never>?
     private nonisolated(unsafe) var webRTCWatchdog: Task<Void, Never>?
+    private nonisolated(unsafe) var webRTCFrameWatchdog: Task<Void, Never>?
     private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
 
     private var timeObserver: Any?
@@ -75,6 +79,7 @@ final class CameraStreamController {
         connectTask?.cancel()
         recoveryTask?.cancel()
         webRTCWatchdog?.cancel()
+        webRTCFrameWatchdog?.cancel()
         for token in itemTokens { NotificationCenter.default.removeObserver(token) }
     }
 
@@ -92,6 +97,7 @@ final class CameraStreamController {
         // failure must not permanently pin this one to HLS.
         preferredProtocols = StreamProtocolKind.preferenceOrder
         webRTCFallbackUsed = false
+        webRTCFrameRetries = 0
         connect(isRetry: false)
     }
 
@@ -192,6 +198,7 @@ final class CameraStreamController {
     private func connect(isRetry: Bool) {
         connectTask?.cancel()
         webRTCWatchdog?.cancel()
+        webRTCFrameWatchdog?.cancel()
         guard let camera else { return }
 
         // An offline camera is not a stream failure, and retrying it is pointless.
@@ -291,6 +298,7 @@ final class CameraStreamController {
             case .connecting: break
             }
         }
+        webrtc.onFirstFrame = { [weak self] in self?.webRTCDidRenderFirstFrame() }
 
         startWebRTCWatchdog()
 
@@ -307,12 +315,52 @@ final class CameraStreamController {
         }
     }
 
+    /// The peer connection is up — but "connected" is not "playing". Wait for a
+    /// real frame before calling it live; a connection that paints nothing is the
+    /// black-first-open bug, and it is caught by the first-frame watchdog.
     private func webRTCDidConnect() {
         guard isWebRTC else { return }
         webRTCWatchdog?.cancel()
         attempt = 0
+        startFirstFrameWatchdog()
+    }
+
+    /// A frame actually decoded: now it is genuinely live.
+    private func webRTCDidRenderFirstFrame() {
+        guard isWebRTC else { return }
+        webRTCWatchdog?.cancel()
+        webRTCFrameWatchdog?.cancel()
+        webRTCFrameRetries = 0
+        attempt = 0
         diagnostics.lastFrameAt = Date()
         transition(to: .live)
+    }
+
+    /// Connected but no video painted in time. Renegotiate from scratch — the same
+    /// thing reopening the camera does, which reliably shakes a keyframe loose —
+    /// and only give up to HLS after a couple of tries.
+    private func webRTCNoFirstFrame() {
+        guard isWebRTC, state != .live, let session else { return }
+        if webRTCFrameRetries < 2 {
+            webRTCFrameRetries += 1
+            diagnostics.lastErrorSummary = "WebRTC connected but showed no video; renegotiating"
+            playWebRTC(session)
+        } else {
+            webRTCFrameRetries = 0
+            webRTCDidFail(reason: "WebRTC connected but never showed video")
+        }
+    }
+
+    private func startFirstFrameWatchdog() {
+        webRTCFrameWatchdog?.cancel()
+        webRTCFrameWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.isWebRTC, self.state != .live else { return }
+                self.webRTCNoFirstFrame()
+            }
+        }
     }
 
     /// The one place WebRTC failure is handled: fall back to HLS the first time,
@@ -350,9 +398,11 @@ final class CameraStreamController {
 
     private func teardownWebRTC() {
         webRTCWatchdog?.cancel()
+        webRTCFrameWatchdog?.cancel()
         guard isWebRTC else { return }
         isWebRTC = false
         webrtc.onConnectionState = nil
+        webrtc.onFirstFrame = nil
         webrtc.close()
     }
 

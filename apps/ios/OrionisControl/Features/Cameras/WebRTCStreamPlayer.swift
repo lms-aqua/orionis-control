@@ -42,6 +42,14 @@ final class WebRTCStreamPlayer {
     /// Reported to the controller so it can drive `CameraStreamState`.
     var onConnectionState: ((WebRTCConnectionState) -> Void)?
 
+    /// Fires once per connection, the moment the first video frame actually
+    /// decodes. "Connected" is not "playing": a peer connection can come up and
+    /// still paint nothing until a keyframe arrives (or never, if the first
+    /// negotiation is stillborn). The controller only calls the stream live on
+    /// this, and renegotiates if it never comes.
+    var onFirstFrame: (() -> Void)?
+    private let frameSignal = FrameSignal()
+
     private var peerConnection: RTCPeerConnection?
     private var remoteAudioTrack: RTCAudioTrack?
     private var observer: PeerConnectionObserver?
@@ -69,6 +77,11 @@ final class WebRTCStreamPlayer {
         muted = true
         // `close()` resumes any prior wait (setting the flag); arm a fresh one.
         gatheringResumed = false
+        // Arm first-frame detection for this connection.
+        frameSignal.reset()
+        frameSignal.onFirstFrame = { [weak self] in
+            Task { @MainActor in self?.onFirstFrame?() }
+        }
 
         let config = RTCConfiguration()
         config.sdpSemantics = .unifiedPlan
@@ -164,6 +177,7 @@ final class WebRTCStreamPlayer {
     func close() {
         resumeGathering()
         remoteVideoTrack?.remove(videoRenderer)
+        remoteVideoTrack?.remove(frameSignal)
         remoteVideoTrack = nil
         remoteAudioTrack = nil
         peerConnection?.close()
@@ -174,11 +188,16 @@ final class WebRTCStreamPlayer {
     // MARK: - Delegate handling (already hopped to the main actor)
 
     private func attach(videoTrack: RTCVideoTrack) {
-        if let old = remoteVideoTrack, old !== videoTrack { old.remove(videoRenderer) }
+        if let old = remoteVideoTrack, old !== videoTrack {
+            old.remove(videoRenderer)
+            old.remove(frameSignal)
+        }
         remoteVideoTrack = videoTrack
         // Attach immediately, on the main actor, so the renderer is receiving by
         // the time the connection reports "live" — no dependency on view timing.
         videoTrack.add(videoRenderer)
+        // A second, invisible renderer whose only job is to report the first frame.
+        videoTrack.add(frameSignal)
     }
 
     private func attach(audioTrack: RTCAudioTrack) {
@@ -306,6 +325,34 @@ final class WebRTCStreamPlayer {
 /// the guarantee comes from WebRTC's ownership model rather than from the compiler.
 private struct UncheckedTransfer<Value>: @unchecked Sendable {
     let value: Value
+}
+
+/// A no-display `RTCVideoRenderer` attached alongside the Metal view purely to
+/// learn when the first frame decodes. `RTCMTLVideoView`'s own size delegate is
+/// unreliable across reconnects (the persistent view keeps its last size, so an
+/// unchanged resolution fires nothing), whereas `renderFrame` is called for every
+/// frame. Fires `onFirstFrame` once per connection; `reset()` re-arms it.
+private final class FrameSignal: NSObject, RTCVideoRenderer {
+    var onFirstFrame: (@Sendable () -> Void)?
+    private let fired = NSLock()
+    private var hasFired = false
+
+    func reset() {
+        fired.lock()
+        hasFired = false
+        fired.unlock()
+    }
+
+    func setSize(_ size: CGSize) {}
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        guard frame != nil else { return }
+        fired.lock()
+        let first = !hasFired
+        hasFired = true
+        fired.unlock()
+        if first { onFirstFrame?() }
+    }
 }
 
 private final class PeerConnectionObserver: NSObject, RTCPeerConnectionDelegate {
