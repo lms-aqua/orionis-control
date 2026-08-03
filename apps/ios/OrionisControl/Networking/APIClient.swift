@@ -2,6 +2,10 @@ import Foundation
 import Network
 import os
 
+extension Notification.Name {
+    static let orionisNetworkPathChanged = Notification.Name("OrionisNetworkPathChanged")
+}
+
 /// Response envelopes, matching the gateway exactly.
 struct SuccessEnvelope<T: Decodable>: Decodable {
     let success: Bool
@@ -59,6 +63,7 @@ struct Endpoint: Sendable {
 actor NetworkMonitor {
     private let monitor = NWPathMonitor()
     private var current: NWPath?
+    private var pathSignature: String?
 
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
@@ -67,7 +72,24 @@ actor NetworkMonitor {
         monitor.start(queue: DispatchQueue(label: "com.lostmediastudios.orioniscontrol.network"))
     }
 
-    private func update(_ path: NWPath) { current = path }
+    private func update(_ path: NWPath) {
+        let signature = [
+            String(describing: path.status),
+            path.isExpensive ? "expensive" : "normal",
+            path.isConstrained ? "constrained" : "unconstrained",
+            path.usesInterfaceType(.wifi) ? "wifi" : "",
+            path.usesInterfaceType(.cellular) ? "cellular" : "",
+            path.usesInterfaceType(.wiredEthernet) ? "wired" : "",
+        ].joined(separator: "|")
+        let shouldNotify = pathSignature != nil && pathSignature != signature
+        current = path
+        pathSignature = signature
+        if shouldNotify {
+            Task { @MainActor in
+                NotificationCenter.default.post(name: .orionisNetworkPathChanged, object: nil)
+            }
+        }
+    }
 
     /// Until the first NWPath callback arrives, connectivity is unknown rather
     /// than offline. Be optimistic and let URLSession make the real request;
@@ -199,9 +221,12 @@ actor APIClient {
     }
 
     /// Raw bytes (snapshots).
-    func requestData(_ endpoint: Endpoint) async throws -> Data {
+    func requestData(_ endpoint: Endpoint) async throws -> (data: Data, capturedAt: String?) {
         guard await monitor.isConnected else { throw APIError.offline }
         var request = try buildRequest(endpoint)
+        // Raw data is currently camera imagery. A user-initiated refresh must not
+        // be satisfied by URLCache's still-valid five-second response.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         if let token = try await tokenProvider?.validAccessToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
         }
@@ -214,18 +239,18 @@ actor APIClient {
             guard (200..<300).contains(http.statusCode) else {
                 throw try mapErrorResponse(data: data, status: http.statusCode)
             }
-            return data
+            return (data, http.value(forHTTPHeaderField: "x-captured-at"))
         } catch let error as URLError {
             throw APIError.from(urlError: error)
         }
     }
 
-    /// Raw bytes plus the server's suggested filename, for a clip being exported.
+    /// A disk-backed download plus the server's suggested filename.
     ///
     /// The filename matters: a clip saved out of the app is looked at weeks later,
     /// and the gateway already names it after the camera and the moment it covers.
     /// Falls back to nil rather than guessing, so the caller decides.
-    func requestDownload(_ endpoint: Endpoint) async throws -> (data: Data, filename: String?) {
+    func requestDownload(_ endpoint: Endpoint) async throws -> (fileURL: URL, filename: String?) {
         guard await monitor.isConnected else { throw APIError.offline }
         var request = try buildRequest(endpoint)
         if let token = try await tokenProvider?.validAccessToken() {
@@ -233,14 +258,28 @@ actor APIClient {
         }
 
         do {
-            let (data, response) = try await session.data(for: request)
+            let (temporaryURL, response) = try await session.download(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw APIError.decoding("The response was not an HTTP response.")
             }
             guard (200..<300).contains(http.statusCode) else {
+                let data = (try? Data(contentsOf: temporaryURL)) ?? Data()
                 throw try mapErrorResponse(data: data, status: http.statusCode)
             }
-            return (data, Self.filename(fromContentDisposition: http.value(forHTTPHeaderField: "content-disposition")))
+            let filename = Self.filename(
+                fromContentDisposition: http.value(forHTTPHeaderField: "content-disposition"))
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+                ".orionis-download-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: false)
+            let destination = directory.appendingPathComponent(filename ?? "download")
+            do {
+                try FileManager.default.moveItem(at: temporaryURL, to: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                throw error
+            }
+            return (destination, filename)
         } catch let error as URLError {
             throw APIError.from(urlError: error)
         }

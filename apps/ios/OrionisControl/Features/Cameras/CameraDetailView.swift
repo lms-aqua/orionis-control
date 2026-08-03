@@ -1,5 +1,7 @@
 import AVKit
+import Combine
 import SwiftUI
+import UIKit
 
 /// Live view for a single camera: metadata, supported controls, recent events.
 ///
@@ -17,7 +19,7 @@ final class CameraDetailViewModel {
     private(set) var loadError: APIError?
     private(set) var controlMessage: String?
     private(set) var isInvokingControl = false
-    private(set) var snapshot: Data?
+    private(set) var snapshot: UIImage?
 
     private let cameraId: String
     private let cameras: any CameraServicing
@@ -68,9 +70,17 @@ final class CameraDetailViewModel {
     func loadSnapshot() async {
         snapshotGeneration &+= 1
         let generation = snapshotGeneration
-        guard let loaded = try? await cameras.snapshot(cameraId: cameraId) else { return }
+        guard let loaded = try? await cameras.snapshot(cameraId: cameraId),
+              let prepared = await SnapshotImageDecoder.prepare(
+                loaded.data, maxPixelSize: 1_920)
+        else { return }
         guard generation == snapshotGeneration else { return }
-        snapshot = loaded
+        snapshot = prepared.image
+    }
+
+    func refreshCamera() async {
+        guard let refreshed = try? await cameras.camera(id: cameraId) else { return }
+        camera = refreshed
     }
 
     func invoke(_ request: CameraControlRequest) async {
@@ -141,6 +151,14 @@ struct CameraDetailView: View {
             if environment.preferences.autoplayLiveView {
                 await startStream()
             }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(20))
+                } catch {
+                    return
+                }
+                if scenePhase == .active { await model?.refreshCamera() }
+            }
         }
         .onDisappear {
             // Revokes the gateway session as well as stopping the decoder, so no
@@ -169,6 +187,9 @@ struct CameraDetailView: View {
             case .inactive, .background: stream?.suspendForBackground()
             @unknown default: break
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .orionisNetworkPathChanged)) { _ in
+            Task { await handleNetworkPathChange() }
         }
         .confirmationDialog(
             confirmationTitle,
@@ -215,7 +236,11 @@ struct CameraDetailView: View {
                 }
                 .padding(16)
             }
-            .refreshable { await model.load() }
+            .refreshable {
+                async let details: Void = model.load()
+                async let snapshot: Void = model.loadSnapshot()
+                _ = await (details, snapshot)
+            }
         } else {
             LoadingStateView(message: "Loading camera…")
         }
@@ -230,8 +255,7 @@ struct CameraDetailView: View {
                 // The scene as a still, shown the instant it loads so opening a
                 // camera never sits on a blank spinner. It sits under the live
                 // layer and is covered the moment real video paints.
-                if let data = model.snapshot, let image = UIImage(data: data),
-                    !(stream?.state.isLive ?? false)
+                if let image = model.snapshot, !(stream?.state.isLive ?? false)
                 {
                     Image(uiImage: image)
                         .resizable()
@@ -267,7 +291,9 @@ struct CameraDetailView: View {
             playerControls(model, camera: camera)
 
             if showDiagnostics {
-                streamDiagnostics(model, camera: camera)
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    streamDiagnostics(model, camera: camera)
+                }
             }
         }
     }
@@ -420,7 +446,7 @@ struct CameraDetailView: View {
                     stream.state == .paused ? "Resume live view" : "Pause live view")
             }
 
-            if camera.capabilities.audio {
+            if camera.capabilities.audio == true {
                 Button {
                     isMuted.toggle()
                     stream?.setAudioMuted(isMuted)
@@ -495,7 +521,7 @@ struct CameraDetailView: View {
             if let resolution = stream?.diagnostics.resolution ?? camera.health.resolution {
                 diagnosticRow("Resolution", resolution)
             }
-            if let fps = camera.health.frameRate {
+            if let fps = stream?.diagnostics.frameRate ?? camera.health.frameRate {
                 diagnosticRow("Frame rate", String(format: "%.0f fps", fps))
             }
             if let bitrate = camera.health.bitrateKbps {
@@ -541,9 +567,8 @@ struct CameraDetailView: View {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 10)], spacing: 10) {
                 if camera.capabilities.light {
-                    controlButton(
-                        "Light", "lightbulb.fill", .camerasControlLight,
-                        CameraControlRequest(action: .light, value: .flag(true)))
+                    booleanControlMenu(
+                        "Light", "lightbulb.fill", .camerasControlLight, action: .light)
                 }
                 if camera.capabilities.siren {
                     controlButton(
@@ -559,15 +584,16 @@ struct CameraDetailView: View {
                 }
                 if camera.capabilities.recordingToggle {
                     controlButton(
-                        camera.health.recording ? "Stop recording" : "Start recording",
+                        camera.health.recording == true ? "Stop recording" : "Start recording",
                         "record.circle", .camerasControlRecording,
                         CameraControlRequest(
-                            action: .recording, value: .flag(!camera.health.recording)))
+                            action: .recording,
+                            value: .flag(!(camera.health.recording ?? false))))
                 }
                 if camera.capabilities.motionToggle {
-                    controlButton(
+                    booleanControlMenu(
                         "Motion detection", "sensor.fill", .camerasControlDetection,
-                        CameraControlRequest(action: .motion, value: .flag(true)))
+                        action: .motion)
                 }
                 if camera.capabilities.restart {
                     controlButton(
@@ -604,6 +630,36 @@ struct CameraDetailView: View {
         // A disabled control explains itself rather than being silently inert.
         .accessibilityHint(
             allowed ? "" : "Requires a higher role than \(environment.auth.state.user?.role.displayName ?? "yours")")
+    }
+
+    @ViewBuilder
+    private func booleanControlMenu(
+        _ title: String, _ symbol: String, _ permission: Permission,
+        action: CameraControlRequest.Action
+    ) -> some View {
+        let allowed = environment.auth.state.user?.can(permission) ?? false
+        Menu {
+            Button("Turn on") {
+                Task {
+                    await performControl(CameraControlRequest(action: action, value: .flag(true)))
+                }
+            }
+            Button("Turn off") {
+                Task {
+                    await performControl(CameraControlRequest(action: action, value: .flag(false)))
+                }
+            }
+        } label: {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!allowed || model?.isInvokingControl == true)
+        .accessibilityHint(
+            allowed
+                ? "Choose on or off"
+                : "Requires a higher role than \(environment.auth.state.user?.role.displayName ?? "yours")")
     }
 
     // MARK: Details and events
@@ -649,7 +705,7 @@ struct CameraDetailView: View {
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Recordings").font(.headline)
-                    Text("Scrub the last 7 days of footage")
+                    Text("Scrub recorded footage by day")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -694,6 +750,12 @@ struct CameraDetailView: View {
         let lowData = environment.preferences.limitQualityOnCellular && conservingData
         stream.setAudioMuted(isMuted)
         stream.start(camera: camera, quality: quality, lowData: lowData)
+    }
+
+    private func handleNetworkPathChange() async {
+        let conservingData = await environment.api.conservingData
+        let lowData = environment.preferences.limitQualityOnCellular && conservingData
+        stream?.networkPathChanged(lowData: lowData)
     }
 
     private func performControl(_ request: CameraControlRequest) async {

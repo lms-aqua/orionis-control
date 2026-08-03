@@ -29,7 +29,7 @@ import type {
 } from './types.ts';
 
 interface Go2rtcStream {
-  producers?: { url?: string }[] | null;
+  producers?: { url?: string; medias?: string[] | null }[] | null;
   consumers?: unknown[] | null;
 }
 
@@ -41,7 +41,7 @@ const CAPABILITIES = {
   siren: false,
   privacyMode: false,
   twoWayAudio: false,
-  audio: true,
+  audio: null,
   recordingToggle: false,
   motionToggle: false,
   sensitivity: false,
@@ -118,7 +118,10 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     // go2rtc names its streams after the upstream device id. A configured label
     // turns that into something recognisable; without one, the id is shown
     // as-is rather than guessed at.
-    const label = this.labels[id];
+    const label = Object.hasOwn(this.labels, id) ? this.labels[id] : undefined;
+    const producerMedia = (stream?.producers ?? []).flatMap((producer) => producer.medias ?? []);
+    const hasAudio =
+      producerMedia.length === 0 ? null : producerMedia.some((media) => /^\s*audio\b/i.test(media));
 
     // Say plainly why nothing is playing, so the app can show a real reason when
     // the camera is tapped instead of a blank failure.
@@ -137,12 +140,13 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       group: null,
       model: 'go2rtc',
       firmware: null,
-      capabilities: { ...CAPABILITIES, protocols: [...this.protocols] },
+      capabilities: { ...CAPABILITIES, audio: hasAudio, protocols: [...this.protocols] },
       health: {
         status: online ? 'online' : 'offline',
-        // MediaMTX records every camera it pulls continuously, so a live camera
-        // with a recorder configured is genuinely recording right now.
-        recording: online && this.recordings !== null,
+        // A configured recorder is intent, not proof that bytes are reaching
+        // disk. MediaMTX playback must expose a recent segment before this can be
+        // known, and go2rtc's stream response alone cannot prove that.
+        recording: this.recordings === null ? false : null,
         streaming: online,
         motionDetected: false,
         privacyEnabled: false,
@@ -172,7 +176,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     const streams = await this.streams();
     // A labelled camera that is temporarily gone from go2rtc still resolves — as
     // offline — so opening it shows the reason rather than a 404.
-    if (!(cameraId in streams) && !(cameraId in this.labels)) {
+    if (!Object.hasOwn(streams, cameraId) && !Object.hasOwn(this.labels, cameraId)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
     return this.toCamera(cameraId, streams[cameraId]);
@@ -182,7 +186,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     cameraId: string,
   ): Promise<{ bytes: Buffer; contentType: string; capturedAt: string }> {
     const streams = await this.streams();
-    if (!(cameraId in streams)) {
+    if (!Object.hasOwn(streams, cameraId)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
     const { data } = await this.client.request<Buffer>({
@@ -216,7 +220,9 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       protocol,
       playbackUrl: '',
       expiresAt: new Date(Date.now() + input.ttlSeconds * 1000).toISOString(),
-      quality: input.quality,
+      // This adapter exposes one passthrough source and cannot apply quality
+      // variants. Report what was actually selected instead of echoing a wish.
+      quality: 'auto',
       iceServers: [],
       supportedQualities: ['auto'],
     };
@@ -246,9 +252,12 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   /** Cameras as {id, name} for the recordings collaborator. */
   private async cameraIndex(): Promise<{ id: string; name: string | null }[]> {
     const streams = await this.streams();
-    return Object.keys(streams)
-      .sort()
-      .map((id) => ({ id, name: this.labels[id]?.name ?? `Camera ${id}` }));
+    // Keep labelled cameras in the recording index even while their live source
+    // is offline. Historical footage does not disappear when a camera disconnects.
+    return this.roster(Object.keys(streams)).map((id) => ({
+      id,
+      name: (Object.hasOwn(this.labels, id) ? this.labels[id]?.name : null) ?? `Camera ${id}`,
+    }));
   }
 
   async listRecordings(query: RecordingQuery): Promise<Page<Recording>> {

@@ -25,6 +25,7 @@ final class RecordingStorageModel {
     }
 
     func load() async {
+        guard !isSaving else { return }
         loadGeneration &+= 1
         let generation = loadGeneration
         if storage == nil { isLoading = true }
@@ -61,6 +62,7 @@ final class RecordingStorageModel {
         do {
             let updated = try await service.setRetention(days: days)
             retention = updated
+            error = nil
             savedMessage =
                 updated.pending
                 ? "Queued. The recorder applies it within a few minutes."
@@ -138,7 +140,7 @@ struct RecordingStorageView: View {
                         .tint(fraction > 0.9 ? .red : fraction > 0.75 ? .orange : .accentColor)
                 }
                 HStack(alignment: .firstTextBaseline) {
-                    Text((storage.recordingsUsed ?? 0).formattedBytes)
+                    Text(storage.recordingsUsed?.formattedBytes ?? "Unavailable")
                         .font(.title2.weight(.semibold))
                     if let capacity = storage.recordingsCapacity {
                         Text(storage.isBudgeted ? "of \(capacity.formattedBytes) budget" : "of \(capacity.formattedBytes)")

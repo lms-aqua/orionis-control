@@ -185,7 +185,8 @@ struct CameraCapabilities: Codable, Sendable, Equatable {
     var siren = false
     var privacyMode = false
     var twoWayAudio = false
-    var audio = false
+    /// Nil when the hub has not exposed track metadata yet.
+    var audio: Bool? = nil
     var recordingToggle = false
     var motionToggle = false
     var sensitivity = false
@@ -202,7 +203,8 @@ struct CameraCapabilities: Codable, Sendable, Equatable {
 
 struct CameraHealth: Codable, Sendable, Equatable {
     var status: CameraStatus = .unknown
-    var recording = false
+    /// Nil when the camera hub cannot prove current recorder activity.
+    var recording: Bool? = nil
     var streaming = false
     var motionDetected = false
     var privacyEnabled = false
@@ -339,7 +341,8 @@ struct Recording: Codable, Sendable, Equatable, Identifiable {
     let endedAt: Date
     let durationSeconds: Double
     let sizeBytes: Double?
-    let hasAudio: Bool
+    /// Nil when the recorder does not expose track metadata for this clip.
+    let hasAudio: Bool?
     let retentionUntil: Date?
     let playbackPath: String?
     let markers: [RecordingMarker]
@@ -441,6 +444,126 @@ struct DnsQuery: Codable, Sendable, Equatable, Identifiable {
     /// Exact result reported by AdGuard Home for transparent diagnostics.
     let reason: String?
     let answers: [String]
+}
+
+/// A deterministic summary of the query rows currently loaded on-device.
+/// It deliberately describes a sample, not AdGuard's all-time statistics.
+struct DnsQueryInsights: Sendable, Equatable {
+    let total: Int
+    let allowed: Int
+    let blocked: Int
+    let other: Int
+    let averageProcessingMs: Double?
+    let slowestDomain: String?
+    let slowestProcessingMs: Double?
+    let topDomains: [NameCount]
+    let topClients: [NameCount]
+
+    init(queries: [DnsQuery], topLimit: Int = 5) {
+        total = queries.count
+        allowed = queries.filter { $0.status == .allowed }.count
+        blocked = queries.filter { $0.status == .blocked }.count
+        other = total - allowed - blocked
+
+        let timings = queries.compactMap { query -> (String, Double)? in
+            guard let value = query.processingMs, value.isFinite, value >= 0 else { return nil }
+            return (query.domain, value)
+        }
+        averageProcessingMs = timings.isEmpty
+            ? nil : timings.reduce(0) { $0 + $1.1 } / Double(timings.count)
+        let slowest = timings.max { lhs, rhs in lhs.1 < rhs.1 }
+        slowestDomain = slowest?.0
+        slowestProcessingMs = slowest?.1
+        topDomains = Self.ranked(queries.map(\.domain), limit: topLimit)
+        topClients = Self.ranked(queries.map { query in
+            guard let name = query.clientName, !name.isEmpty else { return query.client }
+            return name
+        }, limit: topLimit)
+    }
+
+    var blockRate: Double? {
+        let classified = allowed + blocked
+        return classified == 0 ? nil : Double(blocked) / Double(classified) * 100
+    }
+
+    var shareText: String {
+        var lines = [
+            "Orionis Control DNS activity — latest \(total) loaded results",
+            "Allowed: \(allowed)",
+            "Blocked: \(blocked)",
+            "Other: \(other)",
+        ]
+        if let blockRate { lines.append(String(format: "Block rate: %.1f%%", blockRate)) }
+        if let averageProcessingMs {
+            lines.append(String(format: "Average processing: %.2f ms", averageProcessingMs))
+        }
+        if !topDomains.isEmpty {
+            lines.append("Top domains: " + topDomains.map { "\($0.name) (\($0.count))" }.joined(separator: ", "))
+        }
+        if !topClients.isEmpty {
+            lines.append("Top clients: " + topClients.map { "\($0.name) (\($0.count))" }.joined(separator: ", "))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func ranked(_ values: [String], limit: Int) -> [NameCount] {
+        guard limit > 0 else { return [] }
+        let counts = values.reduce(into: [String: Int]()) { result, value in
+            let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return }
+            result[key, default: 0] += 1
+        }
+        return counts.map { NameCount(name: $0.key, count: $0.value) }
+            .sorted {
+                $0.count == $1.count
+                    ? $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    : $0.count > $1.count
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+/// Compact JSON-backed persistence for domains an operator wants to revisit.
+enum WatchedDomainStore {
+    static let maximumCount = 25
+
+    static func decode(_ rawValue: String) -> [String] {
+        guard let data = rawValue.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        var seen = Set<String>()
+        return decoded.compactMap(normalize)
+            .filter { seen.insert($0).inserted }
+            .prefix(maximumCount)
+            .map { $0 }
+    }
+
+    static func encode(_ domains: [String]) -> String {
+        let clean = domains.compactMap(normalize).prefix(maximumCount)
+        guard let data = try? JSONEncoder().encode(Array(clean)) else { return "[]" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func toggling(_ domain: String, in domains: [String]) -> [String] {
+        guard let normalized = normalize(domain) else { return domains }
+        let normalizedDomains = domains.compactMap(normalize)
+        let wasPresent = normalizedDomains.contains(normalized)
+        let clean = normalizedDomains.filter { $0 != normalized }
+        if wasPresent { return Array(clean.prefix(maximumCount)) }
+        return Array(([normalized] + clean).prefix(maximumCount))
+    }
+
+    static func contains(_ domain: String, in domains: [String]) -> Bool {
+        guard let normalized = normalize(domain) else { return false }
+        return domains.contains(normalized)
+    }
+
+    private static func normalize(_ domain: String) -> String? {
+        var value = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while value.hasSuffix(".") { value.removeLast() }
+        return value.isEmpty ? nil : value
+    }
 }
 
 struct DnsClient: Codable, Sendable, Equatable, Identifiable {
@@ -570,12 +693,12 @@ struct StorageStatus: Codable, Sendable, Equatable {
     /// asked: on a shared host, "105 GB of 5.8 TB used" says nothing about how
     /// much room recordings have left.
     var usedFraction: Double? {
-        if let ratio = quotaUsedRatio { return ratio }
+        if let ratio = quotaUsedRatio, ratio.isFinite { return min(1, max(0, ratio)) }
         if let quota = quotaBytes, quota > 0, let used = recordingsBytes {
-            return min(1, used / quota)
+            return min(1, max(0, used / quota))
         }
         guard let total = totalBytes, let used = usedBytes, total > 0 else { return nil }
-        return used / total
+        return min(1, max(0, used / total))
     }
 
     /// Bytes recordings occupy, whichever figure the gateway could measure.

@@ -11,6 +11,7 @@
  */
 import { readdir, stat, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Dirent } from 'node:fs';
 
 export interface CameraStorage {
   cameraId: string;
@@ -21,6 +22,8 @@ export interface CameraStorage {
 }
 
 export interface RecordingStorage {
+  /** False when the configured read-only recordings mount cannot be inspected. */
+  available: boolean;
   /** Size of the filesystem holding recordings. */
   totalBytes: number | null;
   freeBytes: number | null;
@@ -35,6 +38,7 @@ export interface RecordingStorage {
 }
 
 const EMPTY: RecordingStorage = {
+  available: false,
   totalBytes: null,
   freeBytes: null,
   usedBytes: null,
@@ -48,10 +52,22 @@ const EMPTY: RecordingStorage = {
 /** Recording file extensions the recorder produces. */
 const MEDIA = /\.(mp4|ts|mkv)$/i;
 
+async function mapBatches<Input, Output>(
+  values: Input[],
+  concurrency: number,
+  work: (value: Input) => Promise<Output>,
+): Promise<Output[]> {
+  const output: Output[] = [];
+  for (let index = 0; index < values.length; index += concurrency) {
+    output.push(...(await Promise.all(values.slice(index, index + concurrency).map(work))));
+  }
+  return output;
+}
+
 async function measureCamera(root: string, cameraId: string): Promise<CameraStorage | null> {
-  let entries: string[];
+  let entries: Dirent[];
   try {
-    entries = await readdir(join(root, cameraId));
+    entries = await readdir(join(root, cameraId), { withFileTypes: true });
   } catch {
     return null;
   }
@@ -61,23 +77,27 @@ async function measureCamera(root: string, cameraId: string): Promise<CameraStor
   let oldest: number | null = null;
   let newest: number | null = null;
 
-  for (const entry of entries) {
-    if (!MEDIA.test(entry)) continue;
+  // Do not follow symbolic links out of the read-only recordings tree; only
+  // regular files directly produced in the camera directory are measurements.
+  const mediaEntries = entries.filter((entry) => entry.isFile() && MEDIA.test(entry.name));
+  const measured = await mapBatches(mediaEntries, 32, async (entry) => {
     try {
-      const info = await stat(join(root, cameraId, entry));
-      if (!info.isFile()) continue;
-      bytes += info.size;
-      fileCount += 1;
-      // mtime is when the recorder last wrote the segment. Segment filenames carry
-      // the start instant, but parsing those would couple this to the recorder's
-      // naming; mtime is good enough to describe the span held on disk.
-      const at = info.mtimeMs;
-      if (oldest === null || at < oldest) oldest = at;
-      if (newest === null || at > newest) newest = at;
+      const info = await stat(join(root, cameraId, entry.name));
+      return info.isFile() ? { bytes: info.size, at: info.mtimeMs } : null;
     } catch {
       // A segment deleted by retention mid-walk is normal, not an error.
-      continue;
+      return null;
     }
+  });
+  for (const item of measured) {
+    if (!item) continue;
+    bytes += item.bytes;
+    fileCount += 1;
+    // mtime is when the recorder last wrote the segment. Segment filenames carry
+    // the start instant, but parsing those would couple this to the recorder's
+    // naming; mtime is good enough to describe the span held on disk.
+    if (oldest === null || item.at < oldest) oldest = item.at;
+    if (newest === null || item.at > newest) newest = item.at;
   }
 
   if (fileCount === 0) return null;
@@ -91,24 +111,25 @@ async function measureCamera(root: string, cameraId: string): Promise<CameraStor
 }
 
 /**
- * Walks the recordings root. Returns zeroed totals when the mount is absent, so a
- * gateway without the volume degrades to "nothing to report" rather than failing.
+ * Walks the recordings root. An absent/unreadable mount is explicitly unavailable;
+ * a mounted but empty root is the only state allowed to report zero recordings.
  */
 export async function measureRecordingStorage(root: string): Promise<RecordingStorage> {
   if (!root) return { ...EMPTY };
 
-  let cameraDirs: string[];
+  let cameraEntries: Dirent[];
   try {
-    cameraDirs = await readdir(root);
+    cameraEntries = await readdir(root, { withFileTypes: true });
   } catch {
     return { ...EMPTY };
   }
 
-  const cameras: CameraStorage[] = [];
-  for (const cameraId of cameraDirs) {
-    const measured = await measureCamera(root, cameraId);
-    if (measured) cameras.push(measured);
-  }
+  const cameraDirs = cameraEntries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const cameras = (await mapBatches(cameraDirs, 8, (id) => measureCamera(root, id))).filter(
+    (camera): camera is CameraStorage => camera !== null,
+  );
   cameras.sort((a, b) => b.bytes - a.bytes);
 
   const recordingsBytes = cameras.reduce((sum, c) => sum + c.bytes, 0);
@@ -137,6 +158,7 @@ export async function measureRecordingStorage(root: string): Promise<RecordingSt
   }
 
   return {
+    available: true,
     totalBytes,
     freeBytes,
     usedBytes,
@@ -155,6 +177,7 @@ export async function measureRecordingStorage(root: string): Promise<RecordingSt
  * to divide by — a made-up "days remaining" is worse than no figure.
  */
 export function projectDailyBytes(storage: RecordingStorage): number | null {
+  if (!storage.available) return null;
   if (storage.oldestRecordingAt === null || storage.newestRecordingAt === null) return null;
   const spanMs = Date.parse(storage.newestRecordingAt) - Date.parse(storage.oldestRecordingAt);
   const spanDays = spanMs / 86_400_000;

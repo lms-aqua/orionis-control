@@ -17,6 +17,36 @@ enum WebRTCPlayerError: Error {
     case noAnswer
 }
 
+struct WebRTCFrameMetrics: Sendable, Equatable {
+    let width: Int
+    let height: Int
+    let framesPerSecond: Double?
+}
+
+/// Keeps UDP TURN first without discarding TCP/TLS fallbacks. Configuration
+/// order is not assumed because environment-variable edits are easy to reorder.
+func prioritizedWebRTCICEURLs(_ urls: [String]) -> [String] {
+    var seen: Set<String> = []
+    let normalized = urls.compactMap { raw -> String? in
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+        return value
+    }
+    return normalized.enumerated().sorted { lhs, rhs in
+        let left = iceURLPriority(lhs.element)
+        let right = iceURLPriority(rhs.element)
+        return left == right ? lhs.offset < rhs.offset : left < right
+    }.map(\.element)
+}
+
+private func iceURLPriority(_ url: String) -> Int {
+    let value = url.lowercased()
+    if value.contains("transport=udp") { return 0 }
+    if value.hasPrefix("turn:") && !value.contains("transport=tcp") { return 1 }
+    if value.contains("transport=tcp") { return 2 }
+    return 3
+}
+
 /// Owns one camera's `RTCPeerConnection` — the sub-second media plane.
 ///
 /// The gateway proxies SDP: this posts a recv-only offer to the stream's
@@ -48,6 +78,9 @@ final class WebRTCStreamPlayer {
     /// negotiation is stillborn). The controller only calls the stream live on
     /// this, and renegotiates if it never comes.
     var onFirstFrame: (() -> Void)?
+    /// Throttled to roughly once per second so diagnostics and freeze detection
+    /// stay current without scheduling main-actor work for every decoded frame.
+    var onFrame: ((WebRTCFrameMetrics) -> Void)?
     private let frameSignal = FrameSignal()
 
     private var peerConnection: RTCPeerConnection?
@@ -57,6 +90,20 @@ final class WebRTCStreamPlayer {
     private var gatheringResumed = false
     private var gatheringTimeoutTask: Task<Void, Never>?
     private var muted = true
+    /// Invalidates delegate callbacks already queued by a peer being replaced.
+    private var connectionGeneration = 0
+
+    /// Signalling carries bearer credentials and should neither share cookies nor
+    /// reuse cached answers from unrelated app traffic.
+    private let signallingSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
 
     /// One factory process-wide. `RTCInitializeSSL()` must run once before any
     /// factory is built and is balanced for the app's lifetime, so it is never
@@ -75,6 +122,7 @@ final class WebRTCStreamPlayer {
     /// fails, so the controller can fall back to HLS.
     func connect(session: StreamSession) async throws {
         close()
+        let generation = connectionGeneration
         // Preserve the controller's current audio preference across reconnects.
         // `playWebRTC` applies it before calling connect; resetting it here made
         // every retry silently mute a stream the viewer had explicitly unmuted.
@@ -83,7 +131,16 @@ final class WebRTCStreamPlayer {
         // Arm first-frame detection for this connection.
         frameSignal.reset()
         frameSignal.onFirstFrame = { [weak self] in
-            Task { @MainActor in self?.onFirstFrame?() }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.onFirstFrame?()
+            }
+        }
+        frameSignal.onFrame = { [weak self] metrics in
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.onFrame?(metrics)
+            }
         }
 
         let config = RTCConfiguration()
@@ -96,14 +153,29 @@ final class WebRTCStreamPlayer {
         config.continualGatheringPolicy = .gatherOnce
         config.iceServers = session.iceServers.map { ice in
             RTCIceServer(
-                urlStrings: ice.urls,
+                urlStrings: prioritizedWebRTCICEURLs(ice.urls),
                 username: ice.username ?? "",
                 credential: ice.credential ?? "")
+        }
+        let hasTurnRelay = session.iceServers
+            .flatMap(\.urls)
+            .contains {
+                let value = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return value.hasPrefix("turn:") || value.hasPrefix("turns:")
+            }
+        if hasTurnRelay {
+            // The gateway deliberately does not expose go2rtc's media port;
+            // direct host/srflx pairs cannot work and only slow or destabilize
+            // candidate selection. Authenticated TURN is the intended path.
+            config.iceTransportPolicy = .relay
         }
 
         let observer = PeerConnectionObserver()
         observer.onIceGatheringComplete = { [weak self] in
-            Task { @MainActor in self?.resumeGathering() }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.resumeGathering()
+            }
         }
         // Waiting for gathering to *complete* meant waiting for every configured
         // TURN URL to finish allocating -- UDP, TCP, and the IP-literal fallback --
@@ -112,19 +184,35 @@ final class WebRTCStreamPlayer {
         // goes as soon as one exists and the slower servers are simply not waited
         // on. They are still gathered; they are just no longer on the critical path.
         observer.onIceCandidate = { [weak self] sdp in
-            guard sdp.contains(" typ relay") else { return }
-            Task { @MainActor in self?.resumeGathering() }
+            let candidate = sdp.lowercased()
+            // Prefer the UDP relay path. Sending the offer as soon as a TCP relay
+            // appears can lock video onto head-of-line-blocked TURN/TCP before the
+            // smoother UDP candidate finishes gathering.
+            guard candidate.contains(" udp "), candidate.contains(" typ relay") else { return }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.resumeGathering()
+            }
         }
         observer.onRemoteVideoTrack = { [weak self] track in
             let boxed = UncheckedTransfer(value: track)
-            Task { @MainActor in self?.attach(videoTrack: boxed.value) }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.attach(videoTrack: boxed.value)
+            }
         }
         observer.onRemoteAudioTrack = { [weak self] track in
             let boxed = UncheckedTransfer(value: track)
-            Task { @MainActor in self?.attach(audioTrack: boxed.value) }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.attach(audioTrack: boxed.value)
+            }
         }
         observer.onConnectionState = { [weak self] state in
-            Task { @MainActor in self?.handle(connectionState: state) }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.handle(connectionState: state)
+            }
         }
         self.observer = observer
 
@@ -178,6 +266,7 @@ final class WebRTCStreamPlayer {
 
     /// Tears the connection down. Safe to call repeatedly and from `stop()`.
     func close() {
+        connectionGeneration &+= 1
         resumeGathering()
         remoteVideoTrack?.remove(videoRenderer)
         remoteVideoTrack?.remove(frameSignal)
@@ -188,10 +277,18 @@ final class WebRTCStreamPlayer {
         observer = nil
     }
 
+    func framesStaleFor() -> TimeInterval? { frameSignal.secondsSinceLastFrame() }
+
     // MARK: - Delegate handling (already hopped to the main actor)
 
     private func attach(videoTrack: RTCVideoTrack) {
-        if let old = remoteVideoTrack, old !== videoTrack {
+        // Unified Plan may announce the same track through both `didAdd stream`
+        // and `didAdd receiver`. Adding the renderer twice duplicates callbacks
+        // and was a direct source of uneven frame delivery.
+        if remoteVideoTrack === videoTrack || remoteVideoTrack?.trackId == videoTrack.trackId {
+            return
+        }
+        if let old = remoteVideoTrack {
             old.remove(videoRenderer)
             old.remove(frameSignal)
         }
@@ -204,6 +301,9 @@ final class WebRTCStreamPlayer {
     }
 
     private func attach(audioTrack: RTCAudioTrack) {
+        if remoteAudioTrack === audioTrack || remoteAudioTrack?.trackId == audioTrack.trackId {
+            return
+        }
         remoteAudioTrack = audioTrack
         audioTrack.isEnabled = !muted
     }
@@ -303,7 +403,7 @@ final class WebRTCStreamPlayer {
         request.httpBody = try JSONSerialization.data(
             withJSONObject: ["type": "offer", "sdp": offerSDP])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await signallingSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw WebRTCPlayerError.signallingFailed("No HTTP response")
         }
@@ -345,24 +445,59 @@ private struct UncheckedTransfer<Value>: @unchecked Sendable {
 /// frame. Fires `onFirstFrame` once per connection; `reset()` re-arms it.
 private final class FrameSignal: NSObject, RTCVideoRenderer {
     var onFirstFrame: (@Sendable () -> Void)?
-    private let fired = NSLock()
+    var onFrame: (@Sendable (WebRTCFrameMetrics) -> Void)?
+    private let stateLock = NSLock()
     private var hasFired = false
+    private var lastFrameUptime: TimeInterval?
+    private var lastReportUptime: TimeInterval?
+    private var framesSinceReport = 0
 
     func reset() {
-        fired.lock()
+        stateLock.lock()
         hasFired = false
-        fired.unlock()
+        lastFrameUptime = nil
+        lastReportUptime = nil
+        framesSinceReport = 0
+        stateLock.unlock()
     }
 
     func setSize(_ size: CGSize) {}
 
     func renderFrame(_ frame: RTCVideoFrame?) {
-        guard frame != nil else { return }
-        fired.lock()
+        guard let frame else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        stateLock.lock()
         let first = !hasFired
         hasFired = true
-        fired.unlock()
+        lastFrameUptime = now
+        framesSinceReport += 1
+        let shouldReport = lastReportUptime.map { now - $0 >= 1 } ?? true
+        let framesPerSecond: Double?
+        if shouldReport, let previousReport = lastReportUptime {
+            framesPerSecond = Double(framesSinceReport) / max(0.001, now - previousReport)
+        } else {
+            framesPerSecond = nil
+        }
+        if shouldReport {
+            lastReportUptime = now
+            framesSinceReport = 0
+        }
+        stateLock.unlock()
         if first { onFirstFrame?() }
+        if shouldReport {
+            onFrame?(
+                WebRTCFrameMetrics(
+                    width: Int(frame.width),
+                    height: Int(frame.height),
+                    framesPerSecond: framesPerSecond))
+        }
+    }
+
+    func secondsSinceLastFrame(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> TimeInterval? {
+        stateLock.lock()
+        let last = lastFrameUptime
+        stateLock.unlock()
+        return last.map { max(0, now - $0) }
     }
 }
 

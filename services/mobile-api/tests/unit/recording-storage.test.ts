@@ -35,6 +35,7 @@ describe('measureRecordingStorage', () => {
       ],
     });
     const s = await measureRecordingStorage(root);
+    expect(s.available).toBe(true);
     expect(s.recordingsBytes).toBe(6000);
     expect(s.fileCount).toBe(3);
     expect(s.cameras.map((c) => c.cameraId)).toEqual(['57', '56']);
@@ -87,10 +88,10 @@ describe('measureRecordingStorage', () => {
     expect(s.cameras.map((c) => c.cameraId)).toEqual(['57']);
   });
 
-  it('reports nothing rather than failing when the mount is absent', async () => {
+  it('reports unavailable rather than a false zero when the mount is absent', async () => {
     for (const root of ['', join(tmpdir(), 'orionis-does-not-exist-12345')]) {
       const s = await measureRecordingStorage(root);
-      expect(s.recordingsBytes).toBe(0);
+      expect(s.available).toBe(false);
       expect(s.cameras).toEqual([]);
       // Capacity unknown, not zero: 0 free would read as a full disk.
       expect(s.totalBytes).toBeNull();
@@ -101,6 +102,7 @@ describe('measureRecordingStorage', () => {
 
 describe('projectDailyBytes', () => {
   const base: RecordingStorage = {
+    available: true,
     totalBytes: 1000,
     freeBytes: 500,
     usedBytes: 500,
@@ -125,5 +127,6 @@ describe('projectDailyBytes', () => {
     ).toBeNull();
     expect(projectDailyBytes({ ...base, oldestRecordingAt: null })).toBeNull();
     expect(projectDailyBytes({ ...base, newestRecordingAt: null })).toBeNull();
+    expect(projectDailyBytes({ ...base, available: false })).toBeNull();
   });
 });

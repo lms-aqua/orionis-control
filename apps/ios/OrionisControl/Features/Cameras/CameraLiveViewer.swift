@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import SwiftUI
 
 /// Full-screen live viewing for a wall of cameras.
@@ -8,15 +9,17 @@ import SwiftUI
 /// live streams behind it, and the device is never asked to decode several at once.
 @MainActor
 struct CameraLiveViewer: View {
-    let cameras: [Camera]
+    @State private var cameras: [Camera]
 
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var index: Int
     @State private var stream: CameraStreamController?
     @State private var thumbnails: CameraSnapshotStore?
     @State private var showsControls = true
+    @State private var showsPlaybackStats = false
     @State private var fillsScreen = false
     @State private var isMuted = true
     @State private var zoom: CGFloat = 1
@@ -24,11 +27,12 @@ struct CameraLiveViewer: View {
     @State private var pan: CGSize = .zero
     @State private var committedPan: CGSize = .zero
     @State private var hideControlsTask: Task<Void, Never>?
+    @State private var cameraSwitchTask: Task<Void, Never>?
 
     private let maxZoom: CGFloat = 5
 
     init(cameras: [Camera], startAt index: Int = 0) {
-        self.cameras = cameras
+        _cameras = State(initialValue: cameras)
         _index = State(initialValue: min(max(0, index), max(0, cameras.count - 1)))
     }
 
@@ -69,10 +73,29 @@ struct CameraLiveViewer: View {
             await thumbnails?.refresh(
                 cameraIds: cameras.filter { $0.health.status.isUsable }.map(\.id))
             scheduleControlsHide()
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(20))
+                } catch {
+                    return
+                }
+                await refreshCameraMetadata()
+            }
         }
         .onDisappear {
             hideControlsTask?.cancel()
+            cameraSwitchTask?.cancel()
             Task { [stream] in await stream?.stop() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: stream?.resumeFromBackground()
+            case .inactive, .background: stream?.suspendForBackground()
+            @unknown default: break
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .orionisNetworkPathChanged)) { _ in
+            Task { await handleNetworkPathChange() }
         }
     }
 
@@ -117,11 +140,21 @@ struct CameraLiveViewer: View {
             .contentShape(Rectangle())
             .gesture(zoomGesture)
             .simultaneousGesture(dragGesture(viewport: geometry.size))
-            // Double tap must be attached before the single tap so the single
-            // tap does not swallow it.
-            .onTapGesture(count: 2) { toggleFillMode() }
-            .onTapGesture { toggleControls() }
+            .highPriorityGesture(tapGesture)
         }
+    }
+
+    /// Explicit exclusivity prevents a double tap from also firing the single
+    /// tap action and unexpectedly changing both fill mode and control visibility.
+    private var tapGesture: some Gesture {
+        TapGesture(count: 2)
+            .exclusively(before: TapGesture(count: 1))
+            .onEnded { result in
+                switch result {
+                case .first: toggleFillMode()
+                case .second: toggleControls()
+                }
+            }
     }
 
     private var zoomGesture: some Gesture {
@@ -236,6 +269,7 @@ struct CameraLiveViewer: View {
     private func bottomBar(_ stream: CameraStreamController, camera: Camera) -> some View {
         VStack(spacing: 12) {
             if cameras.count > 1 { switcher }
+            if showsPlaybackStats { playbackStats(stream) }
 
             HStack(spacing: 14) {
                 if !stream.state.isTerminal {
@@ -249,7 +283,7 @@ struct CameraLiveViewer: View {
                 }
 
                 // Only offered when the camera says it carries audio.
-                if camera.capabilities.audio {
+                if camera.capabilities.audio == true {
                     circleButton(
                         isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                         label: isMuted ? "Unmute" : "Mute"
@@ -266,6 +300,14 @@ struct CameraLiveViewer: View {
                         : "arrow.up.left.and.arrow.down.right",
                     label: fillsScreen ? "Fit to screen" : "Fill screen"
                 ) { toggleFillMode() }
+
+                circleButton(
+                    "waveform.path.ecg",
+                    label: showsPlaybackStats ? "Hide playback stats" : "Show playback stats"
+                ) {
+                    showsPlaybackStats.toggle()
+                    scheduleControlsHide()
+                }
 
                 if isZoomed {
                     circleButton("1.magnifyingglass", label: "Reset zoom") {
@@ -298,8 +340,7 @@ struct CameraLiveViewer: View {
                 ForEach(Array(cameras.enumerated()), id: \.element.id) { position, item in
                     Button {
                         guard position != index else { return }
-                        index = position
-                        Task { await switchCamera(to: item) }
+                        selectCamera(at: position, camera: item)
                     } label: {
                         switcherThumbnail(item, isCurrent: position == index)
                     }
@@ -359,6 +400,33 @@ struct CameraLiveViewer: View {
         .accessibilityLabel(label)
     }
 
+    private func playbackStats(_ stream: CameraStreamController) -> some View {
+        let diagnostics = stream.diagnostics
+        return HStack(spacing: 12) {
+            if let transport = diagnostics.transport {
+                Label(transport.displayName, systemImage: "network")
+            }
+            if let fps = diagnostics.frameRate {
+                Label(String(format: "%.0f fps", fps), systemImage: "film.stack")
+            }
+            Label("\(diagnostics.stallCount) stalls", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+            Label("\(diagnostics.reconnectCount) reconnects", systemImage: "arrow.clockwise")
+        }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.white.opacity(0.9))
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.55), in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Playback statistics, \(diagnostics.transport?.displayName ?? "unknown transport"), "
+                + "\(diagnostics.frameRate.map { String(format: "%.0f frames per second", $0) } ?? "frame rate unavailable"), "
+                + "\(diagnostics.stallCount) stalls, \(diagnostics.reconnectCount) reconnects")
+        .padding(.horizontal, 16)
+    }
+
     // MARK: Actions
 
     private func begin(camera: Camera) async {
@@ -370,6 +438,22 @@ struct CameraLiveViewer: View {
             camera: camera,
             quality: environment.preferences.defaultStreamQuality,
             lowData: lowData)
+    }
+
+    private func handleNetworkPathChange() async {
+        let conservingData = await environment.api.conservingData
+        let lowData = environment.preferences.limitQualityOnCellular && conservingData
+        stream?.networkPathChanged(lowData: lowData)
+    }
+
+    private func refreshCameraMetadata() async {
+        guard scenePhase == .active else { return }
+        guard let latest = try? await environment.service.cameras() else { return }
+        var byId: [String: Camera] = [:]
+        for camera in latest { byId[camera.id] = camera }
+        // Preserve the filtered/order-specific wall that opened full screen, but
+        // refresh names and health so its labels do not become stale.
+        cameras = cameras.map { byId[$0.id] ?? $0 }
     }
 
     private func switchCamera(to camera: Camera) async {
@@ -388,9 +472,14 @@ struct CameraLiveViewer: View {
     private func advance(by delta: Int) {
         guard cameras.count > 1 else { return }
         let next = (index + delta + cameras.count) % cameras.count
-        index = next
+        selectCamera(at: next, camera: cameras[next])
+    }
+
+    private func selectCamera(at position: Int, camera: Camera) {
+        index = position
         showsControls = true
-        Task { await switchCamera(to: cameras[next]) }
+        cameraSwitchTask?.cancel()
+        cameraSwitchTask = Task { await switchCamera(to: camera) }
     }
 
     private func toggleControls() {

@@ -204,4 +204,12 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: '0006_stream_upstream_id',
+    sql: `
+      -- Gateway stream IDs authorize clients; upstream IDs tear down the actual
+      -- RTSP/HLS producer. They are intentionally distinct and both are needed.
+      ALTER TABLE stream_sessions ADD COLUMN upstream_id TEXT;
+    `,
+  },
 ];

@@ -65,6 +65,49 @@ final class CameraStreamStateTests: XCTestCase {
         XCTAssertFalse(policy.shouldRetry(afterAttempt: 99))
     }
 
+    func testWebRTCFrameHealthIgnoresJitterButBoundsFrozenStreamRecovery() {
+        let policy = WebRTCFrameHealthPolicy(staleTolerance: 5, maxRenegotiations: 2)
+        XCTAssertFalse(policy.isFrozen(staleFor: nil))
+        XCTAssertFalse(policy.isFrozen(staleFor: 4.99))
+        XCTAssertTrue(policy.isFrozen(staleFor: 5))
+        XCTAssertTrue(policy.shouldRenegotiate(afterRecoveries: 0))
+        XCTAssertTrue(policy.shouldRenegotiate(afterRecoveries: 1))
+        XCTAssertFalse(policy.shouldRenegotiate(afterRecoveries: 2))
+    }
+
+    func testHLSLiveEdgePolicyCorrectsOnlyMeaningfulDrift() {
+        let policy = HLSLiveEdgePolicy(maximumLag: 12, targetLag: 2)
+        XCTAssertNil(policy.correction(current: 89, rangeStart: 0, rangeEnd: 100))
+        XCTAssertEqual(policy.correction(current: 70, rangeStart: 0, rangeEnd: 100), 98)
+        XCTAssertNil(policy.correction(current: .nan, rangeStart: 0, rangeEnd: 100))
+    }
+
+    func testWebRTCICEURLsPreferUDPButKeepEveryFallback() {
+        let urls = [
+            "turns:relay.example:5349?transport=tcp",
+            "turn:relay.example:3478?transport=tcp",
+            "turn:relay.example:3478?transport=udp",
+            "stun:relay.example:3478",
+        ]
+        XCTAssertEqual(
+            prioritizedWebRTCICEURLs(urls),
+            [urls[2], urls[1], urls[0], urls[3]])
+    }
+
+    func testWebRTCICEURLsTrimAndDeduplicateConfigurationNoise() {
+        XCTAssertEqual(
+            prioritizedWebRTCICEURLs([
+                " turn:relay.example:3478?transport=udp ",
+                "turn:relay.example:3478?transport=udp",
+                "",
+                "turn:relay.example:3478?transport=tcp",
+            ]),
+            [
+                "turn:relay.example:3478?transport=udp",
+                "turn:relay.example:3478?transport=tcp",
+            ])
+    }
+
     func testFrozenFrameDetectorNeedsAStillPlayheadForLongerThanTolerance() {
         var detector = FrozenFrameDetector(tolerance: 5)
         let t0 = Date(timeIntervalSince1970: 1_000_000)

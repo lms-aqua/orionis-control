@@ -240,6 +240,76 @@ final class DeepLinkRoutingTests: XCTestCase {
     }
 }
 
+final class DnsQueryInsightsTests: XCTestCase {
+    private func query(
+        _ id: String,
+        domain: String,
+        client: String = "192.0.2.1",
+        clientName: String? = nil,
+        status: QueryStatus,
+        processingMs: Double? = nil
+    ) -> DnsQuery {
+        DnsQuery(
+            id: id,
+            at: Date(timeIntervalSince1970: 0),
+            client: client,
+            clientName: clientName,
+            domain: domain,
+            type: "A",
+            upstream: nil,
+            processingMs: processingMs,
+            status: status,
+            rule: nil,
+            ruleFilterId: nil,
+            responseCode: "NOERROR",
+            reason: nil,
+            answers: [])
+    }
+
+    func testInsightsDescribeOnlyTheLoadedSample() throws {
+        let insights = DnsQueryInsights(queries: [
+            query("1", domain: "b.example", clientName: "phone", status: .blocked, processingMs: 8),
+            query("2", domain: "a.example", clientName: "phone", status: .allowed, processingMs: 2),
+            query("3", domain: "b.example", clientName: "laptop", status: .blocked, processingMs: 5),
+            query("4", domain: "rewrite.example", status: .rewritten),
+        ])
+
+        XCTAssertEqual(insights.total, 4)
+        XCTAssertEqual(insights.allowed, 1)
+        XCTAssertEqual(insights.blocked, 2)
+        XCTAssertEqual(insights.other, 1)
+        XCTAssertEqual(try XCTUnwrap(insights.blockRate), 200.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(insights.averageProcessingMs), 5, accuracy: 0.001)
+        XCTAssertEqual(insights.slowestDomain, "b.example")
+        XCTAssertEqual(insights.topDomains.first, NameCount(name: "b.example", count: 2))
+        XCTAssertEqual(insights.topClients.first, NameCount(name: "phone", count: 2))
+        XCTAssertTrue(insights.shareText.contains("latest 4 loaded results"))
+    }
+
+    func testInsightsIgnoreMissingAndInvalidTimings() {
+        let insights = DnsQueryInsights(queries: [
+            query("1", domain: "unknown.example", status: .unknown, processingMs: -Double.infinity),
+            query("2", domain: "safe.example", status: .safeSearch, processingMs: nil),
+        ])
+
+        XCTAssertNil(insights.blockRate)
+        XCTAssertNil(insights.averageProcessingMs)
+        XCTAssertNil(insights.slowestDomain)
+    }
+
+    func testWatchedDomainsNormalizeDeduplicateToggleAndRoundTrip() {
+        let decoded = WatchedDomainStore.decode(#"["Example.COM.","example.com"," second.example "]"#)
+        XCTAssertEqual(decoded, ["example.com", "second.example"])
+        XCTAssertTrue(WatchedDomainStore.contains("EXAMPLE.com.", in: decoded))
+
+        let removed = WatchedDomainStore.toggling("example.com", in: decoded)
+        XCTAssertEqual(removed, ["second.example"])
+        let added = WatchedDomainStore.toggling("New.Example.", in: removed)
+        XCTAssertEqual(added, ["new.example", "second.example"])
+        XCTAssertEqual(WatchedDomainStore.decode(WatchedDomainStore.encode(added)), added)
+    }
+}
+
 final class DecodingTests: XCTestCase {
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         let decoder = JSONDecoder()
@@ -349,5 +419,33 @@ final class DecodingTests: XCTestCase {
             try decode(
                 CameraStatus.self, #""teleporting""#
             ))
+    }
+}
+
+final class StorageStatusTests: XCTestCase {
+    private func status(quotaRatio: Double?, recordings: Double? = 50, quota: Double? = 100)
+        -> StorageStatus
+    {
+        StorageStatus(
+            totalBytes: 1_000,
+            usedBytes: 500,
+            freeBytes: 500,
+            recordingsBytes: recordings,
+            quotaBytes: quota,
+            quotaUsedRatio: quotaRatio,
+            quotaFreeBytes: 50,
+            fileCount: 1,
+            dailyBytes: 10,
+            daysRemaining: 5,
+            retentionDays: 7,
+            oldestRecordingAt: nil,
+            newestRecordingAt: nil,
+            perCamera: nil)
+    }
+
+    func testStorageProgressNeverEscapesZeroToOne() {
+        XCTAssertEqual(status(quotaRatio: 1.5).usedFraction, 1)
+        XCTAssertEqual(status(quotaRatio: -0.5).usedFraction, 0)
+        XCTAssertEqual(status(quotaRatio: nil, recordings: 250).usedFraction, 1)
     }
 }

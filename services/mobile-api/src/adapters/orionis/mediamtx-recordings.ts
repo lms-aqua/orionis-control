@@ -26,6 +26,9 @@ export interface RecordingRef {
   durationSeconds: number;
 }
 
+/** Same resource bound as the arbitrary timeline/export endpoint. */
+export const MAX_RECORDING_CLIP_SECONDS = 1_800;
+
 /** Opaque, URL-safe, and self-describing so no server-side index is needed. */
 export function encodeRecordingId(ref: RecordingRef): string {
   const raw = `${ref.cameraId}|${ref.start}|${ref.durationSeconds}`;
@@ -46,7 +49,15 @@ export function decodeRecordingId(id: string): RecordingRef {
   const duration = Number(parts[2]);
   // A camera id containing '|' would split wrongly, so require exactly the shape
   // we wrote rather than accepting anything that decodes.
-  if (parts.length !== 3 || !parts[0] || !parts[1] || !Number.isFinite(duration) || duration <= 0) {
+  if (
+    parts.length !== 3 ||
+    !parts[0] ||
+    !parts[1] ||
+    !Number.isFinite(Date.parse(parts[1])) ||
+    !Number.isFinite(duration) ||
+    duration <= 0 ||
+    duration > MAX_RECORDING_CLIP_SECONDS
+  ) {
     throw new AppError('NOT_FOUND', 'No such recording.');
   }
   return { cameraId: parts[0], start: parts[1], durationSeconds: duration };
@@ -86,7 +97,12 @@ export class MediaMtxRecordings {
     return body
       .filter(
         (entry): entry is { start: string; duration: number } =>
-          Boolean(entry?.start) && typeof entry?.duration === 'number' && entry.duration > 0,
+          Boolean(entry?.start) &&
+          Number.isFinite(Date.parse(entry.start ?? '')) &&
+          typeof entry?.duration === 'number' &&
+          Number.isFinite(entry.duration) &&
+          entry.duration > 0 &&
+          entry.duration <= MAX_RECORDING_CLIP_SECONDS,
       )
       .map((entry) => ({
         cameraId,
@@ -109,7 +125,9 @@ export class MediaMtxRecordings {
       // The playback server does not report file sizes, and guessing one from
       // bitrate would be inventing data.
       sizeBytes: null,
-      hasAudio: true,
+      // MediaMTX's playback index does not expose track metadata. Unknown is
+      // truthful; `true` made silent legacy/video-only footage look broken.
+      hasAudio: null,
       retentionUntil:
         this.retentionDays === null
           ? null
@@ -134,16 +152,20 @@ export class MediaMtxRecordings {
     const to = query.to ? new Date(query.to).getTime() : null;
 
     const all: Recording[] = [];
-    for (const camera of wanted) {
-      const refs = await this.segments(camera.id);
-      for (const ref of refs) {
-        const startedAt = new Date(ref.start).getTime();
-        const endedAt = startedAt + ref.durationSeconds * 1000;
-        // Overlap, not containment: a range that straddles the window boundary is
-        // still footage the caller asked for.
-        if (from !== null && endedAt < from) continue;
-        if (to !== null && startedAt > to) continue;
-        all.push(this.toRecording(ref, camera.name));
+    for (let index = 0; index < wanted.length; index += 8) {
+      const batch = wanted.slice(index, index + 8);
+      const refsByCamera = await Promise.all(batch.map((camera) => this.segments(camera.id)));
+      for (let cameraIndex = 0; cameraIndex < batch.length; cameraIndex += 1) {
+        const camera = batch[cameraIndex]!;
+        for (const ref of refsByCamera[cameraIndex]!) {
+          const startedAt = new Date(ref.start).getTime();
+          const endedAt = startedAt + ref.durationSeconds * 1000;
+          // Overlap, not containment: a range that straddles the window boundary is
+          // still footage the caller asked for.
+          if (from !== null && endedAt < from) continue;
+          if (to !== null && startedAt > to) continue;
+          all.push(this.toRecording(ref, camera.name));
+        }
       }
     }
 
@@ -166,7 +188,7 @@ export class MediaMtxRecordings {
       const candidateStart = new Date(candidate.start).getTime();
       return (
         startMs >= candidateStart - 1000 &&
-        startMs <= candidateStart + candidate.durationSeconds * 1000
+        startMs < candidateStart + candidate.durationSeconds * 1000
       );
     });
     if (!covered) {
@@ -190,10 +212,17 @@ export class MediaMtxRecordings {
     // what is actually playable — a file can exist on disk that the recorder will
     // not serve.
     let oldest: string | null = null;
-    for (const camera of cameras) {
-      const refs = await this.segments(camera.id).catch(() => []);
-      for (const ref of refs) {
-        if (oldest === null || ref.start < oldest) oldest = ref.start;
+    // Bound concurrency: serial probes scale linearly with recorder latency,
+    // while an unbounded Promise.all can overload a large NVR.
+    for (let index = 0; index < cameras.length; index += 8) {
+      const batch = cameras.slice(index, index + 8);
+      const refsByCamera = await Promise.all(
+        batch.map((camera) => this.segments(camera.id).catch(() => [])),
+      );
+      for (const refs of refsByCamera) {
+        for (const ref of refs) {
+          if (oldest === null || ref.start < oldest) oldest = ref.start;
+        }
       }
     }
 
@@ -204,7 +233,7 @@ export class MediaMtxRecordings {
     // Headroom is whichever runs out first: the budget, or the disk. A 3 TB
     // budget on a disk with 40 GB left is not 3 TB of headroom.
     const quotaFreeBytes =
-      this.quotaBytes === null
+      !measured.available || this.quotaBytes === null
         ? null
         : Math.max(
             0,
@@ -220,14 +249,14 @@ export class MediaMtxRecordings {
       totalBytes: measured.totalBytes,
       usedBytes: measured.usedBytes,
       freeBytes: measured.freeBytes,
-      recordingsBytes: measured.recordingsBytes,
+      recordingsBytes: measured.available ? measured.recordingsBytes : null,
       quotaBytes: this.quotaBytes,
       quotaUsedRatio:
-        this.quotaBytes === null || this.quotaBytes === 0
+        !measured.available || this.quotaBytes === null || this.quotaBytes === 0
           ? null
           : Math.min(1, Math.round((measured.recordingsBytes / this.quotaBytes) * 10_000) / 10_000),
       quotaFreeBytes,
-      fileCount: measured.fileCount,
+      fileCount: measured.available ? measured.fileCount : null,
       dailyBytes,
       // Measured against the budget when there is one, so the figure answers
       // "how long until recordings start being deleted" rather than "how long

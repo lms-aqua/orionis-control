@@ -10,8 +10,11 @@ import { z } from 'zod';
 import { AppError } from '../lib/errors.ts';
 import { ok, paged } from '../lib/envelope.ts';
 import { actorOf, requirePermission } from '../http/context.ts';
-import type { CameraEvent } from '../adapters/orionis/types.ts';
-import { decodeRecordingId } from '../adapters/orionis/mediamtx-recordings.ts';
+import type { CameraEvent, Recording } from '../adapters/orionis/types.ts';
+import {
+  decodeRecordingId,
+  MAX_RECORDING_CLIP_SECONDS,
+} from '../adapters/orionis/mediamtx-recordings.ts';
 import { mergeCoverage } from '../lib/coverage.ts';
 import { serveRecordingClip } from '../lib/recording-clip.ts';
 import {
@@ -47,17 +50,39 @@ const RecordingQuerySchema = z.object({
 const ClipWindowSchema = z.object({
   cameraId: z.string().min(1).max(64),
   start: z.string().datetime(),
-  duration: z.coerce.number().int().min(1).max(1800).default(600),
+  duration: z.coerce.number().int().min(1).max(MAX_RECORDING_CLIP_SECONDS).default(600),
   // Ask for it as a file rather than as something to stream inline, so saving or
   // sharing a clip lands with a name a person can recognise later.
   download: z.enum(['true', 'false']).optional(),
 });
 
-const CoverageQuerySchema = z.object({
-  cameraId: z.string().min(1).max(64),
-  // Any instant within the day of interest; the day is derived from it in UTC.
-  day: z.string().datetime().optional(),
-});
+const CoverageQuerySchema = z
+  .object({
+    cameraId: z.string().min(1).max(64),
+    // Legacy clients send one instant and receive its UTC day.
+    day: z.string().datetime().optional(),
+    // New clients send exact local calendar-day bounds. This also handles the
+    // 23- and 25-hour days created by daylight-saving changes.
+    dayStart: z.string().datetime().optional(),
+    dayEnd: z.string().datetime().optional(),
+  })
+  .superRefine((value, context) => {
+    if ((value.dayStart === undefined) !== (value.dayEnd === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'dayStart and dayEnd must be provided together',
+      });
+    }
+    if (value.dayStart && value.dayEnd) {
+      const span = Date.parse(value.dayEnd) - Date.parse(value.dayStart);
+      if (span <= 0 || span > 26 * 60 * 60 * 1000) {
+        context.addIssue({
+          code: 'custom',
+          message: 'coverage bounds must describe one calendar day',
+        });
+      }
+    }
+  });
 
 /** `Driveway-2026-08-02-1430.mp4` — sortable, and obvious out of context. */
 function clipFilename(cameraName: string, start: string, duration: number): string {
@@ -268,23 +293,47 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const q = CoverageQuerySchema.parse(req.query);
       const anchor = q.day ? new Date(q.day) : new Date();
-      const dayStart = new Date(
-        Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()),
-      );
-      const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+      const dayStart = q.dayStart
+        ? new Date(q.dayStart)
+        : new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()));
+      const dayEnd = q.dayEnd ? new Date(q.dayEnd) : new Date(dayStart.getTime() + 86_400_000);
       // Never claim coverage for a future that has not happened yet.
       const effectiveEnd = new Date(Math.min(dayEnd.getTime(), Date.now()));
 
-      const page = await req.services.orionis.listRecordings({
-        cameraIds: [q.cameraId],
-        from: dayStart.toISOString(),
-        to: dayEnd.toISOString(),
-        limit: 200,
-        offset: 0,
-      });
+      const recordings: Recording[] = [];
+      let offset = 0;
+      let pageCount = 0;
+      const seenPages = new Set<string>();
+      // More than 200 short segments can exist in a day. Omitting later pages
+      // creates a convincing but false recording gap in the timeline.
+      while (true) {
+        const page = await req.services.orionis.listRecordings({
+          cameraIds: [q.cameraId],
+          from: dayStart.toISOString(),
+          to: dayEnd.toISOString(),
+          limit: 200,
+          offset,
+        });
+        const signature = page.items.map((item) => item.id).join('|');
+        if (page.items.length > 0 && seenPages.has(signature)) {
+          // A broken upstream that ignores offset must fail visibly rather than
+          // loop forever or return duplicated, believable-looking coverage.
+          throw new AppError('UPSTREAM_ERROR', 'The recording index did not paginate correctly.');
+        }
+        seenPages.add(signature);
+        recordings.push(...page.items);
+        if (page.items.length < 200 || (page.total !== null && recordings.length >= page.total)) {
+          break;
+        }
+        offset += page.items.length;
+        pageCount += 1;
+        if (pageCount >= 1_000) {
+          throw new AppError('UPSTREAM_ERROR', 'The recording index is too large to summarize.');
+        }
+      }
 
       return ok(
-        mergeCoverage(page.items, {
+        mergeCoverage(recordings, {
           cameraId: q.cameraId,
           dayStart,
           dayEnd: effectiveEnd,
@@ -423,6 +472,7 @@ export async function registerEventRoutes(app: FastifyInstance): Promise<void> {
         range: req.headers.range,
         ifNoneMatch: req.headers['if-none-match'],
         timeoutMs: config.orionis.timeoutMs,
+        prefetch: q.download !== 'true',
       });
 
       audit.record({

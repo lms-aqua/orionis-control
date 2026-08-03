@@ -1,5 +1,30 @@
 import Foundation
+import ImageIO
 import UIKit
+
+struct PreparedSnapshotImage: @unchecked Sendable {
+    let image: UIImage
+}
+
+enum SnapshotImageDecoder {
+    static func prepare(
+        _ data: Data, maxPixelSize: Int
+    ) async -> PreparedSnapshotImage? {
+        await Task.detached(priority: .utility) { () -> PreparedSnapshotImage? in
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            guard let image = CGImageSourceCreateThumbnailAtIndex(
+                source, 0, options as CFDictionary)
+            else { return nil }
+            return PreparedSnapshotImage(image: UIImage(cgImage: image))
+        }.value
+    }
+}
 
 /// Keeps recent snapshot frames for the camera grid.
 ///
@@ -22,9 +47,14 @@ final class CameraSnapshotStore {
     /// Cameras whose first frame has not arrived yet, so the grid can show a
     /// skeleton rather than an empty box.
     private(set) var pending: Set<String> = []
+    /// Explicit/user-visible refreshes that already have an older frame to show.
+    private(set) var refreshing: Set<String> = []
     /// Manual refresh and the periodic loop can meet at the same suspension
     /// point. Coalesce them so one camera never has duplicate downloads/decodes.
     private var inFlight: Set<String> = []
+    /// Authoritative IDs for this store. A late decode from a camera removed
+    /// while the request was in flight must not put that frame back in memory.
+    private var activeCameraIds: Set<String> = []
 
     private let service: any CameraServicing
     /// Snapshots are full-resolution JPEGs; a handful in flight at once is plenty
@@ -40,13 +70,16 @@ final class CameraSnapshotStore {
     func frame(for cameraId: String) -> Frame? { frames[cameraId] }
 
     func isPending(_ cameraId: String) -> Bool { pending.contains(cameraId) }
+    func isRefreshing(_ cameraId: String) -> Bool { refreshing.contains(cameraId) }
 
     /// Refreshes the given cameras until cancelled. Driven by the view's `task`,
     /// so it stops when the grid disappears and no work continues off-screen.
     func run(cameraIds: [String]) async {
-        guard !cameraIds.isEmpty else { return }
+        let ids = unique(cameraIds)
+        reconcile(cameraIds: ids)
+        guard !ids.isEmpty else { return }
         while !Task.isCancelled {
-            await refresh(cameraIds: cameraIds)
+            await refreshActive(cameraIds: ids, showsActivity: false)
             do {
                 try await Task.sleep(for: refreshInterval)
             } catch {
@@ -57,34 +90,66 @@ final class CameraSnapshotStore {
 
     /// One pass over the cameras, at most `maxConcurrent` requests at a time.
     func refresh(cameraIds: [String]) async {
+        let ids = unique(cameraIds)
+        // This can be a one-tile manual refresh, so it is not authoritative for
+        // the whole store and must not prune every other camera's frame.
+        activeCameraIds.formUnion(ids)
+        await refreshActive(cameraIds: ids, showsActivity: true)
+    }
+
+    private func refreshActive(cameraIds: [String], showsActivity: Bool) async {
         for slice in chunk(cameraIds, size: maxConcurrent) {
             if Task.isCancelled { return }
             await withTaskGroup(of: Void.self) { group in
                 for id in slice {
                     group.addTask { @MainActor in
-                        await self.fetch(cameraId: id)
+                        await self.fetch(cameraId: id, showsActivity: showsActivity)
                     }
                 }
             }
         }
     }
 
-    private func fetch(cameraId: String) async {
+    private func fetch(cameraId: String, showsActivity: Bool) async {
         guard inFlight.insert(cameraId).inserted else { return }
         defer { inFlight.remove(cameraId) }
-        if frames[cameraId] == nil { pending.insert(cameraId) }
-        defer { pending.remove(cameraId) }
+        if frames[cameraId] == nil {
+            pending.insert(cameraId)
+        } else if showsActivity {
+            refreshing.insert(cameraId)
+        }
+        defer {
+            pending.remove(cameraId)
+            refreshing.remove(cameraId)
+        }
         // A camera that cannot produce a frame keeps its previous one, which the
         // grid then marks as stale. Failing loudly per tile would make a busy
         // wall unreadable.
-        guard
-            let data = try? await service.snapshot(cameraId: cameraId),
-            !data.isEmpty,
-            let image = UIImage(data: data)
+        guard let snapshot = try? await service.snapshot(cameraId: cameraId),
+              !snapshot.data.isEmpty
         else {
             return
         }
-        frames[cameraId] = Frame(image: image, capturedAt: Date())
+        // JPEG decompression is CPU-heavy and was running on the main actor just
+        // as WebRTC started painting. Downsample off-main to a size that is still
+        // comfortably above every grid/switcher thumbnail.
+        guard let prepared = await SnapshotImageDecoder.prepare(
+            snapshot.data, maxPixelSize: 1_280)
+        else { return }
+        guard activeCameraIds.contains(cameraId) else { return }
+        frames[cameraId] = Frame(image: prepared.image, capturedAt: snapshot.capturedAt)
+    }
+
+    private func reconcile(cameraIds: [String]) {
+        activeCameraIds = Set(cameraIds)
+        frames = frames.filter { activeCameraIds.contains($0.key) }
+        pending.formIntersection(activeCameraIds)
+        refreshing.formIntersection(activeCameraIds)
+    }
+
+    private func unique(_ ids: [String]) -> [String] {
+        var seen: Set<String> = []
+        return ids.filter { seen.insert($0).inserted }
     }
 
     private func chunk(_ ids: [String], size: Int) -> [[String]] {

@@ -184,6 +184,7 @@ struct CamerasView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(DeepLinkRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: CamerasViewModel?
     @State private var snapshots: CameraSnapshotStore?
     @State private var path = NavigationPath()
@@ -328,6 +329,7 @@ struct CamerasView: View {
                                         camera: camera,
                                         frame: snapshots?.frame(for: camera.id),
                                         isLoadingFrame: snapshots?.isPending(camera.id) ?? false,
+                                        isRefreshingFrame: snapshots?.isRefreshing(camera.id) ?? false,
                                         isFavourite: environment.preferences.isFavourite(camera.id),
                                         compact: effectiveColumns >= 3
                                     )
@@ -346,8 +348,29 @@ struct CamerasView: View {
             .refreshable { await model.load(showSpinner: false) }
             // Snapshots refresh only while the grid is on screen, and only for
             // the cameras actually shown.
-            .task(id: visible.map(\.id)) {
+            // Include usability in the identity. A refresh can bring an offline
+            // camera online without changing the visible IDs; keying only by ID
+            // left that camera permanently outside the snapshot refresh loop.
+            .task(
+                id: visible.map { "\($0.id):\($0.health.status.isUsable)" }
+                    + [String(describing: scenePhase)]
+            ) {
+                guard scenePhase == .active else { return }
                 await snapshots?.run(cameraIds: visible.filter { $0.health.status.isUsable }.map(\.id))
+            }
+            // Health is live state, not setup metadata. Keep online/offline and
+            // recording indicators honest while the wall remains open.
+            .task {
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(for: .seconds(20))
+                    } catch {
+                        return
+                    }
+                    if scenePhase == .active {
+                        await model.load(showSpinner: false)
+                    }
+                }
             }
         }
     }
@@ -492,6 +515,7 @@ struct CameraCard: View {
     let camera: Camera
     let frame: CameraSnapshotStore.Frame?
     let isLoadingFrame: Bool
+    let isRefreshingFrame: Bool
     let isFavourite: Bool
     var compact = false
 
@@ -501,6 +525,12 @@ struct CameraCard: View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack {
                 image
+                if isRefreshingFrame, frame != nil {
+                    ProgressView()
+                        .tint(.white)
+                        .padding(7)
+                        .background(.black.opacity(0.45), in: Circle())
+                }
                 // Keeps the name legible over a bright frame without hiding the
                 // picture behind a permanent panel.
                 LinearGradient(

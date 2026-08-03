@@ -12,7 +12,7 @@ import { ok, paged } from '../lib/envelope.ts';
 import { randomId } from '../lib/crypto.ts';
 import { actorOf, requirePermission, withIdempotency } from '../http/context.ts';
 import { validateRule } from '../adapters/adguard/http.ts';
-import type { TimeRange } from '../adapters/adguard/types.ts';
+import type { DnsQuery, TimeRange } from '../adapters/adguard/types.ts';
 
 const StatsQuery = z.object({
   range: z.enum(['hour', 'today', 'day', 'week', 'month']).default('today'),
@@ -82,18 +82,44 @@ export async function registerAdGuardRoutes(app: FastifyInstance): Promise<void>
   // --- GET /adguard/query-log -----------------------------------------------
   app.get('/adguard/query-log', { preHandler: requirePermission('adguard.view') }, async (req) => {
     const q = QueryLogQuery.parse(req.query);
-    const result = await req.services.adguard.getQueryLog({
-      limit: q.limit,
-      olderThan: q.olderThan,
-      search: q.search,
-      status: q.status,
-    });
+    const items: DnsQuery[] = [];
+    const seen = new Set<string>();
+    let cursor = q.olderThan;
+    let nextCursor: string | null = null;
+    let hasMore = true;
+    let scanned = 0;
+    let pagesScanned = 0;
 
-    // AdGuard has no server-side client filter on the query log, so it is
-    // applied here rather than pretending the upstream did it.
-    const items = q.client
-      ? result.items.filter((i) => i.client === q.client || i.clientName === q.client)
-      : result.items;
+    // Status/client filtering happens after AdGuard returns a raw page. Scan
+    // forward until the requested number of matching rows is filled; otherwise
+    // recent blocked traffic can make the Allowed tab look permanently empty.
+    while (items.length < q.limit && hasMore && scanned < 5_000 && pagesScanned < 20) {
+      const requested = q.limit - items.length;
+      const result = await req.services.adguard.getQueryLog({
+        limit: requested,
+        olderThan: cursor,
+        search: q.search,
+        status: q.status,
+      });
+      pagesScanned += 1;
+      scanned += result.scannedCount;
+      for (const item of result.items) {
+        const matchesClient = !q.client || item.client === q.client || item.clientName === q.client;
+        if (matchesClient && !seen.has(item.id)) {
+          seen.add(item.id);
+          items.push(item);
+        }
+      }
+
+      nextCursor = result.oldest;
+      hasMore = result.scannedCount === requested && nextCursor !== null;
+      // Protect against an upstream that returns the same cursor forever.
+      if (hasMore && nextCursor === cursor) {
+        hasMore = false;
+        break;
+      }
+      cursor = nextCursor ?? undefined;
+    }
 
     return paged(
       items,
@@ -101,8 +127,8 @@ export async function registerAdGuardRoutes(app: FastifyInstance): Promise<void>
         total: null,
         limit: q.limit,
         offset: 0,
-        hasMore: result.scannedCount === q.limit && result.oldest !== null,
-        nextCursor: result.oldest,
+        hasMore,
+        nextCursor,
       },
       req.id,
     );

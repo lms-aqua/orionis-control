@@ -18,7 +18,7 @@ export interface CameraCapabilities {
   siren: boolean;
   privacyMode: boolean;
   twoWayAudio: boolean;
-  audio: boolean;
+  audio: boolean | null;
   recordingToggle: boolean;
   motionToggle: boolean;
   sensitivity: boolean;
@@ -30,7 +30,8 @@ export interface CameraCapabilities {
 
 export interface CameraHealth {
   status: CameraStatus;
-  recording: boolean;
+  /** Null when the upstream cannot prove whether recording is active now. */
+  recording: boolean | null;
   streaming: boolean;
   motionDetected: boolean;
   privacyEnabled: boolean;
@@ -114,7 +115,8 @@ export interface Recording {
   endedAt: string;
   durationSeconds: number;
   sizeBytes: number | null;
-  hasAudio: boolean;
+  /** Null when the recorder cannot determine whether this footage has audio. */
+  hasAudio: boolean | null;
   retentionUntil: string | null;
   playbackPath: string | null;
   markers: { at: string; type: CameraEventType; eventId: string }[];

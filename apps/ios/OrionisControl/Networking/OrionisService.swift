@@ -8,10 +8,15 @@ protocol MetaServicing: Sendable {
     func meta() async throws -> GatewayMeta
 }
 
+struct CameraSnapshotPayload: Sendable {
+    let data: Data
+    let capturedAt: Date
+}
+
 protocol CameraServicing: Sendable {
     func cameras() async throws -> [Camera]
     func camera(id: String) async throws -> Camera
-    func snapshot(cameraId: String) async throws -> Data
+    func snapshot(cameraId: String) async throws -> CameraSnapshotPayload
     func createStreamSession(
         cameraId: String,
         quality: StreamQuality,
@@ -332,9 +337,18 @@ struct OrionisService: OrionisServicing {
             Endpoint(path: "/cameras/\(escaped(id))", isRetryable: true), as: Camera.self)
     }
 
-    func snapshot(cameraId: String) async throws -> Data {
-        try await api.requestData(
+    func snapshot(cameraId: String) async throws -> CameraSnapshotPayload {
+        let response = try await api.requestData(
             Endpoint(path: "/cameras/\(escaped(cameraId))/snapshot", timeout: 15))
+        let reportedCapturedAt = response.capturedAt.flatMap {
+            ISO8601DateFormatter.orionisWithFractionalSeconds.date(from: $0)
+                ?? ISO8601DateFormatter.orionisPlain.date(from: $0)
+        } ?? Date()
+        // A recorder/gateway clock ahead of the phone must not make one frame
+        // appear fresh for minutes. Future capture times are impossible from the
+        // viewer's perspective, so clamp them to receipt time.
+        let capturedAt = min(reportedCapturedAt, Date())
+        return CameraSnapshotPayload(data: response.data, capturedAt: capturedAt)
     }
 
     func createStreamSession(
@@ -449,12 +463,16 @@ struct OrionisService: OrionisServicing {
     }
 
     func coverage(cameraId: String, day: Date) async throws -> RecordingCoverage {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: day)
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
         try await api.request(
             Endpoint(
                 path: "/recordings/coverage",
                 query: [
                     "cameraId": cameraId,
-                    "day": ISO8601DateFormatter.orionisPlain.string(from: day),
+                    "dayStart": ISO8601DateFormatter.orionisPlain.string(from: dayStart),
+                    "dayEnd": ISO8601DateFormatter.orionisPlain.string(from: dayEnd),
                 ],
                 isRetryable: true
             ),
@@ -469,7 +487,7 @@ struct OrionisService: OrionisServicing {
     /// the gateway's own Content-Disposition where possible, so a saved clip is
     /// recognisable months later.
     func exportClip(cameraId: String, start: Date, duration: Int) async throws -> URL {
-        let (data, suggestedName) = try await api.requestDownload(
+        let (downloadedURL, suggestedName) = try await api.requestDownload(
             Endpoint(
                 path: "/recordings/clip",
                 query: [
@@ -483,10 +501,23 @@ struct OrionisService: OrionisServicing {
         )
         let stamp = ISO8601DateFormatter.orionisPlain.string(from: start)
             .replacingOccurrences(of: ":", with: "-")
-        let name = suggestedName ?? "clip-\(cameraId)-\(stamp).mp4"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        try data.write(to: url, options: .atomic)
-        return url
+        let safeCameraId = cameraId
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: "..", with: "-")
+        let name = suggestedName ?? "clip-\(safeCameraId)-\(stamp).mp4"
+        let finalURL = downloadedURL.deletingLastPathComponent().appendingPathComponent(name)
+        if finalURL != downloadedURL {
+            do {
+                try FileManager.default.moveItem(at: downloadedURL, to: finalURL)
+            } catch {
+                // requestDownload owns a private temporary directory. If the
+                // final rename fails, remove it instead of leaking the clip.
+                try? FileManager.default.removeItem(at: downloadedURL.deletingLastPathComponent())
+                throw error
+            }
+        }
+        return finalURL
     }
 
     func recordingStorage() async throws -> StorageStatus {

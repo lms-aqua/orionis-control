@@ -51,7 +51,7 @@ struct CameraStatusBadge: View {
                 status: status,
                 label: health.status == .online ? "Online" : health.status.rawValue.capitalized,
                 compact: compact)
-            if health.recording {
+            if health.recording == true {
                 Label("Recording", systemImage: "record.circle")
                     .font(.caption)
                     .foregroundStyle(.red)

@@ -6,6 +6,7 @@
  * resolved server-side and can be revoked at any time.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { Readable } from 'node:stream';
 import { z } from 'zod';
 import { SignJWT, jwtVerify } from 'jose';
 import { AppError } from '../lib/errors.ts';
@@ -46,15 +47,15 @@ export function joinAtLiveEdge(playlist: string): string {
   );
 }
 
-/**
- * Keep WebRTC on the camera's native go2rtc source.
- *
- * Source selection is deliberately explicit and unit-tested: appending an
- * internal transcode suffix here once made every viewer pay a CPU-heavy encode
- * cost, which degraded frame pacing under load.
- */
+/** Prefer the short-GOP source so packet loss recovers at the next ~0.5s
+ * keyframe instead of freezing until the camera's native ~2s keyframe. */
 export function webRTCSource(cameraId: string): string {
-  return cameraId;
+  return `${cameraId}_ll`;
+}
+
+/** A site that has not provisioned the low-latency source must still play. */
+export function webRTCSourceCandidates(cameraId: string): string[] {
+  return [webRTCSource(cameraId), cameraId];
 }
 
 const StreamRequest = z.object({
@@ -153,6 +154,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
    * whole playback.
    */
   const hlsSessions = new Map<string, string>();
+  const hlsMintInFlight = new Map<string, Promise<string>>();
 
   /**
    * Resolves the upstream's current variant-playlist URL for a camera and
@@ -163,7 +165,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
    * `hls/playlist.m3u8?id=<sid>`. Both are ephemeral, hence the same
    * ownership rule for both.
    */
-  const mintHlsSession = async (
+  const mintHlsSessionUncoalesced = async (
     streamId: string,
     src: string,
     config: {
@@ -197,6 +199,25 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     }, config.streamTokenTtlSeconds * 1000);
     cleanup.unref();
     return variant;
+  };
+
+  const mintHlsSession = async (
+    streamId: string,
+    src: string,
+    config: {
+      orionis: { baseUrl: string; hlsBaseUrl: string; timeoutMs: number };
+      streamTokenTtlSeconds: number;
+    },
+  ): Promise<string> => {
+    const existing = hlsMintInFlight.get(streamId);
+    if (existing) return existing;
+    const pending = mintHlsSessionUncoalesced(streamId, src, config);
+    hlsMintInFlight.set(streamId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (hlsMintInFlight.get(streamId) === pending) hlsMintInFlight.delete(streamId);
+    }
   };
 
   // --- GET /cameras ---------------------------------------------------------
@@ -300,17 +321,28 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         );
       }
 
-      const quality: StreamQuality = body.lowData ? 'low' : body.quality;
+      const requestedQuality: StreamQuality = body.lowData ? 'low' : body.quality;
 
       const upstream = await orionis.createStreamSession({
         cameraId,
         preferredProtocols: [negotiated as StreamProtocol],
-        quality,
+        quality: requestedQuality,
         ttlSeconds: config.streamTokenTtlSeconds,
       });
 
       const localId = randomId('str');
-      const expiresAt = new Date(Date.now() + config.streamTokenTtlSeconds * 1000);
+      const now = Date.now();
+      const configuredExpiry = now + config.streamTokenTtlSeconds * 1000;
+      const upstreamExpiry = Date.parse(upstream.expiresAt);
+      const expiryMs = Number.isFinite(upstreamExpiry)
+        ? Math.min(configuredExpiry, upstreamExpiry)
+        : configuredExpiry;
+      if (expiryMs <= now + 5_000) {
+        await orionis.revokeStreamSession(upstream.id).catch(() => undefined);
+        throw new AppError('STREAM_UNAVAILABLE', 'The upstream stream session expired too soon.');
+      }
+      const expiresAt = new Date(expiryMs);
+      const quality = upstream.quality;
 
       // One signed-in session viewing one camera needs exactly one stream
       // session. Re-opening a camera (or renewing a token) previously left the
@@ -318,10 +350,10 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       // consumer. Retire the predecessors instead of accumulating them.
       const superseded = db
         .prepare(
-          `SELECT id FROM stream_sessions
+          `SELECT id, upstream_id FROM stream_sessions
              WHERE session_id = ? AND camera_id = ? AND revoked_at IS NULL`,
         )
-        .all(principal.sessionId, cameraId) as { id: string }[];
+        .all(principal.sessionId, cameraId) as { id: string; upstream_id: string | null }[];
       if (superseded.length > 0) {
         db.prepare(
           `UPDATE stream_sessions SET revoked_at = ?
@@ -329,15 +361,16 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         ).run(new Date().toISOString(), principal.sessionId, cameraId);
         for (const row of superseded) {
           hlsSessions.delete(row.id);
-          await orionis.revokeStreamSession(row.id).catch(() => undefined);
+          await orionis.revokeStreamSession(row.upstream_id ?? row.id).catch(() => undefined);
         }
       }
 
       db.prepare(
-        `INSERT INTO stream_sessions (id, user_id, session_id, camera_id, protocol, quality, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO stream_sessions (id, upstream_id, user_id, session_id, camera_id, protocol, quality, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         localId,
+        upstream.id,
         principal.userId,
         principal.sessionId,
         cameraId,
@@ -359,7 +392,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         .setAudience('orionis-control-stream')
         .setSubject(principal.userId)
         .setIssuedAt()
-        .setExpirationTime(`${config.streamTokenTtlSeconds}s`)
+        .setExpirationTime(Math.floor(expiryMs / 1000))
         .sign(new TextEncoder().encode(config.sessionSigningKey));
 
       audit.record({
@@ -396,7 +429,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
           // relay -- which is why that relay does not need to be firewalled to a
           // single address to stay safe.
           iceServers: [...upstream.iceServers, ...turnIceServers(config.turn, principal.userId)],
-          renewAfterSeconds: Math.max(15, config.streamTokenTtlSeconds - 30),
+          renewAfterSeconds: Math.max(5, Math.floor((expiryMs - now) / 1000) - 30),
         },
         req.id,
       );
@@ -424,7 +457,9 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         req.params.streamId,
       );
       // Best effort upstream teardown; local revocation already stops playback.
-      await orionis.revokeStreamSession(req.params.streamId).catch(() => undefined);
+      await orionis
+        .revokeStreamSession(String(row.upstream_id ?? req.params.streamId))
+        .catch(() => undefined);
       hlsSessions.delete(req.params.streamId);
       return ok({ revoked: true }, req.id);
     },
@@ -511,6 +546,9 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
   ): Promise<unknown> => {
     const { config } = req.services;
     const { token, row } = await resolveStream(req);
+    if (row.protocol !== 'hls' && row.protocol !== 'llhls') {
+      throw new AppError('STREAM_UNAVAILABLE', 'This session is not an HLS stream.');
+    }
 
     // HLS relay for the go2rtc data plane. go2rtc is never exposed to the
     // client: the gateway serves the media playlist and the segments,
@@ -527,7 +565,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     const self = `${config.publicBaseUrl}/api/mobile/v1/stream/${streamId}`;
     const tq = `token=${encodeURIComponent(token)}`;
     const noStore = { 'cache-control': 'no-store' };
-    const isSegment = req.url.split('?')[0]!.endsWith('.ts');
+    const isSegment = /\/segment\.(?:ts|mp4|m4s)$/.test(req.url.split('?')[0]!);
 
     try {
       if (!isSegment) {
@@ -559,8 +597,11 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         const text = joinAtLiveEdge(await upstream.text());
         const body = hlsBaseUrl
           ? text.replace(
-              /^([A-Za-z0-9._-]+\.ts)\?session=([A-Za-z0-9-]+)$/gm,
-              (_m, file, session) => `${self}/segment.ts?${tq}&f=${file}&s=${session}`,
+              /([A-Za-z0-9._-]+\.(?:ts|mp4|m4s))\?session=([A-Za-z0-9-]+)/g,
+              (_m, file: string, session: string) => {
+                const extension = file.slice(file.lastIndexOf('.') + 1);
+                return `${self}/segment.${extension}?${tq}&f=${file}&s=${session}`;
+              },
             )
           : text.replace(
               /segment\.ts\?id=([A-Za-z0-9_-]+)&n=(\d+)/g,
@@ -577,7 +618,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         // segment, so anything outside this shape (traversal, absolute paths,
         // query injection) is rejected rather than escaped.
         const file = req.query.f ?? '';
-        if (!/^[A-Za-z0-9._-]+\.ts$/.test(file)) {
+        if (!/^[A-Za-z0-9._-]+\.(?:ts|mp4|m4s)$/.test(file)) {
           throw new AppError('STREAM_UNAVAILABLE', 'The camera stream segment is not available.');
         }
         segmentUrl = `${hlsBaseUrl}/${encodeURIComponent(src)}/${file}?session=${encodeURIComponent(req.query.s ?? '')}`;
@@ -595,8 +636,18 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         // which is exactly the resync we want. A 5xx makes them give up.
         return reply.code(404).headers(noStore).send();
       }
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      return reply.headers({ 'content-type': 'video/mp2t', ...noStore }).send(buf);
+      if (!upstream.body) {
+        return reply.code(404).headers(noStore).send();
+      }
+      const headers: Record<string, string> = {
+        'content-type': upstream.headers.get('content-type') ?? 'video/mp2t',
+        ...noStore,
+      };
+      const length = upstream.headers.get('content-length');
+      if (length) headers['content-length'] = length;
+      // Backpressure the recorder directly into the client. Buffering a complete
+      // segment per viewer caused avoidable memory spikes on busy camera walls.
+      return reply.headers(headers).send(Readable.fromWeb(upstream.body));
     } catch (err) {
       if (err instanceof AppError) throw err;
       throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');
@@ -605,6 +656,8 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
 
   app.get('/stream/:streamId/playlist.m3u8', relayHandler);
   app.get('/stream/:streamId/segment.ts', relayHandler);
+  app.get('/stream/:streamId/segment.mp4', relayHandler);
+  app.get('/stream/:streamId/segment.m4s', relayHandler);
   // Kept so a client holding an older playback URL still resolves to the
   // playlist rather than a 404.
   app.get('/stream/:streamId', relayHandler);
@@ -625,6 +678,9 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     async (req) => {
       const { config } = req.services;
       const { row } = await resolveStream(req);
+      if (row.protocol !== 'webrtc') {
+        throw new AppError('STREAM_UNAVAILABLE', 'This session is not a WebRTC stream.');
+      }
 
       const offer = req.body ?? {};
       if (
@@ -636,33 +692,33 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         throw new AppError('VALIDATION_FAILED', 'A WebRTC offer is required.');
       }
 
-      // Relay the camera's native stream. Forcing every viewer through a software
-      // transcode makes frame pacing depend on host CPU headroom and can introduce
-      // persistent stutter under load. WebRTC already handles packet loss; sites
-      // that need a different source can map the camera in go2rtc itself without
-      // the gateway silently changing its identity.
-      const src = webRTCSource(String(row.camera_id));
+      // Prefer the site's on-demand short-GOP source. The native camera stream is
+      // retained as an automatic compatibility fallback, so a missing `_ll`
+      // mapping never turns a performance enhancement into an outage.
+      const sources = webRTCSourceCandidates(String(row.camera_id));
       try {
-        const upstream = await fetch(
-          `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ type: 'offer', sdp: offer.sdp }),
-            signal: AbortSignal.timeout(config.orionis.timeoutMs),
-          },
-        );
-        if (!upstream.ok) {
-          throw new AppError(
-            'STREAM_UNAVAILABLE',
-            'The camera could not negotiate a WebRTC stream.',
+        for (const src of sources) {
+          const upstream = await fetch(
+            `${config.orionis.baseUrl}/api/webrtc?src=${encodeURIComponent(src)}`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ type: 'offer', sdp: offer.sdp }),
+              signal: AbortSignal.timeout(config.orionis.timeoutMs),
+            },
           );
+          if (!upstream.ok) continue;
+          try {
+            const answer = (await upstream.json()) as { type?: string; sdp?: string };
+            if (typeof answer.sdp === 'string') {
+              return ok({ type: 'answer', sdp: answer.sdp }, req.id);
+            }
+          } catch {
+            // A broken optional low-latency mapping must not prevent trying the
+            // camera's native source next.
+          }
         }
-        const answer = (await upstream.json()) as { type?: string; sdp?: string };
-        if (typeof answer.sdp !== 'string') {
-          throw new AppError('UPSTREAM_ERROR', 'The media plane returned no WebRTC answer.');
-        }
-        return ok({ type: 'answer', sdp: answer.sdp }, req.id);
+        throw new AppError('STREAM_UNAVAILABLE', 'The camera could not negotiate a WebRTC stream.');
       } catch (err) {
         if (err instanceof AppError) throw err;
         throw new AppError('UPSTREAM_UNAVAILABLE', 'The streaming data plane did not respond.');

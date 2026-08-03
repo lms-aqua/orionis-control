@@ -19,6 +19,7 @@ final class AdGuardViewModel {
     var range: AdGuardRange = .today
     var queryFilter: QueryLogFilter = .all
     var querySearch = ""
+    var queryPageSize = 250
 
     private let service: any AdGuardServicing
     private var loadGeneration = 0
@@ -68,7 +69,7 @@ final class AdGuardViewModel {
                 search: querySearch.isEmpty ? nil : querySearch,
                 status: queryFilter,
                 client: nil,
-                limit: 100,
+                limit: queryPageSize,
                 olderThan: nil
             )
             guard generation == queryGeneration else { return }
@@ -99,7 +100,7 @@ final class AdGuardViewModel {
                 search: querySearch.isEmpty ? nil : querySearch,
                 status: queryFilter,
                 client: nil,
-                limit: 100,
+                limit: queryPageSize,
                 olderThan: cursor
             )
             guard generation == queryGeneration else { return }
@@ -457,9 +458,11 @@ struct ProtectionSheet: View {
 
 struct QueryLogView: View {
     @Bindable var model: AdGuardViewModel
-    @Environment(AppEnvironment.self) private var environment
+    @AppStorage("adguard.watchedDomains") private var watchedDomainsRaw = "[]"
+    @AppStorage("adguard.queryPageSize") private var queryPageSize = 250
     @State private var selected: DnsQuery?
     @State private var message: String?
+    @State private var showInsights = false
 
     var body: some View {
         List {
@@ -468,6 +471,22 @@ struct QueryLogView: View {
             }
             if let error = model.queryError {
                 Section { ErrorSummary(error: error) }
+            }
+            if !watchedDomains.isEmpty {
+                Section("Watched domains") {
+                    ForEach(watchedDomains, id: \.self) { domain in
+                        Button {
+                            model.querySearch = domain
+                        } label: {
+                            Label(domain, systemImage: "star.fill")
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .swipeActions {
+                            Button("Remove", role: .destructive) { toggleWatched(domain) }
+                        }
+                    }
+                }
             }
             if !model.queries.isEmpty {
                 Section {
@@ -502,16 +521,37 @@ struct QueryLogView: View {
             } else if model.queries.isEmpty && model.queryError == nil {
                 Section {
                     EmptyStateView(
-                        title: "No queries",
-                        message: model.querySearch.isEmpty
-                            ? "The query log is empty for the selected filter."
-                            : "No queries match “\(model.querySearch)”.",
+                        title: model.hasMoreQueries ? "No matches yet" : "No queries",
+                        message: model.hasMoreQueries
+                            ? "No matching queries were found in this page. Older history is still available."
+                            : model.querySearch.isEmpty
+                                ? "The query log is empty for the selected filter."
+                                : "No queries match “\(model.querySearch)”.",
                         systemImage: "magnifyingglass"
                     )
+                    if model.hasMoreQueries {
+                        Button {
+                            Task { await model.loadOlderQueries() }
+                        } label: {
+                            if model.isLoadingMoreQueries {
+                                ProgressView()
+                            } else {
+                                Label(
+                                    "Search older queries",
+                                    systemImage: "clock.arrow.circlepath")
+                            }
+                        }
+                        .disabled(model.isLoadingMoreQueries)
+                    }
                 }
             } else {
                 ForEach(model.queries) { query in
-                    Button { selected = query } label: { QueryRow(query: query) }
+                    Button { selected = query } label: {
+                        QueryRow(
+                            query: query,
+                            isWatched: WatchedDomainStore.contains(
+                                query.domain, in: watchedDomains))
+                    }
                         .buttonStyle(.plain)
                 }
                 if model.hasMoreQueries {
@@ -523,7 +563,9 @@ struct QueryLogView: View {
                             if model.isLoadingMoreQueries {
                                 ProgressView()
                             } else {
-                                Label("Load 100 older queries", systemImage: "clock.arrow.circlepath")
+                                Label(
+                                    "Load \(model.queryPageSize) older queries",
+                                    systemImage: "clock.arrow.circlepath")
                             }
                             Spacer()
                         }
@@ -537,6 +579,12 @@ struct QueryLogView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.querySearch, prompt: "Search domain or client")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showInsights = true } label: {
+                    Label("Insights", systemImage: "chart.bar.xaxis")
+                }
+                .disabled(model.queries.isEmpty)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Picker("Filter", selection: $model.queryFilter) {
                     ForEach(QueryLogFilter.allCases) { filter in
@@ -545,12 +593,24 @@ struct QueryLogView: View {
                 }
                 .onChange(of: model.queryFilter) { _, _ in Task { await model.loadQueries() } }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Queries per page", selection: $queryPageSize) {
+                        Text("100 per page").tag(100)
+                        Text("250 per page").tag(250)
+                        Text("500 per page").tag(500)
+                    }
+                } label: {
+                    Label("History size", systemImage: "list.number")
+                }
+            }
         }
         .refreshable { await model.loadQueries() }
-        .task(id: model.querySearch) {
+        .task(id: "\(model.querySearch)|\(queryPageSize)") {
             // Debounce typing, while still reloading immediately when the view
             // first opens. Clearing search now restores the full log without
             // requiring an extra keyboard submit.
+            model.queryPageSize = min(500, max(100, queryPageSize))
             if !model.querySearch.isEmpty {
                 do {
                     try await Task.sleep(for: .milliseconds(300))
@@ -562,26 +622,49 @@ struct QueryLogView: View {
             await model.loadQueries()
         }
         .sheet(item: $selected) { query in
-            QueryDetailSheet(query: query) { domain, kind in
-                let result = await model.addRule(domain, kind: kind)
-                switch result {
-                case .success(let rule):
-                    message = "Added \(rule)."
-                    return nil
-                case .failure(let error):
-                    return error
+            QueryDetailSheet(
+                query: query,
+                isWatched: Binding(
+                    get: { WatchedDomainStore.contains(query.domain, in: watchedDomains) },
+                    set: { desiredValue in
+                        if desiredValue
+                            != WatchedDomainStore.contains(query.domain, in: watchedDomains)
+                        {
+                            toggleWatched(query.domain)
+                        }
+                    })
+            ) { domain, kind in
+                    let result = await model.addRule(domain, kind: kind)
+                    switch result {
+                    case .success(let rule):
+                        message = "Added \(rule)."
+                        return nil
+                    case .failure(let error):
+                        return error
+                    }
                 }
+        }
+        .sheet(isPresented: $showInsights) {
+            QueryInsightsSheet(queries: model.queries) { search in
+                model.querySearch = search
             }
         }
     }
 
+    private var watchedDomains: [String] { WatchedDomainStore.decode(watchedDomainsRaw) }
     private var blockedCount: Int { model.queries.filter { $0.status == .blocked }.count }
     private var allowedCount: Int { model.queries.filter { $0.status == .allowed }.count }
     private var otherCount: Int { model.queries.count - blockedCount - allowedCount }
+
+    private func toggleWatched(_ domain: String) {
+        watchedDomainsRaw = WatchedDomainStore.encode(
+            WatchedDomainStore.toggling(domain, in: watchedDomains))
+    }
 }
 
 struct QueryRow: View {
     let query: DnsQuery
+    let isWatched: Bool
 
     private var presentation: (label: String, symbol: String, tint: Color) {
         switch query.status {
@@ -621,6 +704,12 @@ struct QueryRow: View {
             Spacer(minLength: 0)
 
             VStack(alignment: .trailing, spacing: 3) {
+                if isWatched {
+                    Image(systemName: "star.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                        .accessibilityLabel("Watched domain")
+                }
                 Text(style.label)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(style.tint)
@@ -640,6 +729,7 @@ struct QueryRow: View {
 
 struct QueryDetailSheet: View {
     let query: DnsQuery
+    @Binding var isWatched: Bool
     let addRule: (String, RuleKind) async -> APIError?
 
     @Environment(AppEnvironment.self) private var environment
@@ -678,6 +768,11 @@ struct QueryDetailSheet: View {
                 }
 
                 Section {
+                    Button { isWatched.toggle() } label: {
+                        Label(
+                            isWatched ? "Stop watching domain" : "Watch domain",
+                            systemImage: isWatched ? "star.slash" : "star")
+                    }
                     ShareLink(item: query.domain) {
                         Label("Share domain", systemImage: "square.and.arrow.up")
                     }
@@ -730,5 +825,91 @@ struct QueryDetailSheet: View {
         } else {
             dismiss()
         }
+    }
+}
+
+struct QueryInsightsSheet: View {
+    let queries: [DnsQuery]
+    let applySearch: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var insights: DnsQueryInsights { DnsQueryInsights(queries: queries) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("Loaded sample", value: insights.total.formatted())
+                    LabeledContent("Allowed", value: insights.allowed.formatted())
+                    LabeledContent("Blocked", value: insights.blocked.formatted())
+                    if insights.other > 0 {
+                        LabeledContent("Other", value: insights.other.formatted())
+                    }
+                    if let rate = insights.blockRate {
+                        LabeledContent("Block rate", value: String(format: "%.1f%%", rate))
+                    }
+                } header: {
+                    Text("Outcome mix")
+                } footer: {
+                    Text("Insights describe only the query rows currently loaded on this device.")
+                }
+
+                insightList("Top domains", items: insights.topDomains)
+                insightList("Top clients", items: insights.topClients)
+
+                if let average = insights.averageProcessingMs {
+                    Section("Performance") {
+                        LabeledContent(
+                            "Average processing", value: String(format: "%.2f ms", average))
+                        if let domain = insights.slowestDomain,
+                           let duration = insights.slowestProcessingMs
+                        {
+                            Button {
+                                choose(domain)
+                            } label: {
+                                LabeledContent(
+                                    "Slowest query", value: String(format: "%.2f ms", duration))
+                            }
+                            Text(domain)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    ShareLink(item: insights.shareText) {
+                        Label("Share activity summary", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+            .navigationTitle("DNS insights")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func insightList(_ title: String, items: [NameCount]) -> some View {
+        if !items.isEmpty {
+            Section(title) {
+                ForEach(items) { item in
+                    Button { choose(item.name) } label: {
+                        LabeledContent(item.name, value: item.count.formatted())
+                    }
+                    .accessibilityHint("Filters the query log")
+                }
+            }
+        }
+    }
+
+    private func choose(_ search: String) {
+        applySearch(search)
+        dismiss()
     }
 }

@@ -84,6 +84,37 @@ struct ReconnectPolicy: Equatable, Sendable {
     func shouldRetry(afterAttempt attempt: Int) -> Bool { attempt < maxAttempts }
 }
 
+/// Separates normal jitter from a genuinely frozen WebRTC decoder and bounds
+/// how often a live view may renegotiate before choosing the stable fallback.
+struct WebRTCFrameHealthPolicy: Equatable, Sendable {
+    var staleTolerance: TimeInterval = 5
+    var maxRenegotiations = 2
+
+    func isFrozen(staleFor: TimeInterval?) -> Bool {
+        guard let staleFor else { return false }
+        return staleFor >= staleTolerance
+    }
+
+    func shouldRenegotiate(afterRecoveries recoveries: Int) -> Bool {
+        recoveries < maxRenegotiations
+    }
+}
+
+/// Keeps a live HLS player near the edge after network stalls or playlist resets.
+struct HLSLiveEdgePolicy: Equatable, Sendable {
+    var maximumLag: TimeInterval = 12
+    var targetLag: TimeInterval = 2
+
+    func correction(current: TimeInterval, rangeStart: TimeInterval, rangeEnd: TimeInterval)
+        -> TimeInterval?
+    {
+        guard current.isFinite, rangeStart.isFinite, rangeEnd.isFinite,
+              rangeEnd > rangeStart, rangeEnd - current > maximumLag
+        else { return nil }
+        return max(rangeStart, rangeEnd - targetLag)
+    }
+}
+
 /// Counters surfaced in the administrator diagnostics panel. No credentials,
 /// tokens or stream URLs are ever recorded here.
 struct CameraStreamDiagnostics: Equatable, Sendable {

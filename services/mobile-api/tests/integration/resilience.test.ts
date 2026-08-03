@@ -4,14 +4,16 @@
  * The product rule under test: the gateway degrades to an honest typed error
  * and never invents data.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { API_PREFIX, createHarness, type Harness } from '../helpers/harness.ts';
 import { StubAdGuardAdapter, StubOrionisAdapter } from '../helpers/stub-adapters.ts';
 import { AppError } from '../../src/lib/errors.ts';
+import type { DnsQuery } from '../../src/adapters/adguard/types.ts';
 
 let harness: Harness | null = null;
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await harness?.close();
   harness = null;
 });
@@ -174,6 +176,49 @@ describe('partial upstream failure', () => {
 });
 
 describe('stream authorisation', () => {
+  it('prefers short-GOP WebRTC and falls back to the native source when unavailable', async () => {
+    harness = await createHarness({
+      env: { ORIONIS_INTERNAL_URL: 'http://orionis.test' },
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const session = (
+      await harness.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+        headers: harness.auth(tokens.accessToken),
+        payload: { preferredProtocols: ['webrtc'] },
+      })
+    ).json().data;
+
+    const requestedSources: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(
+          typeof input === 'string' ? input : input instanceof URL ? input : input.url,
+        );
+        requestedSources.push(url.searchParams.get('src') ?? '');
+        if (url.searchParams.get('src') === 'cam-front_ll') {
+          return new Response('low-latency source missing', { status: 404 });
+        }
+        return Response.json({ type: 'answer', sdp: 'v=0\r\nnative-answer' });
+      }),
+    );
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/stream/${session.id}/webrtc`,
+      headers: { authorization: `Bearer ${session.streamToken}` },
+      payload: { type: 'offer', sdp: 'v=0\r\nvalid-offer' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.sdp).toBe('v=0\r\nnative-answer');
+    expect(requestedSources).toEqual(['cam-front_ll', 'cam-front']);
+  });
+
   it('issues a short-lived token and never returns the upstream media URL', async () => {
     harness = await createHarness({
       orionis: new StubOrionisAdapter(),
@@ -220,6 +265,8 @@ describe('stream authorisation', () => {
     const first = (await open()).json().data;
     const second = (await open()).json().data;
     expect(first.id).not.toBe(second.id);
+    const adapter = harness.services.orionis as StubOrionisAdapter;
+    expect(adapter.streamRevocations).toContain('upstream-stream-1');
 
     // The first session's playback must now be refused, and the second must work.
     const stale = await harness.app.inject({
@@ -264,7 +311,7 @@ describe('stream authorisation', () => {
         method: 'POST',
         url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
         headers: harness.auth(tokens.accessToken),
-        payload: { preferredProtocols: ['hls'] },
+        payload: { preferredProtocols: ['webrtc'] },
       })
     ).json().data;
 
@@ -276,6 +323,63 @@ describe('stream authorisation', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('VALIDATION_FAILED');
+  });
+
+  it('does not let one negotiated transport open the other media plane', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const open = async (protocol: 'hls' | 'webrtc') =>
+      (
+        await harness!.app.inject({
+          method: 'POST',
+          url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+          headers: harness!.auth(tokens.accessToken),
+          payload: { preferredProtocols: [protocol] },
+        })
+      ).json().data;
+
+    const hls = await open('hls');
+    const wrongWebrtc = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/stream/${hls.id}/webrtc`,
+      headers: { authorization: `Bearer ${hls.streamToken}` },
+      payload: { type: 'offer', sdp: 'v=0\r\nvalid-offer' },
+    });
+    expect(wrongWebrtc.statusCode).toBe(503);
+
+    const webrtc = await open('webrtc');
+    const wrongHls = await harness.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/stream/${webrtc.id}/playlist.m3u8`,
+      headers: { authorization: `Bearer ${webrtc.streamToken}` },
+    });
+    expect(wrongHls.statusCode).toBe(503);
+  });
+
+  it('bounds the gateway token to an earlier upstream expiry', async () => {
+    const orionis = new StubOrionisAdapter();
+    const create = orionis.createStreamSession.bind(orionis);
+    orionis.createStreamSession = async (input) => ({
+      ...(await create(input)),
+      expiresAt: new Date(Date.now() + 20_000).toISOString(),
+    });
+    harness = await createHarness({ orionis, adguard: new StubAdGuardAdapter() });
+    const tokens = await harness.signIn();
+    const before = Date.now();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+
+    expect(created.statusCode).toBe(200);
+    const session = created.json().data;
+    expect(new Date(session.expiresAt).getTime() - before).toBeLessThanOrEqual(20_500);
+    expect(session.renewAfterSeconds).toBe(5);
   });
 
   it('binds a stream token to the stream id in the playback URL', async () => {
@@ -331,6 +435,8 @@ describe('stream authorisation', () => {
       headers: harness.auth(tokens.accessToken),
     });
     expect(correct.statusCode).toBe(200);
+    const adapter = harness.services.orionis as StubOrionisAdapter;
+    expect(adapter.streamRevocations).toContain('upstream-stream-1');
   });
 
   it('rejects playback once the owning session is revoked', async () => {
@@ -431,6 +537,46 @@ describe('stream authorisation', () => {
     }
   });
 
+  it('coalesces concurrent first-playlist HLS session mints', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+    const { id, streamToken } = created.json().data;
+    let mintCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.includes('/api/stream.m3u8')) {
+          mintCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return new Response(
+            '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=192000\nhls/playlist.m3u8?id=shared-sid\n',
+          );
+        }
+        return new Response('#EXTM3U\n#EXTINF:1,\nsegment.ts?id=shared-sid&n=1\n');
+      }),
+    );
+
+    const request = () =>
+      harness!.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/stream/${id}/playlist.m3u8`,
+        headers: { authorization: `Bearer ${streamToken}` },
+      });
+    const responses = await Promise.all([request(), request(), request()]);
+    expect(responses.every((response) => response.statusCode === 200)).toBe(true);
+    expect(mintCount).toBe(1);
+  });
+
   it('relays MediaMTX HLS and refuses a segment name outside the allowlist', async () => {
     harness = await createHarness({
       orionis: new StubOrionisAdapter(),
@@ -457,7 +603,7 @@ describe('stream authorisation', () => {
       }
       if (url.includes('main_stream.m3u8')) {
         return new Response(
-          '#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:12\n#EXTINF:2.0,\nhost_main_seg12.ts?session=abc-123\n',
+          '#EXTM3U\n#EXT-X-MAP:URI="init.mp4?session=abc-123"\n#EXT-X-PART:DURATION=0.2,URI="part12.m4s?session=abc-123"\n#EXT-X-MEDIA-SEQUENCE:12\n#EXTINF:2.0,\nhost_main_seg12.ts?session=abc-123\n',
           { status: 200 },
         );
       }
@@ -472,7 +618,11 @@ describe('stream authorisation', () => {
       });
       expect(playlist.statusCode).toBe(200);
       expect(playlist.body).toContain('/segment.ts?');
+      expect(playlist.body).toContain('/segment.mp4?');
+      expect(playlist.body).toContain('/segment.m4s?');
       expect(playlist.body).toContain('f=host_main_seg12.ts');
+      expect(playlist.body).toContain('f=init.mp4');
+      expect(playlist.body).toContain('f=part12.m4s');
       // The upstream session must not be reachable as a bare URL by the client.
       expect(playlist.body).not.toContain('main_stream.m3u8');
 
@@ -535,6 +685,38 @@ describe('stream authorisation', () => {
       globalThis.fetch = realFetch;
     }
   });
+
+  it('streams a live HLS segment with the upstream media type intact', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+    const created = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/cameras/cam-front/stream-sessions`,
+      headers: harness.auth(tokens.accessToken),
+      payload: { preferredProtocols: ['hls'] },
+    });
+    const { id, streamToken } = created.json().data;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([0x47, 0x40, 0x00, 0x10]), {
+            headers: { 'content-type': 'video/mp2t', 'content-length': '4' },
+          }),
+      ),
+    );
+
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/stream/${id}/segment.ts?token=${encodeURIComponent(streamToken)}&id=sid-live&n=8`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('video/mp2t');
+    expect(response.rawPayload).toEqual(Buffer.from([0x47, 0x40, 0x00, 0x10]));
+  });
 });
 
 describe('idempotency', () => {
@@ -589,6 +771,52 @@ describe('idempotency', () => {
 
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json().error.code).toBe('IDEMPOTENCY_CONFLICT');
+  });
+});
+
+describe('AdGuard query-log paging', () => {
+  it('scans older raw pages to fill a filtered result page', async () => {
+    class PagedAdGuard extends StubAdGuardAdapter {
+      calls = 0;
+      override async getQueryLog(opts: {
+        limit: number;
+        olderThan?: string;
+      }): Promise<{ items: DnsQuery[]; oldest: string | null; scannedCount: number }> {
+        this.calls += 1;
+        if (!opts.olderThan) {
+          // The adapter filtered two recent blocked rows out of an Allowed query.
+          return { items: [], oldest: 'cursor-1', scannedCount: opts.limit };
+        }
+        const allowed: DnsQuery = {
+          id: 'allowed-1',
+          at: '2026-08-03T00:00:00.000Z',
+          client: '10.0.0.5',
+          clientName: 'laptop',
+          domain: 'example.com',
+          type: 'A',
+          upstream: '1.1.1.1',
+          processingMs: 2,
+          status: 'allowed',
+          rule: null,
+          ruleFilterId: null,
+          responseCode: 'NOERROR',
+          reason: 'NotFilteredNotFound',
+          answers: ['192.0.2.1'],
+        };
+        return { items: [allowed], oldest: null, scannedCount: 1 };
+      }
+    }
+    const adguard = new PagedAdGuard();
+    harness = await createHarness({ orionis: new StubOrionisAdapter(), adguard });
+    const tokens = await harness.signIn();
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/adguard/query-log?status=allowed&limit=2`,
+      headers: harness.auth(tokens.accessToken),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.items.map((item: DnsQuery) => item.id)).toEqual(['allowed-1']);
+    expect(adguard.calls).toBe(2);
   });
 });
 
@@ -701,6 +929,106 @@ describe('rule validation at the boundary', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.rule).toBe('@@||cdn.example.invalid^');
+  });
+});
+
+describe('recording timeline coverage', () => {
+  it('uses the requested local day and reads beyond the first 200 segments', async () => {
+    const orionis = new StubOrionisAdapter();
+    const first = Date.parse('2026-08-02T04:00:00.000Z');
+    orionis.recordings = Array.from({ length: 201 }, (_, index) => {
+      const startedAt = new Date(first + index * 60_000);
+      const endedAt = new Date(startedAt.getTime() + 60_000);
+      return {
+        id: `recording-${index}`,
+        cameraId: 'cam-front',
+        cameraName: 'Front Door',
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+        durationSeconds: 60,
+        sizeBytes: null,
+        hasAudio: true,
+        retentionUntil: null,
+        playbackPath: null,
+        markers: [],
+      };
+    });
+    harness = await createHarness({ orionis, adguard: new StubAdGuardAdapter() });
+    const tokens = await harness.signIn();
+    const query = new URLSearchParams({
+      cameraId: 'cam-front',
+      dayStart: '2026-08-02T04:00:00.000Z',
+      dayEnd: '2026-08-03T04:00:00.000Z',
+    });
+
+    const res = await harness.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/recordings/coverage?${query}`,
+      headers: harness.auth(tokens.accessToken),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const coverage = res.json().data;
+    expect(coverage.dayStart).toBe('2026-08-02T04:00:00.000Z');
+    expect(coverage.dayEnd).toBe('2026-08-03T04:00:00.000Z');
+    expect(coverage.recordedSeconds).toBe(201 * 60);
+    expect(coverage.runs).toHaveLength(1);
+    expect(coverage.runs[0].endedAt).toBe('2026-08-02T07:21:00.000Z');
+  });
+
+  it('does not silently truncate coverage after 10,000 short segments', async () => {
+    const orionis = new StubOrionisAdapter();
+    const first = Date.parse('2026-08-02T04:00:00.000Z');
+    orionis.recordings = Array.from({ length: 10_201 }, (_, index) => {
+      const startedAt = new Date(first + index * 1_000);
+      return {
+        id: `short-${index}`,
+        cameraId: 'cam-front',
+        cameraName: 'Front Door',
+        startedAt: startedAt.toISOString(),
+        endedAt: new Date(startedAt.getTime() + 1_000).toISOString(),
+        durationSeconds: 1,
+        sizeBytes: null,
+        hasAudio: null,
+        retentionUntil: null,
+        playbackPath: null,
+        markers: [],
+      };
+    });
+    harness = await createHarness({ orionis, adguard: new StubAdGuardAdapter() });
+    const tokens = await harness.signIn();
+    const query = new URLSearchParams({
+      cameraId: 'cam-front',
+      dayStart: '2026-08-02T04:00:00.000Z',
+      dayEnd: '2026-08-03T04:00:00.000Z',
+    });
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/recordings/coverage?${query}`,
+      headers: harness.auth(tokens.accessToken),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.recordedSeconds).toBe(10_201);
+  });
+
+  it('rejects incomplete or oversized local-day bounds', async () => {
+    harness = await createHarness({
+      orionis: new StubOrionisAdapter(),
+      adguard: new StubAdGuardAdapter(),
+    });
+    const tokens = await harness.signIn();
+
+    for (const query of [
+      'cameraId=cam-front&dayStart=2026-08-02T04%3A00%3A00.000Z',
+      'cameraId=cam-front&dayStart=2026-08-02T04%3A00%3A00.000Z&dayEnd=2026-08-04T04%3A00%3A00.000Z',
+    ]) {
+      const res = await harness.app.inject({
+        method: 'GET',
+        url: `${API_PREFIX}/recordings/coverage?${query}`,
+        headers: harness.auth(tokens.accessToken),
+      });
+      expect(res.statusCode).toBe(400);
+    }
   });
 });
 

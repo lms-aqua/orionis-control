@@ -2,6 +2,44 @@ import AVFoundation
 import Foundation
 import SwiftUI
 
+struct RecordingPlaybackWindow: Equatable, Sendable {
+    let start: Date
+    let durationSeconds: Int
+    let playableEnd: Date
+    let continuation: Date
+}
+
+/// Pure window math shared by playback and export. Keeping this outside AVPlayer
+/// makes gap, boundary and fractional-duration behavior regression-testable.
+enum RecordingWindowPolicy {
+    static func window(
+        containing date: Date,
+        coverage: [DateInterval],
+        dayEnd: Date,
+        maximumDuration: Int
+    ) -> RecordingPlaybackWindow? {
+        guard maximumDuration > 0,
+              let interval = coverage.first(where: { $0.contains(date) })
+        else { return nil }
+        let size = Double(maximumDuration)
+        let aligned = Date(
+            timeIntervalSince1970: (date.timeIntervalSince1970 / size).rounded(.down) * size)
+        let start = max(aligned, interval.start)
+        let requestedEnd = min(
+            min(start.addingTimeInterval(size), interval.end), dayEnd)
+        let duration = Int(requestedEnd.timeIntervalSince(start).rounded(.down))
+        guard duration >= 1 else { return nil }
+        let playableEnd = start.addingTimeInterval(Double(duration))
+        let continuation =
+            interval.end.timeIntervalSince(playableEnd) < 1 ? interval.end : playableEnd
+        return RecordingPlaybackWindow(
+            start: start,
+            durationSeconds: duration,
+            playableEnd: playableEnd,
+            continuation: continuation)
+    }
+}
+
 /// Drives the scrubbable recording timeline: one continuous player whose footage
 /// is pulled from an arbitrary instant, plus the day's coverage for the scrubber
 /// to draw. Dragging the timeline seeks to a moment; playback rolls forward and
@@ -15,7 +53,7 @@ final class RecordingsTimelineModel {
     private let service: any EventServicing
     private let api: APIClient
 
-    let player = AVPlayer()
+    nonisolated(unsafe) let player = AVPlayer()
 
     private(set) var coverage: [DateInterval] = []
     /// Real gaps between runs, so the scrubber can show where footage is missing
@@ -43,18 +81,23 @@ final class RecordingsTimelineModel {
 
     /// Where the loaded window began, so playback position maps back to wall time.
     private var windowStart: Date?
+    /// Actual end of the loaded clip after clipping it to recorded coverage.
+    private var windowEnd: Date?
+    private var windowContinuation: Date?
     /// Bumped per load so a slow request that lost the race cannot yank the
     /// viewer back to a moment they already scrubbed away from.
     private var loadGeneration = 0
     /// Coverage and media loads advance independently: installing a media item
     /// must not make the surrounding day load look stale to its own cleanup.
     private var coverageGeneration = 0
+    private var resumeAfterBackground = false
+    private var isSuspendedForBackground = false
     // Short windows load fast and make scrubbing responsive; playback rolls into
     // the next one automatically, so continuity isn't lost.
     private let windowSeconds = 90
 
-    private var timeObserver: Any?
-    private nonisolated(unsafe) var endToken: NSObjectProtocol?
+    private nonisolated(unsafe) var timeObserver: Any?
+    private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
 
     init(cameraId: String, cameraName: String, service: any EventServicing, api: APIClient) {
         self.cameraId = cameraId
@@ -69,7 +112,8 @@ final class RecordingsTimelineModel {
     }
 
     deinit {
-        if let endToken { NotificationCenter.default.removeObserver(endToken) }
+        for token in itemTokens { NotificationCenter.default.removeObserver(token) }
+        if let timeObserver { player.removeTimeObserver(timeObserver) }
     }
 
     // MARK: Loading
@@ -83,15 +127,17 @@ final class RecordingsTimelineModel {
         coverageGeneration &+= 1
         let generation = coverageGeneration
         player.pause()
-        player.replaceCurrentItem(with: nil)
+        unloadCurrentItem()
         windowStart = nil
+        windowEnd = nil
+        windowContinuation = nil
         isPlaying = false
         isLoading = true
         defer {
             if generation == coverageGeneration { isLoading = false }
         }
         errorText = nil
-        exportedClip = nil
+        clearExportedClip()
         coverage = []
         gaps = []
         coverageRatio = 0
@@ -113,7 +159,7 @@ final class RecordingsTimelineModel {
                 loadWindow(containing: currentTime, autoplay: false)
             } else {
                 currentTime = dayEnd
-                player.replaceCurrentItem(with: nil)
+                unloadCurrentItem()
             }
         } catch let error as APIError {
             guard generation == coverageGeneration else { return }
@@ -124,15 +170,43 @@ final class RecordingsTimelineModel {
         }
     }
 
+    /// Extends today's coverage without replacing the active AVPlayer item. A
+    /// full `load` here would interrupt playback once a minute; doing nothing
+    /// leaves the final hours of a long-open timeline looking like a gap.
+    func refreshCoverage(day: Date) async {
+        guard !isLoading else { return }
+        let requestedStart = Calendar.current.startOfDay(for: day)
+        guard requestedStart == dayStart else { return }
+        coverageGeneration &+= 1
+        let generation = coverageGeneration
+        guard let summary = try? await service.coverage(cameraId: cameraId, day: requestedStart),
+              generation == coverageGeneration,
+              requestedStart == dayStart
+        else { return }
+        coverage = summary.runs.map(\.interval)
+        gaps = summary.gaps.map(\.interval)
+        coverageRatio = summary.coverageRatio
+        hasFootage = !coverage.isEmpty
+    }
+
     /// Exports the window under the playhead as a file to share or save.
     func exportCurrentWindow() async {
         guard !isExporting else { return }
+        guard let window = RecordingWindowPolicy.window(
+            containing: currentTime,
+            coverage: coverage,
+            dayEnd: dayEnd,
+            maximumDuration: windowSeconds)
+        else {
+            errorText = "Move the playhead onto recorded footage before exporting."
+            return
+        }
         isExporting = true
         defer { isExporting = false }
-        let start = alignedWindowStart(for: currentTime)
         do {
+            clearExportedClip()
             exportedClip = try await service.exportClip(
-                cameraId: cameraId, start: start, duration: windowSeconds)
+                cameraId: cameraId, start: window.start, duration: window.durationSeconds)
         } catch let apiError as APIError {
             errorText = apiError.message
         } catch {
@@ -140,7 +214,41 @@ final class RecordingsTimelineModel {
         }
     }
 
-    func clearExportedClip() { exportedClip = nil }
+    func clearExportedClip() {
+        if let exportedClip {
+            let directory = exportedClip.deletingLastPathComponent()
+            if directory.lastPathComponent.hasPrefix(".orionis-download-") {
+                try? FileManager.default.removeItem(at: directory)
+            } else {
+                try? FileManager.default.removeItem(at: exportedClip)
+            }
+        }
+        exportedClip = nil
+    }
+
+    var canExportCurrentTime: Bool { isCovered(currentTime) && !isExporting }
+
+    func pause() {
+        player.pause()
+        isPlaying = false
+    }
+
+    func suspendForBackground() {
+        guard !isSuspendedForBackground else { return }
+        isSuspendedForBackground = true
+        resumeAfterBackground = isPlaying
+        pause()
+    }
+
+    func resumeFromBackground() {
+        guard isSuspendedForBackground else { return }
+        isSuspendedForBackground = false
+        guard resumeAfterBackground else { return }
+        resumeAfterBackground = false
+        seek(to: currentTime, autoplay: true)
+    }
+
+    func clearError() { errorText = nil }
 
     // MARK: Scrubbing
 
@@ -192,17 +300,10 @@ final class RecordingsTimelineModel {
     /// device's HTTP cache — can ever be reused. And dragging within footage that
     /// is already loaded should not touch the network at all, which is only
     /// decidable if windows have stable boundaries.
-    private func alignedWindowStart(for date: Date) -> Date {
-        let seconds = date.timeIntervalSince1970
-        let size = Double(windowSeconds)
-        return Date(timeIntervalSince1970: (seconds / size).rounded(.down) * size)
-    }
-
     /// True when `date` falls inside the window currently loaded in the player.
     private func isWithinLoadedWindow(_ date: Date) -> Bool {
-        guard let windowStart, player.currentItem != nil else { return false }
-        let offset = date.timeIntervalSince(windowStart)
-        return offset >= 0 && offset < Double(windowSeconds)
+        guard let windowStart, let windowEnd, player.currentItem != nil else { return false }
+        return date >= windowStart && date < windowEnd
     }
 
     private func seek(to date: Date, autoplay: Bool) {
@@ -230,22 +331,39 @@ final class RecordingsTimelineModel {
             currentTime = next
             loadWindow(containing: next, autoplay: autoplay)
         } else {
-            player.replaceCurrentItem(with: nil)
+            unloadCurrentItem()
+            windowStart = nil
+            windowEnd = nil
+            windowContinuation = nil
             isPlaying = false
         }
     }
 
     private func loadWindow(containing date: Date, autoplay: Bool) {
-        let start = alignedWindowStart(for: date)
-        let offset = max(0, date.timeIntervalSince(start))
-        windowStart = start
+        guard let window = RecordingWindowPolicy.window(
+            containing: date,
+            coverage: coverage,
+            dayEnd: dayEnd,
+            maximumDuration: windowSeconds)
+        else {
+            unloadCurrentItem()
+            windowStart = nil
+            windowEnd = nil
+            windowContinuation = nil
+            isPlaying = false
+            return
+        }
+        let offset = max(0, date.timeIntervalSince(window.start))
+        windowStart = window.start
+        windowEnd = window.playableEnd
+        windowContinuation = window.continuation
         loadGeneration &+= 1
         let generation = loadGeneration
 
         let query = [
             "cameraId": cameraId,
-            "start": Self.iso.string(from: start),
-            "duration": String(windowSeconds),
+            "start": Self.iso.string(from: window.start),
+            "duration": String(window.durationSeconds),
         ]
         Task { [weak self] in
             guard let self else { return }
@@ -259,7 +377,7 @@ final class RecordingsTimelineModel {
                     options: media.headers.isEmpty
                         ? nil : ["AVURLAssetHTTPHeaderFieldsKey": media.headers])
                 let item = AVPlayerItem(asset: asset)
-                self.observeEnd(of: item)
+                self.observe(item: item)
                 self.player.replaceCurrentItem(with: item)
                 if offset > 0.1 {
                     // In an async context this resolves to the async overload of
@@ -276,32 +394,68 @@ final class RecordingsTimelineModel {
                 }
             } catch {
                 guard generation == self.loadGeneration else { return }
-                self.player.replaceCurrentItem(with: nil)
+                self.unloadCurrentItem()
                 self.windowStart = nil
+                self.windowEnd = nil
+                self.windowContinuation = nil
                 self.isPlaying = false
                 self.errorText = "Couldn't load footage at that time."
             }
         }
     }
 
-    private func observeEnd(of item: AVPlayerItem) {
-        if let endToken { NotificationCenter.default.removeObserver(endToken) }
-        endToken = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.windowDidEnd() }
-        }
+    private func observe(item: AVPlayerItem) {
+        clearItemObservers()
+        let center = NotificationCenter.default
+        itemTokens = [
+            center.addObserver(
+                forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.windowDidEnd() }
+            },
+            center.addObserver(
+                forName: AVPlayerItem.failedToPlayToEndTimeNotification,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.recordingPlaybackFailed() }
+            },
+            center.addObserver(
+                forName: AVPlayerItem.playbackStalledNotification, object: item, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.errorText = "Recording playback stalled. Check the connection and try again."
+                }
+            },
+        ]
+    }
+
+    private func clearItemObservers() {
+        for token in itemTokens { NotificationCenter.default.removeObserver(token) }
+        itemTokens = []
+    }
+
+    private func unloadCurrentItem() {
+        clearItemObservers()
+        player.replaceCurrentItem(with: nil)
+    }
+
+    private func recordingPlaybackFailed() {
+        player.pause()
+        isPlaying = false
+        errorText = "This recording could not continue playing. Move the playhead to retry."
     }
 
     private func windowDidEnd() {
         // Roll straight into the next window so continuous footage plays through
         // segment boundaries without the user lifting a finger.
-        guard isPlaying, let finishedWindow = windowStart else { return }
-        let next = finishedWindow.addingTimeInterval(Double(windowSeconds))
+        guard isPlaying, let next = windowContinuation else { return }
         // Clear the old item first so seek cannot take its in-buffer fast path and
         // replay the final frame of the window that just ended.
-        player.replaceCurrentItem(with: nil)
+        unloadCurrentItem()
         windowStart = nil
+        windowEnd = nil
+        windowContinuation = nil
         seek(to: next, autoplay: true)
     }
 
@@ -310,7 +464,7 @@ final class RecordingsTimelineModel {
         let position = player.currentTime().seconds
         guard position.isFinite else { return }
         if item.status == .failed {
-            isPlaying = false
+            recordingPlaybackFailed()
             return
         }
         currentTime = min(windowStart.addingTimeInterval(position), dayEnd)
@@ -344,6 +498,7 @@ struct RecordingsView: View {
     let cameraName: String
 
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: RecordingsTimelineModel?
     @State private var day = Date()
 
@@ -383,6 +538,17 @@ struct RecordingsView: View {
                 .presentationDetents([.height(160)])
             }
         }
+        .alert(
+            "Recordings",
+            isPresented: Binding(
+                get: { model?.errorText != nil },
+                set: { if !$0 { model?.clearError() } }
+            )
+        ) {
+            Button("OK") { model?.clearError() }
+        } message: {
+            Text(model?.errorText ?? "")
+        }
         .navigationTitle("Recordings")
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -393,8 +559,27 @@ struct RecordingsView: View {
                 model = vm
                 await vm.load(day: day)
             }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    return
+                }
+                if Calendar.current.isDateInToday(day) {
+                    if scenePhase == .active {
+                        await model?.refreshCoverage(day: day)
+                    }
+                }
+            }
         }
-        .onDisappear { model?.player.pause() }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: model?.resumeFromBackground()
+            case .inactive, .background: model?.suspendForBackground()
+            @unknown default: break
+            }
+        }
+        .onDisappear { model?.pause() }
     }
 
     @ViewBuilder
@@ -444,7 +629,7 @@ struct RecordingsView: View {
                 VStack(alignment: .trailing, spacing: 1) {
                     Text("\(Int((model.coverageRatio * 100).rounded()))%")
                         .font(.subheadline.monospacedDigit())
-                    Text("of day")
+                    Text(Calendar.current.isDateInToday(model.dayStart) ? "of today so far" : "of day")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -462,7 +647,7 @@ struct RecordingsView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(!model.hasFootage || model.isExporting)
+            .disabled(!model.canExportCurrentTime)
             .accessibilityLabel("Export this clip")
         }
         .padding(.horizontal, 16)

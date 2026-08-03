@@ -41,7 +41,7 @@ const CapabilitiesSchema = z
     siren: z.boolean().default(false),
     privacy_mode: z.boolean().default(false),
     two_way_audio: z.boolean().default(false),
-    audio: z.boolean().default(false),
+    audio: z.boolean().nullable().default(null),
     recording_toggle: z.boolean().default(false),
     motion_toggle: z.boolean().default(false),
     sensitivity: z.boolean().default(false),
@@ -55,7 +55,7 @@ const CapabilitiesSchema = z
 const HealthSchema = z
   .object({
     status: z.enum(['online', 'offline', 'degraded', 'unknown']).default('unknown'),
-    recording: z.boolean().default(false),
+    recording: z.boolean().nullable().default(null),
     streaming: z.boolean().default(false),
     motion_detected: z.boolean().default(false),
     privacy_enabled: z.boolean().default(false),
@@ -122,7 +122,7 @@ const RecordingSchema = z
     ended_at: z.string(),
     duration_seconds: z.number().nonnegative(),
     size_bytes: z.number().nullable().default(null),
-    has_audio: z.boolean().default(false),
+    has_audio: z.boolean().nullable().default(null),
     retention_until: z.string().nullable().default(null),
     playback_path: z.string().nullable().default(null),
     markers: z

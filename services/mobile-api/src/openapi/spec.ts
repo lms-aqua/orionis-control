@@ -158,7 +158,7 @@ export function buildOpenApiDocument(): object {
                 siren: { type: 'boolean' },
                 privacyMode: { type: 'boolean' },
                 twoWayAudio: { type: 'boolean' },
-                audio: { type: 'boolean' },
+                audio: { type: 'boolean', nullable: true },
                 recordingToggle: { type: 'boolean' },
                 motionToggle: { type: 'boolean' },
                 sensitivity: { type: 'boolean' },
@@ -172,7 +172,7 @@ export function buildOpenApiDocument(): object {
               type: 'object',
               properties: {
                 status: ref('CameraStatus'),
-                recording: { type: 'boolean' },
+                recording: { type: 'boolean', nullable: true },
                 streaming: { type: 'boolean' },
                 motionDetected: { type: 'boolean' },
                 privacyEnabled: { type: 'boolean' },

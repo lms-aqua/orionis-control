@@ -36,6 +36,13 @@ describe('recording ids', () => {
   it('rejects a decodable id with a nonsensical duration', () => {
     const forged = `rec_${Buffer.from('57|2026-08-01T00:00:00Z|-5', 'utf8').toString('base64url')}`;
     expect(() => decodeRecordingId(forged)).toThrow(AppError);
+    const oversized = `rec_${Buffer.from('57|2026-08-01T00:00:00Z|999999999', 'utf8').toString('base64url')}`;
+    expect(() => decodeRecordingId(oversized)).toThrow(AppError);
+  });
+
+  it('rejects a decodable id with an invalid start instant', () => {
+    const forged = `rec_${Buffer.from('57|not-a-date|60', 'utf8').toString('base64url')}`;
+    expect(() => decodeRecordingId(forged)).toThrow(AppError);
   });
 });
 
@@ -69,6 +76,24 @@ describe('MediaMtxRecordings.list', () => {
     expect(newest.markers).toEqual([]);
     // The playback server reports no size; guessing one would be fabrication.
     expect(newest.sizeBytes).toBeNull();
+    // Its index also omits track metadata; silence is unknown, not proof of audio.
+    expect(newest.hasAudio).toBeNull();
+  });
+
+  it('skips malformed recorder entries without breaking valid timeline footage', async () => {
+    const s = store(
+      playback({
+        '57': [
+          { start: 'not-a-date', duration: 60 },
+          { start: '2026-08-01T11:00:00Z', duration: Number.POSITIVE_INFINITY },
+          { start: '2026-08-01T11:30:00Z', duration: 999_999_999 },
+          { start: '2026-08-01T12:00:00Z', duration: 60 },
+        ],
+      }),
+    );
+    const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
+    expect(page.total).toBe(1);
+    expect(page.items[0]!.startedAt).toBe('2026-08-01T12:00:00.000Z');
   });
 
   it('derives retentionUntil from the configured retention', async () => {
@@ -180,6 +205,21 @@ describe('MediaMtxRecordings.get', () => {
       durationSeconds: 60,
     });
     await expect(s.get(gone, () => 'Driveway')).rejects.toThrow(AppError);
+  });
+
+  it('does not treat the exact segment end as playable footage', async () => {
+    const s = new MediaMtxRecordings(
+      'http://hls.invalid:9996',
+      2000,
+      7,
+      playback({ '57': [{ start: '2026-08-01T12:00:00Z', duration: 60 }] }),
+    );
+    const boundary = encodeRecordingId({
+      cameraId: '57',
+      start: '2026-08-01T12:01:00Z',
+      durationSeconds: 60,
+    });
+    await expect(s.get(boundary, () => 'Driveway')).rejects.toThrow(AppError);
   });
 
   it('returns a recording still covered by the store', async () => {
