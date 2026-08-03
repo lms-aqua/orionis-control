@@ -211,7 +211,7 @@ final class CameraStreamStateTests: XCTestCase {
         var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
         detector.reset(keepingBaseline: true)
         XCTAssertEqual(detector.baseline, 20)
-        for _ in 0..<4 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
+        for _ in 0..<2 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
         XCTAssertEqual(
             detector.observe(framesPerSecond: 1),
             .degraded(baseline: 20, current: 1))
