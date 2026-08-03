@@ -6,7 +6,7 @@ name: iOS AltStore
 # certificate is required here. The source and download URLs are stable:
 #
 #   Source: https://github.com/<owner>/<repo>/releases/download/ios_latest/altstore-source.json
-#   IPA:    https://github.com/<owner>/<repo>/releases/download/ios_latest/OrionisControl.ipa
+#   IPA:    Read the current unique downloadURL from altstore-source.json.
 
 on:
   workflow_run:
@@ -209,6 +209,16 @@ jobs:
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
+          # GitHub does not move an existing rolling tag when its assets are
+          # replaced. Move it explicitly so the release page, source JSON and
+          # IPA identify the exact commit that passed iOS CI.
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA" || {
+            echo "::error::Checked-out SHA does not match the validated iOS CI SHA"
+            exit 1
+          }
+          git tag --force ios_latest "$RELEASE_SHA"
+          git push --force origin refs/tags/ios_latest
+
           if ! gh release view ios_latest >/dev/null 2>&1; then
             gh release create ios_latest \
               --target "$RELEASE_SHA" \
@@ -217,6 +227,7 @@ jobs:
               --title "Orionis Control — iOS (rolling, unsigned)" \
               --notes "Unsigned rolling build for AltStore / SideStore. The app is re-signed on-device with your own Apple ID. Add the AltStore source: https://github.com/${{ github.repository }}/releases/download/ios_latest/altstore-source.json"
           fi
+          gh release edit ios_latest --target "$RELEASE_SHA"
           gh release upload ios_latest \
             "build/${{ steps.ipa.outputs.ipa_name }}" \
             altstore-source.json \
