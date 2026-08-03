@@ -96,8 +96,8 @@ final class RecordingsTimelineModel {
     // the next one automatically, so continuity isn't lost.
     private let windowSeconds = 90
 
-    private nonisolated var timeObserver: Any?
-    private nonisolated var itemTokens: [NSObjectProtocol] = []
+    private nonisolated(unsafe) var timeObserver: Any?
+    private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
 
     init(cameraId: String, cameraName: String, service: any EventServicing, api: APIClient) {
         self.cameraId = cameraId
