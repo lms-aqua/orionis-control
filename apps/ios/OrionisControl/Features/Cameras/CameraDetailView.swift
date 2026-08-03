@@ -113,6 +113,10 @@ struct CameraDetailView: View {
                 stream = CameraStreamController(
                     cameraId: cameraId, service: environment.service)
             }
+            // Fetch a still immediately, in parallel with connecting, so the scene
+            // is on screen within a couple hundred ms instead of a blank spinner
+            // while WebRTC negotiates and waits for its first keyframe.
+            Task { await model?.loadSnapshot() }
             quality = environment.preferences.defaultStreamQuality
             isMuted = environment.preferences.startMuted
             await model?.load()
@@ -204,6 +208,18 @@ struct CameraDetailView: View {
         VStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 14).fill(.black)
+
+                // The scene as a still, shown the instant it loads so opening a
+                // camera never sits on a blank spinner. It sits under the live
+                // layer and is covered the moment real video paints.
+                if let data = model.snapshot, let image = UIImage(data: data),
+                    !(stream?.state.isLive ?? false)
+                {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .opacity(0.55)
+                }
 
                 if let stream {
                     // The video layer stays mounted through buffering and
