@@ -554,6 +554,10 @@
             "type": "string",
             "nullable": true
           },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
           "answers": {
             "type": "array",
             "items": {
