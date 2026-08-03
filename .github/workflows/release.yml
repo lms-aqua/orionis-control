@@ -244,9 +244,17 @@ jobs:
           fi
           cat release-notes.md
 
-      - uses: actions/download-artifact@v4
+      - name: Download gateway release artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: release-artifacts
+          path: artifacts/release-artifacts
+
+      - name: Download iOS archive artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-archive
+          path: artifacts/ios-archive
 
       - name: Create the GitHub release
         env:
