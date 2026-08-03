@@ -517,6 +517,17 @@ export function buildOpenApiDocument(): object {
         },
       },
       '/audit': get('Audit log (administrator only)', 'system', { type: 'object' }),
+      '/diagnostics/incidents': {
+        post: {
+          tags: ['system'],
+          summary: 'Submit a bounded, redacted client media incident',
+          security: authed,
+          responses: {
+            '200': jsonResponse('Accepted', envelope({ type: 'object' })),
+            ...commonErrors,
+          },
+        },
+      },
     },
     'x-server-version': SERVER_VERSION,
   };

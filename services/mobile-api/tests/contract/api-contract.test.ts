@@ -99,6 +99,7 @@ describe('OpenAPI document', () => {
         '/devices/current',
         '/notifications/preferences',
         '/audit',
+        '/diagnostics/incidents',
       ]) {
         expect(documented.has(critical), `${critical} missing from OpenAPI`).toBe(true);
       }

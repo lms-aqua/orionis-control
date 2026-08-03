@@ -150,4 +150,51 @@ final class CameraStreamStateTests: XCTestCase {
         diagnostics.lastFrameAt = now.addingTimeInterval(-3)
         XCTAssertEqual(diagnostics.framesStaleFor(now: now) ?? 0, 3, accuracy: 0.001)
     }
+
+    func testLowFrameRateDetectorIgnoresOneSampleDip() {
+        var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
+        XCTAssertEqual(detector.observe(framesPerSecond: 20), .none)
+        XCTAssertEqual(detector.observe(framesPerSecond: 1), .none)
+        XCTAssertEqual(detector.observe(framesPerSecond: 19), .none)
+        for _ in 0..<4 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
+    }
+
+    func testLowFrameRateDetectorReportsSustainedCollapse() {
+        var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
+        for _ in 0..<4 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
+        XCTAssertEqual(
+            detector.observe(framesPerSecond: 1),
+            .degraded(baseline: 20, current: 1))
+        XCTAssertTrue(detector.isDegraded)
+    }
+
+    func testLowFrameRateDetectorUsesHysteresisForRecovery() {
+        var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
+        for _ in 0..<5 { _ = detector.observe(framesPerSecond: 1) }
+        XCTAssertEqual(detector.observe(framesPerSecond: 18), .none)
+        XCTAssertEqual(detector.observe(framesPerSecond: 5), .none)
+        XCTAssertEqual(detector.observe(framesPerSecond: 18), .none)
+        XCTAssertEqual(detector.observe(framesPerSecond: 18), .none)
+        XCTAssertEqual(detector.observe(framesPerSecond: 18), .recovered)
+        XCTAssertFalse(detector.isDegraded)
+    }
+
+    func testLowFrameRateDetectorAcceptsNaturallyLowBaseline() {
+        var detector = WebRTCLowFrameRateDetector()
+        for _ in 0..<20 {
+            XCTAssertEqual(detector.observe(framesPerSecond: 2), .none)
+        }
+        XCTAssertEqual(detector.baseline, 2)
+        XCTAssertFalse(detector.isDegraded)
+    }
+
+    func testLowFrameRateDetectorCanKeepBaselineAcrossRenegotiation() {
+        var detector = WebRTCLowFrameRateDetector(expectedFrameRate: 20)
+        detector.reset(keepingBaseline: true)
+        XCTAssertEqual(detector.baseline, 20)
+        for _ in 0..<4 { XCTAssertEqual(detector.observe(framesPerSecond: 1), .none) }
+        XCTAssertEqual(
+            detector.observe(framesPerSecond: 1),
+            .degraded(baseline: 20, current: 1))
+    }
 }

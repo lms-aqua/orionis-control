@@ -21,6 +21,7 @@ import { registerInfraRoutes } from './routes/infra.ts';
 import { registerAdGuardRoutes } from './routes/adguard.ts';
 import { registerSystemRoutes } from './routes/system.ts';
 import { registerDeviceRoutes } from './routes/devices.ts';
+import { registerDiagnosticRoutes } from './routes/diagnostics.ts';
 import { getAltstoreSource } from './lib/altstore-source.ts';
 import { API_VERSION } from './version.ts';
 
@@ -155,6 +156,7 @@ export async function buildApp(services: AppServices): Promise<FastifyInstance> 
       await registerAdGuardRoutes(scope);
       await registerSystemRoutes(scope);
       await registerDeviceRoutes(scope);
+      await registerDiagnosticRoutes(scope);
     },
     { prefix: API_PREFIX },
   );

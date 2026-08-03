@@ -1,5 +1,51 @@
 import Foundation
 
+/// A deliberately bounded report sent to the gateway when live media needs
+/// recovery. There is no free-form message field: tokens, SDP, URLs and raw
+/// errors therefore cannot accidentally enter the server's durable bug log.
+struct StreamIncident: Encodable, Sendable, Equatable {
+    enum Kind: String, Encodable, Sendable {
+        case negotiationFailed = "webrtc_negotiation_failed"
+        case connectionDropped = "webrtc_connection_dropped"
+        case noFirstFrame = "webrtc_no_first_frame"
+        case framesStalled = "webrtc_frames_stalled"
+        case lowFrameRate = "webrtc_low_frame_rate"
+        case hlsPlaybackStalled = "hls_playback_stalled"
+        case hlsPlaybackFailed = "hls_playback_failed"
+        case recoveryExhausted = "stream_recovery_exhausted"
+    }
+
+    enum Action: String, Encodable, Sendable {
+        case observed
+        case renegotiating
+        case fallingBack = "falling_back"
+    }
+
+    struct Metrics: Encodable, Sendable, Equatable {
+        let framesPerSecond: Double?
+        let baselineFramesPerSecond: Double?
+        let staleSeconds: Double?
+        let resolution: String?
+        let connectionAttempts: Int
+        let reconnectCount: Int
+        let stallCount: Int
+    }
+
+    struct Context: Encodable, Sendable, Equatable {
+        let lowData: Bool
+        let lowPowerMode: Bool
+        let thermalState: String
+    }
+
+    let kind: Kind
+    let action: Action
+    let cameraId: String
+    let transport: StreamProtocolKind
+    let occurredAt: Date
+    let metrics: Metrics
+    let context: Context
+}
+
 /// The lifecycle of one camera's live stream.
 ///
 /// Kept deliberately free of AVFoundation and SwiftUI so the transitions and the
@@ -100,6 +146,101 @@ struct WebRTCFrameHealthPolicy: Equatable, Sendable {
     }
 }
 
+/// Detects a sustained collapse in decoded frame rate without assuming every
+/// camera is a 20/30 FPS source. A short rolling warm-up establishes the best
+/// recent rate for this open; several consecutive severely-low samples are
+/// required before recovery, and several healthy samples are required to clear
+/// the degraded latch.
+struct WebRTCLowFrameRateDetector: Equatable, Sendable {
+    enum Event: Equatable, Sendable {
+        case none
+        case degraded(baseline: Double, current: Double)
+        case recovered
+    }
+
+    var warmupSamples = 4
+    var degradedSamplesRequired = 5
+    var recoverySamplesRequired = 3
+    var degradationRatio = 0.35
+    var recoveryRatio = 0.70
+    var minimumMeaningfulBaseline = 4.0
+
+    private(set) var baseline: Double?
+    private(set) var isDegraded = false
+    private var samples: [Double] = []
+    private var degradedSamples = 0
+    private var recoverySamples = 0
+
+    init(expectedFrameRate: Double? = nil) {
+        if let expectedFrameRate, expectedFrameRate.isFinite, expectedFrameRate > 0 {
+            baseline = expectedFrameRate
+        }
+    }
+
+    mutating func observe(framesPerSecond fps: Double) -> Event {
+        guard fps.isFinite, fps > 0 else { return .none }
+
+        if baseline == nil {
+            samples.append(fps)
+            if samples.count < warmupSamples { return .none }
+            baseline = samples.sorted()[samples.count / 2]
+            samples.removeAll(keepingCapacity: true)
+        }
+
+        guard let baseline, baseline >= minimumMeaningfulBaseline else {
+            // A genuinely low-rate camera establishes a low baseline and must
+            // not be repeatedly renegotiated merely for being low-rate.
+            self.baseline = max(self.baseline ?? fps, fps)
+            return .none
+        }
+
+        if isDegraded {
+            if fps >= baseline * recoveryRatio {
+                recoverySamples += 1
+                if recoverySamples >= recoverySamplesRequired {
+                    isDegraded = false
+                    degradedSamples = 0
+                    recoverySamples = 0
+                    return .recovered
+                }
+            } else {
+                recoverySamples = 0
+            }
+            return .none
+        }
+
+        if fps <= baseline * degradationRatio {
+            degradedSamples += 1
+            if degradedSamples >= degradedSamplesRequired {
+                isDegraded = true
+                degradedSamples = 0
+                recoverySamples = 0
+                return .degraded(baseline: baseline, current: fps)
+            }
+        } else {
+            degradedSamples = 0
+            // Follow improvements slowly enough that one noisy high sample does
+            // not make normal playback look degraded on the next interval.
+            self.baseline = max(baseline, baseline * 0.9 + fps * 0.1)
+        }
+        return .none
+    }
+
+    mutating func reset(expectedFrameRate: Double? = nil, keepingBaseline: Bool = false) {
+        let preserved = keepingBaseline ? baseline : nil
+        baseline = preserved
+        if !keepingBaseline,
+           let expectedFrameRate, expectedFrameRate.isFinite, expectedFrameRate > 0
+        {
+            baseline = expectedFrameRate
+        }
+        isDegraded = false
+        samples.removeAll(keepingCapacity: true)
+        degradedSamples = 0
+        recoverySamples = 0
+    }
+}
+
 /// Keeps a live HLS player near the edge after network stalls or playlist resets.
 struct HLSLiveEdgePolicy: Equatable, Sendable {
     var maximumLag: TimeInterval = 12
@@ -126,6 +267,8 @@ struct CameraStreamDiagnostics: Equatable, Sendable {
     var lastStateChangeAt: Date?
     var resolution: String?
     var frameRate: Double?
+    var baselineFrameRate: Double?
+    var lowFrameRateEvents = 0
     /// User-facing message of the last failure; never the raw underlying error.
     var lastErrorSummary: String?
 

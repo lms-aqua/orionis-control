@@ -410,6 +410,9 @@ struct CameraLiveViewer: View {
                 Label(String(format: "%.0f fps", fps), systemImage: "film.stack")
             }
             Label("\(diagnostics.stallCount) stalls", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+            if diagnostics.lowFrameRateEvents > 0 {
+                Label("\(diagnostics.lowFrameRateEvents) low-FPS", systemImage: "speedometer")
+            }
             Label("\(diagnostics.reconnectCount) reconnects", systemImage: "arrow.clockwise")
         }
         .font(.caption.monospacedDigit())
@@ -423,7 +426,8 @@ struct CameraLiveViewer: View {
         .accessibilityLabel(
             "Playback statistics, \(diagnostics.transport?.displayName ?? "unknown transport"), "
                 + "\(diagnostics.frameRate.map { String(format: "%.0f frames per second", $0) } ?? "frame rate unavailable"), "
-                + "\(diagnostics.stallCount) stalls, \(diagnostics.reconnectCount) reconnects")
+                + "\(diagnostics.stallCount) stalls, \(diagnostics.lowFrameRateEvents) low frame rate recoveries, "
+                + "\(diagnostics.reconnectCount) reconnects")
         .padding(.horizontal, 16)
     }
 

@@ -59,6 +59,11 @@ final class CameraStreamController {
     /// A live peer can remain "connected" after media stops. Try a bounded fast
     /// renegotiation before falling back to the steadier HLS transport.
     private var webRTCStallRecoveries = 0
+    /// A sustained FPS collapse gets one fresh WebRTC negotiation. If the new
+    /// peer is still degraded, this open is pinned to HLS instead of looping.
+    private var webRTCLowFPSRecoveries = 0
+    private var webRTCLowFPSDetector = WebRTCLowFrameRateDetector()
+    private var lastIncidentReportAt: [String: Date] = [:]
     /// Invalidates connection work that outlives a stop, pause, camera switch or
     /// newer retry. A cancelled URLSession call may still finish successfully;
     /// its server-side stream must then be explicitly revoked instead of leaked.
@@ -120,6 +125,11 @@ final class CameraStreamController {
         webRTCFallbackUsed = false
         webRTCFrameRetries = 0
         webRTCStallRecoveries = 0
+        webRTCLowFPSRecoveries = 0
+        webRTCLowFPSDetector.reset(expectedFrameRate: camera.health.frameRate)
+        lastIncidentReportAt.removeAll(keepingCapacity: true)
+        diagnostics = CameraStreamDiagnostics()
+        diagnostics.baselineFrameRate = webRTCLowFPSDetector.baseline
         connect(isRetry: false)
     }
 
@@ -209,6 +219,9 @@ final class CameraStreamController {
     func suspendForBackground() {
         guard !isSuspendedForBackground else { return }
         isSuspendedForBackground = true
+        webRTCLowFPSRecoveries = 0
+        webRTCLowFPSDetector.reset(expectedFrameRate: camera?.health.frameRate)
+        diagnostics.baselineFrameRate = webRTCLowFPSDetector.baseline
         connectionGeneration &+= 1
         wasPlayingBeforeBackground = state.isLive || state == .buffering || state == .connecting
         recoveryTask?.cancel()
@@ -248,6 +261,9 @@ final class CameraStreamController {
         guard state.isLive || state == .buffering || state == .connecting || isReconnecting
         else { return }
         self.lowData = lowData
+        webRTCLowFPSRecoveries = 0
+        webRTCLowFPSDetector.reset(expectedFrameRate: camera?.health.frameRate)
+        diagnostics.baselineFrameRate = webRTCLowFPSDetector.baseline
         connectTask?.cancel()
         beginRecovery(reason: "Network changed")
     }
@@ -478,7 +494,9 @@ final class CameraStreamController {
             guard let self else { return }
             switch state {
             case .connected: self.webRTCDidConnect()
-            case .failed: self.webRTCDidFail(reason: "The WebRTC connection dropped")
+            case .failed:
+                self.webRTCDidFail(
+                    reason: "The WebRTC connection dropped", incidentKind: .connectionDropped)
             case .connecting: break
             }
         }
@@ -495,7 +513,8 @@ final class CameraStreamController {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                self.webRTCDidFail(reason: "WebRTC could not negotiate a stream")
+                self.webRTCDidFail(
+                    reason: "WebRTC could not negotiate a stream", incidentKind: .negotiationFailed)
             }
         }
     }
@@ -528,6 +547,46 @@ final class CameraStreamController {
         diagnostics.resolution = "\(metrics.width)×\(metrics.height)"
         if let framesPerSecond = metrics.framesPerSecond {
             diagnostics.frameRate = framesPerSecond
+            let event = webRTCLowFPSDetector.observe(framesPerSecond: framesPerSecond)
+            diagnostics.baselineFrameRate = webRTCLowFPSDetector.baseline
+            switch event {
+            case .none, .recovered:
+                break
+            case .degraded(let baseline, let current):
+                recoverLowFrameRateWebRTC(baseline: baseline, current: current)
+            }
+        }
+    }
+
+    private func recoverLowFrameRateWebRTC(baseline: Double, current: Double) {
+        guard isWebRTC, state.isLive, let session else { return }
+        diagnostics.lowFrameRateEvents += 1
+        diagnostics.stallCount += 1
+        diagnostics.reconnectCount += 1
+        transition(to: .reconnecting(attempt: webRTCLowFPSRecoveries + 1))
+
+        if webRTCLowFPSRecoveries == 0 {
+            reportMediaIncident(
+                kind: .lowFrameRate,
+                action: .renegotiating,
+                framesPerSecond: current,
+                baselineFramesPerSecond: baseline)
+            webRTCLowFPSRecoveries = 1
+            diagnostics.lastErrorSummary = String(
+                format: "WebRTC frame rate dropped to %.1f fps from %.1f; renegotiating",
+                current, baseline)
+            webRTCLowFPSDetector.reset(keepingBaseline: true)
+            playWebRTC(session)
+        } else {
+            reportMediaIncident(
+                kind: .lowFrameRate,
+                action: .fallingBack,
+                framesPerSecond: current,
+                baselineFramesPerSecond: baseline)
+            diagnostics.lastErrorSummary = String(
+                format: "WebRTC remained near %.1f fps; falling back to HLS", current)
+            webRTCDidFail(
+                reason: "WebRTC frame rate remained severely degraded", incidentKind: nil)
         }
     }
 
@@ -537,12 +596,14 @@ final class CameraStreamController {
     private func webRTCNoFirstFrame() {
         guard isWebRTC, state != .live, let session else { return }
         if webRTCFrameRetries < 2 {
+            reportMediaIncident(kind: .noFirstFrame, action: .renegotiating)
             webRTCFrameRetries += 1
             diagnostics.lastErrorSummary = "WebRTC connected but showed no video; renegotiating"
             playWebRTC(session)
         } else {
+            reportMediaIncident(kind: .noFirstFrame, action: .fallingBack)
             webRTCFrameRetries = 0
-            webRTCDidFail(reason: "WebRTC connected but never showed video")
+            webRTCDidFail(reason: "WebRTC connected but never showed video", incidentKind: nil)
         }
     }
 
@@ -586,18 +647,35 @@ final class CameraStreamController {
         diagnostics.lastErrorSummary = "WebRTC stopped delivering frames"
         transition(to: .reconnecting(attempt: webRTCStallRecoveries + 1))
         if webRTCHealthPolicy.shouldRenegotiate(afterRecoveries: webRTCStallRecoveries) {
+            reportMediaIncident(
+                kind: .framesStalled,
+                action: .renegotiating,
+                staleSeconds: webrtc.framesStaleFor())
             webRTCStallRecoveries += 1
             playWebRTC(session)
         } else {
-            webRTCDidFail(reason: "WebRTC repeatedly stopped delivering video")
+            reportMediaIncident(
+                kind: .framesStalled,
+                action: .fallingBack,
+                staleSeconds: webrtc.framesStaleFor())
+            webRTCDidFail(
+                reason: "WebRTC repeatedly stopped delivering video", incidentKind: nil)
         }
     }
 
     /// The one place WebRTC failure is handled: fall back to HLS the first time,
     /// then hand off to bounded recovery so a dead camera still ends in a final
     /// state rather than ping-ponging between transports.
-    private func webRTCDidFail(reason: String) {
+    private func webRTCDidFail(
+        reason: String,
+        incidentKind: StreamIncident.Kind? = .negotiationFailed
+    ) {
         guard isWebRTC else { return }
+        if let incidentKind {
+            reportMediaIncident(
+                kind: incidentKind,
+                action: webRTCFallbackUsed ? .observed : .fallingBack)
+        }
         webRTCWatchdog?.cancel()
         teardownWebRTC()
 
@@ -610,6 +688,53 @@ final class CameraStreamController {
         } else {
             beginRecovery(reason: reason)
         }
+    }
+
+    /// Best-effort only: logging must never delay or break playback recovery.
+    /// The payload contains a fixed enum plus bounded health numbers, never raw
+    /// errors, SDP, stream tokens, credentials or media URLs.
+    private func reportMediaIncident(
+        kind: StreamIncident.Kind,
+        action: StreamIncident.Action,
+        framesPerSecond: Double? = nil,
+        baselineFramesPerSecond: Double? = nil,
+        staleSeconds: Double? = nil
+    ) {
+        let now = Date()
+        let throttleKey = "\(kind.rawValue):\(action.rawValue)"
+        if let last = lastIncidentReportAt[throttleKey], now.timeIntervalSince(last) < 10 {
+            return
+        }
+        lastIncidentReportAt[throttleKey] = now
+        let thermalState: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermalState = "nominal"
+        case .fair: thermalState = "fair"
+        case .serious: thermalState = "serious"
+        case .critical: thermalState = "critical"
+        @unknown default: thermalState = "unknown"
+        }
+        let incident = StreamIncident(
+            kind: kind,
+            action: action,
+            cameraId: cameraId,
+            transport: diagnostics.transport ?? (isWebRTC ? .webrtc : .hls),
+            occurredAt: now,
+            metrics: .init(
+                framesPerSecond: framesPerSecond ?? diagnostics.frameRate,
+                baselineFramesPerSecond: baselineFramesPerSecond
+                    ?? diagnostics.baselineFrameRate,
+                staleSeconds: staleSeconds ?? diagnostics.framesStaleFor(),
+                resolution: diagnostics.resolution?.replacingOccurrences(of: "×", with: "x"),
+                connectionAttempts: diagnostics.connectionAttempts,
+                reconnectCount: diagnostics.reconnectCount,
+                stallCount: diagnostics.stallCount),
+            context: .init(
+                lowData: lowData,
+                lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                thermalState: thermalState))
+        let service = service
+        Task { try? await service.reportStreamIncident(incident) }
     }
 
     /// Bounds how long a WebRTC negotiation may sit before "connected". Without it
@@ -698,6 +823,7 @@ final class CameraStreamController {
         if !isWebRTC { player.pause() }
 
         guard policy.shouldRetry(afterAttempt: attempt) else {
+            reportMediaIncident(kind: .recoveryExhausted, action: .observed)
             terminatePlayback()
             transition(to: .failed(reason: reason))
             return
@@ -804,10 +930,12 @@ final class CameraStreamController {
     private func playbackStalled() {
         guard state.isLive || state == .buffering else { return }
         diagnostics.stallCount += 1
+        reportMediaIncident(kind: .hlsPlaybackStalled, action: .observed)
         transition(to: .buffering)
     }
 
     private func playbackFailed() {
+        reportMediaIncident(kind: .hlsPlaybackFailed, action: .renegotiating)
         beginRecovery(reason: "Stream unavailable")
     }
 

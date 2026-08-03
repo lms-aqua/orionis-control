@@ -28,6 +28,7 @@ protocol CameraServicing: Sendable {
         -> CameraControlResult
     func cameraPreferences() async throws -> CameraPreferences
     func setCameraPreferences(_ update: CameraPreferencesUpdate) async throws -> CameraPreferences
+    func reportStreamIncident(_ incident: StreamIncident) async throws
 }
 
 /// Caddy and Authelia. Administrator-only on the server; the app hides it too.
@@ -382,6 +383,16 @@ struct OrionisService: OrionisServicing {
             Endpoint(
                 method: .delete,
                 path: "/cameras/\(escaped(cameraId))/stream-sessions/\(escaped(streamId))"))
+    }
+
+    func reportStreamIncident(_ incident: StreamIncident) async throws {
+        try await api.requestVoid(
+            Endpoint(
+                method: .post,
+                path: "/diagnostics/incidents",
+                body: incident,
+                timeout: 5
+            ))
     }
 
     func invokeControl(cameraId: String, request: CameraControlRequest) async throws

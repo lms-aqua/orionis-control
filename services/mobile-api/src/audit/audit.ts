@@ -43,6 +43,7 @@ export const AUDIT_ACTIONS = [
   'device.registered',
   'device.removed',
   'notifications.preferences.updated',
+  'client.media.incident_reported',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

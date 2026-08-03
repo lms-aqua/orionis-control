@@ -510,6 +510,7 @@ struct CameraDetailView: View {
                 diagnosticRow("Connection attempts", "\(d.connectionAttempts)")
                 diagnosticRow("Reconnects", "\(d.reconnectCount)")
                 diagnosticRow("Stalls", "\(d.stallCount)")
+                diagnosticRow("Low-FPS recoveries", "\(d.lowFrameRateEvents)")
                 if let stale = d.framesStaleFor() {
                     diagnosticRow("Last frame", String(format: "%.0fs ago", stale))
                 }
@@ -523,6 +524,9 @@ struct CameraDetailView: View {
             }
             if let fps = stream?.diagnostics.frameRate ?? camera.health.frameRate {
                 diagnosticRow("Frame rate", String(format: "%.0f fps", fps))
+            }
+            if let baseline = stream?.diagnostics.baselineFrameRate {
+                diagnosticRow("Healthy baseline", String(format: "%.0f fps", baseline))
             }
             if let bitrate = camera.health.bitrateKbps {
                 diagnosticRow("Bitrate", String(format: "%.0f kbps", bitrate))
