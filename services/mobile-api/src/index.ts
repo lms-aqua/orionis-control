@@ -30,7 +30,18 @@ async function main(): Promise<void> {
   const app = await buildApp(services);
 
   // Periodic housekeeping; cheap and keeps the auth tables bounded.
-  const purgeTimer = setInterval(() => services.sessions.purgeExpired(), 10 * 60 * 1000);
+  const purgeTimer = setInterval(
+    () => {
+      try {
+        const removed = services.sessions.purgeExpired();
+        const total = Object.values(removed).reduce((sum, count) => sum + count, 0);
+        if (total > 0) app.log.info({ removed, total }, 'expired gateway state purged');
+      } catch (error) {
+        app.log.error({ err: error }, 'expired gateway state purge failed');
+      }
+    },
+    10 * 60 * 1000,
+  );
   purgeTimer.unref();
 
   await app.listen({ port: config.port, host: config.host });

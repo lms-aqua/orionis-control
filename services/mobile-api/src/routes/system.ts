@@ -126,97 +126,103 @@ export async function collectHealth(req: {
     impacts: dbOk ? [] : ['Sign-in', 'Audit log', 'Notification preferences'],
   });
 
-  // identity provider
-  const authStart = Date.now();
-  if (!s.oidc.configured) {
-    out.push({
-      id: 'authelia',
-      name: 'Authelia',
-      status: 'unknown',
-      message: 'Not configured on this gateway.',
-      latencyMs: null,
-      version: null,
-      checkedAt: now(),
-      impacts: ['Sign-in'],
-    });
-  } else {
-    try {
-      await s.oidc.discover(true);
-      out.push({
-        id: 'authelia',
-        name: 'Authelia',
-        status: 'healthy',
-        message: null,
-        latencyMs: Date.now() - authStart,
+  // Independent network probes run concurrently. A slow DNS server must not
+  // delay the camera/identity result, and vice versa.
+  const [authHealth, orionisHealth, adguardHealth] = await Promise.all([
+    (async (): Promise<ServiceHealth> => {
+      const started = Date.now();
+      if (!s.oidc.configured) {
+        return {
+          id: 'authelia',
+          name: 'Authelia',
+          status: 'unknown',
+          message: 'Not configured on this gateway.',
+          latencyMs: null,
+          version: null,
+          checkedAt: now(),
+          impacts: ['Sign-in'],
+        };
+      }
+      try {
+        await s.oidc.discover(true);
+        return {
+          id: 'authelia',
+          name: 'Authelia',
+          status: 'healthy',
+          message: null,
+          latencyMs: Date.now() - started,
+          version: null,
+          checkedAt: now(),
+          impacts: [],
+        };
+      } catch (err) {
+        return {
+          id: 'authelia',
+          name: 'Authelia',
+          status: 'critical',
+          message: err instanceof AppError ? err.message : 'The identity provider is unreachable.',
+          latencyMs: Date.now() - started,
+          version: null,
+          checkedAt: now(),
+          impacts: ['New sign-ins', 'Session renewal after expiry'],
+        };
+      }
+    })(),
+    (async (): Promise<ServiceHealth[]> => {
+      try {
+        const rows = (await s.orionis.listServiceHealth()) as {
+          id: string;
+          name: string;
+          status: ServiceStatus;
+          version: string | null;
+          message: string | null;
+          checkedAt: string;
+        }[];
+        return rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          status: row.status,
+          message: row.message,
+          latencyMs: null,
+          version: row.version,
+          checkedAt: row.checkedAt,
+          impacts:
+            row.status === 'healthy' ? [] : ['Live camera view', 'Camera events', 'Recordings'],
+        }));
+      } catch (err) {
+        return [
+          {
+            id: 'orionis-api',
+            name: 'Orionis Guard API',
+            status: 'critical',
+            message: err instanceof AppError ? err.message : 'Orionis Guard is unreachable.',
+            latencyMs: null,
+            version: null,
+            checkedAt: now(),
+            impacts: ['Live camera view', 'Camera events', 'Recordings'],
+          },
+        ];
+      }
+    })(),
+    (async (): Promise<ServiceHealth> => {
+      const probe = await s.adguard.probe();
+      return {
+        id: 'adguard',
+        name: 'AdGuard Home',
+        status: !s.adguard.configured ? 'unknown' : probe.ok ? 'healthy' : 'critical',
+        message: !s.adguard.configured
+          ? 'Not configured on this gateway.'
+          : probe.ok
+            ? null
+            : `AdGuard Home did not respond (${probe.detail ?? 'unknown error'}).`,
+        latencyMs: probe.latencyMs,
         version: null,
         checkedAt: now(),
-        impacts: [],
-      });
-    } catch (err) {
-      out.push({
-        id: 'authelia',
-        name: 'Authelia',
-        status: 'critical',
-        message: err instanceof AppError ? err.message : 'The identity provider is unreachable.',
-        latencyMs: Date.now() - authStart,
-        version: null,
-        checkedAt: now(),
-        impacts: ['New sign-ins', 'Session renewal after expiry'],
-      });
-    }
-  }
-
-  // orionis
-  try {
-    const rows = (await s.orionis.listServiceHealth()) as {
-      id: string;
-      name: string;
-      status: ServiceStatus;
-      version: string | null;
-      message: string | null;
-      checkedAt: string;
-    }[];
-    for (const r of rows) {
-      out.push({
-        id: r.id,
-        name: r.name,
-        status: r.status,
-        message: r.message,
-        latencyMs: null,
-        version: r.version,
-        checkedAt: r.checkedAt,
-        impacts: r.status === 'healthy' ? [] : ['Live camera view', 'Camera events', 'Recordings'],
-      });
-    }
-  } catch (err) {
-    out.push({
-      id: 'orionis-api',
-      name: 'Orionis Guard API',
-      status: 'critical',
-      message: err instanceof AppError ? err.message : 'Orionis Guard is unreachable.',
-      latencyMs: null,
-      version: null,
-      checkedAt: now(),
-      impacts: ['Live camera view', 'Camera events', 'Recordings'],
-    });
-  }
-
-  // adguard
-  const ag = await s.adguard.probe();
-  out.push({
-    id: 'adguard',
-    name: 'AdGuard Home',
-    status: !s.adguard.configured ? 'unknown' : ag.ok ? 'healthy' : 'critical',
-    message: !s.adguard.configured
-      ? 'Not configured on this gateway.'
-      : ag.ok
-        ? null
-        : `AdGuard Home did not respond (${ag.detail ?? 'unknown error'}).`,
-    latencyMs: ag.latencyMs,
-    version: null,
-    checkedAt: now(),
-    impacts: ag.ok ? [] : ['DNS statistics', 'Query log', 'Protection controls'],
-  });
+        impacts: probe.ok ? [] : ['DNS statistics', 'Query log', 'Protection controls'],
+      };
+    })(),
+  ]);
+  out.push(authHealth, ...orionisHealth, adguardHealth);
 
   // push
   out.push({
@@ -414,11 +420,17 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
 
     const recentEvents = await section(async () => {
       const result = await orionis.listEvents({ limit: 10, offset: 0 });
-      const ackIds = new Set(
-        (
-          db.prepare('SELECT event_id FROM event_acknowledgements').all() as { event_id: string }[]
-        ).map((r) => r.event_id),
-      );
+      const eventIds = result.items.map((event) => event.id);
+      const ackIds = new Set<string>();
+      if (eventIds.length > 0) {
+        const placeholders = eventIds.map(() => '?').join(',');
+        const rows = db
+          .prepare(
+            `SELECT event_id FROM event_acknowledgements WHERE event_id IN (${placeholders})`,
+          )
+          .all(...eventIds) as { event_id: string }[];
+        for (const row of rows) ackIds.add(row.event_id);
+      }
       return {
         items: result.items.map((e) => ({ ...e, acknowledged: ackIds.has(e.id) })),
         unacknowledged: result.items.filter((e) => !ackIds.has(e.id)).length,

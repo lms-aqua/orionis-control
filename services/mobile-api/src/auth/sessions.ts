@@ -328,12 +328,30 @@ export class SessionService {
     return before;
   }
 
-  /** Housekeeping: drop expired transactions, codes and idempotency records. */
-  purgeExpired(): void {
+  /** Housekeeping: atomically drop expired short-lived state. */
+  purgeExpired(): Record<string, number> {
     const now = new Date().toISOString();
-    this.db.prepare('DELETE FROM auth_transactions WHERE expires_at < ?').run(now);
-    this.db.prepare('DELETE FROM authorization_codes WHERE expires_at < ?').run(now);
-    this.db.prepare('DELETE FROM idempotency_keys WHERE expires_at < ?').run(now);
-    this.db.prepare('DELETE FROM stream_sessions WHERE expires_at < ?').run(now);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const removed = {
+        authTransactions: Number(
+          this.db.prepare('DELETE FROM auth_transactions WHERE expires_at < ?').run(now).changes,
+        ),
+        authorizationCodes: Number(
+          this.db.prepare('DELETE FROM authorization_codes WHERE expires_at < ?').run(now).changes,
+        ),
+        idempotencyKeys: Number(
+          this.db.prepare('DELETE FROM idempotency_keys WHERE expires_at < ?').run(now).changes,
+        ),
+        streamSessions: Number(
+          this.db.prepare('DELETE FROM stream_sessions WHERE expires_at < ?').run(now).changes,
+        ),
+      };
+      this.db.exec('COMMIT');
+      return removed;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 }

@@ -84,12 +84,18 @@ export async function buildApp(services: AppServices): Promise<FastifyInstance> 
 
   // --- request/response logging (paths only; query strings are dropped) -----
   app.addHook('onResponse', async (req, reply) => {
-    req.log.info({
+    const durationMs = Math.round(reply.elapsedTime);
+    const fields = {
       req: { method: req.method, url: req.url.split('?')[0], id: req.id },
       res: { statusCode: reply.statusCode },
-      durationMs: Math.round(reply.elapsedTime),
+      durationMs,
       userId: req.principal?.userId ?? null,
-    });
+      slow: durationMs >= 1000,
+    };
+    if (reply.statusCode >= 500) req.log.error(fields, 'request completed with server error');
+    else if (reply.statusCode >= 400 || durationMs >= 1000)
+      req.log.warn(fields, 'request completed with warning');
+    else req.log.info(fields, 'request completed');
   });
 
   // --- version negotiation --------------------------------------------------

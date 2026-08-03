@@ -212,4 +212,21 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE stream_sessions ADD COLUMN upstream_id TEXT;
     `,
   },
+  {
+    id: '0007_hot_path_indexes',
+    sql: `
+      -- Housekeeping runs frequently; expiry indexes prevent full-table scans.
+      CREATE INDEX idx_sessions_expiry ON sessions(expires_at);
+      CREATE INDEX idx_auth_transactions_expiry ON auth_transactions(expires_at);
+      CREATE INDEX idx_authorization_codes_expiry ON authorization_codes(expires_at);
+      CREATE INDEX idx_idempotency_expiry ON idempotency_keys(expires_at);
+      CREATE INDEX idx_stream_expiry ON stream_sessions(expires_at);
+
+      -- Active-stream replacement and filtered audit pages are hot paths.
+      CREATE INDEX idx_stream_active_owner
+        ON stream_sessions(user_id, session_id, camera_id, revoked_at, expires_at);
+      CREATE INDEX idx_audit_action_time ON audit_events(action, occurred_at DESC);
+      CREATE INDEX idx_audit_actor_time ON audit_events(actor_id, occurred_at DESC);
+    `,
+  },
 ];

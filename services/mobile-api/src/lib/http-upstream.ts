@@ -16,26 +16,40 @@ export interface CircuitOptions {
 export class CircuitBreaker {
   private failures = 0;
   private openedAt: number | null = null;
+  private halfOpenProbeInFlight = false;
 
   constructor(private readonly opts: CircuitOptions = { failureThreshold: 5, openMs: 15_000 }) {}
 
   get isOpen(): boolean {
     if (this.openedAt === null) return false;
-    if (Date.now() - this.openedAt >= this.opts.openMs) {
-      // half-open: allow one probe
-      this.openedAt = null;
-      this.failures = this.opts.failureThreshold - 1;
-      return false;
-    }
+    return Date.now() - this.openedAt < this.opts.openMs || this.halfOpenProbeInFlight;
+  }
+
+  /**
+   * Acquires permission for a request. After the cooldown exactly one probe is
+   * admitted, preventing a recovering upstream from receiving a request herd.
+   */
+  canRequest(): boolean {
+    if (this.openedAt === null) return true;
+    if (Date.now() - this.openedAt < this.opts.openMs) return false;
+    if (this.halfOpenProbeInFlight) return false;
+    this.halfOpenProbeInFlight = true;
     return true;
   }
 
   succeed(): void {
     this.failures = 0;
     this.openedAt = null;
+    this.halfOpenProbeInFlight = false;
   }
 
   fail(): void {
+    if (this.halfOpenProbeInFlight) {
+      this.failures = this.opts.failureThreshold;
+      this.openedAt = Date.now();
+      this.halfOpenProbeInFlight = false;
+      return;
+    }
     this.failures += 1;
     if (this.failures >= this.opts.failureThreshold) this.openedAt = Date.now();
   }
@@ -82,7 +96,7 @@ export class UpstreamClient {
   }
 
   async request<T>(req: UpstreamRequest): Promise<UpstreamResult<T>> {
-    if (this.breaker.isOpen) {
+    if (!this.breaker.canRequest()) {
       throw new AppError(
         'CIRCUIT_OPEN',
         `${this.name} is failing repeatedly and requests are paused briefly. Retry shortly.`,

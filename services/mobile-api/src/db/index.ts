@@ -15,6 +15,10 @@ export function openDatabase(url: string): Db {
   }
   const db = new DatabaseSync(url);
   db.exec('PRAGMA journal_mode = WAL;');
+  // NORMAL remains crash-safe with WAL while avoiding an fsync on every small
+  // audit/session write. Keep temporary sort/index pages off disk.
+  db.exec('PRAGMA synchronous = NORMAL;');
+  db.exec('PRAGMA temp_store = MEMORY;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   return db;
