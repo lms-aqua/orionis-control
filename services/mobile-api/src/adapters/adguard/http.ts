@@ -214,9 +214,15 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
 
   async getStatus(): Promise<AdGuardStatus> {
     const [{ data: status }, filtering] = await Promise.all([
-      this.client.request<Record<string, unknown>>({ path: '/control/status' }),
+      this.client.request<Record<string, unknown>>({
+        path: '/control/status',
+        cacheTtlMs: 2_000,
+      }),
       this.client
-        .request<Record<string, unknown>>({ path: '/control/filtering/status' })
+        .request<Record<string, unknown>>({
+          path: '/control/filtering/status',
+          cacheTtlMs: 2_000,
+        })
         .catch(() => ({ data: {} as Record<string, unknown> })),
     ]);
 
@@ -244,7 +250,10 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
   }
 
   async getStats(range: TimeRange): Promise<AdGuardStats> {
-    const { data } = await this.client.request<Record<string, unknown>>({ path: '/control/stats' });
+    const { data } = await this.client.request<Record<string, unknown>>({
+      path: '/control/stats',
+      cacheTtlMs: 5_000,
+    });
 
     const total = Number(data.num_dns_queries ?? 0);
     const blocked = Number(data.num_blocked_filtering ?? 0);
@@ -365,6 +374,7 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
   async listClients(): Promise<DnsClient[]> {
     const { data } = await this.client.request<Record<string, unknown>>({
       path: '/control/clients',
+      cacheTtlMs: 3_000,
     });
     const configured = Array.isArray(data.clients)
       ? (data.clients as Record<string, unknown>[])
@@ -408,6 +418,7 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
   async listFilters(): Promise<FilterList[]> {
     const { data } = await this.client.request<Record<string, unknown>>({
       path: '/control/filtering/status',
+      cacheTtlMs: 3_000,
     });
     const map = (raw: unknown, whitelist: boolean): FilterList[] =>
       Array.isArray(raw)
@@ -458,7 +469,7 @@ export class HttpAdGuardAdapter implements AdGuardAdapter {
       await this.client.request({ method: 'POST', path: '/control/protection', body });
     } catch (err) {
       // Older AdGuard builds have no /control/protection; fall back.
-      if (err instanceof AppError && (err.code === 'NOT_FOUND' || err.code === 'UPSTREAM_ERROR')) {
+      if (err instanceof AppError && err.code === 'NOT_FOUND') {
         await this.client.request({
           method: 'POST',
           path: '/control/dns_config',

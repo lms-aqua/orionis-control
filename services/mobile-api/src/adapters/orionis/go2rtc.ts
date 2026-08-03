@@ -95,6 +95,9 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   private async streams(): Promise<Record<string, Go2rtcStream>> {
     const { data } = await this.client.request<Record<string, Go2rtcStream>>({
       path: '/api/streams',
+      // Camera topology is polled by several dashboard sections at once. A
+      // sub-second cache removes duplicate JSON work without hiding a dropout.
+      cacheTtlMs: 750,
     });
     const all = data ?? {};
     // Hide internal transcode twins: "<id>_aac" feeds the recorder/HLS with AAC,
@@ -196,6 +199,9 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       query: { src: cameraId },
       binary: true,
       headers: { accept: 'image/jpeg' },
+      // The app and widgets can ask for the same frame simultaneously.
+      cacheTtlMs: 500,
+      maxResponseBytes: 8 * 1024 * 1024,
     });
     if (!data || data.length === 0) {
       throw new AppError('CAMERA_OFFLINE', 'The camera did not return a snapshot.');

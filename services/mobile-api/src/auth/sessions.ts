@@ -49,6 +49,11 @@ export interface IssuedTokens {
   sessionId: string;
 }
 
+export interface AuthContext {
+  session: SessionRecord;
+  user: UserRecord | null;
+}
+
 export interface AccessClaims extends JWTPayload {
   sid: string;
   role: Role;
@@ -57,13 +62,17 @@ export interface AccessClaims extends JWTPayload {
 }
 
 export class SessionService {
+  private readonly signingKey: Uint8Array;
+
   constructor(
     private readonly db: Db,
     private readonly config: Config,
-  ) {}
+  ) {
+    this.signingKey = new TextEncoder().encode(config.sessionSigningKey);
+  }
 
   private key(): Uint8Array {
-    return new TextEncoder().encode(this.config.sessionSigningKey);
+    return this.signingKey;
   }
 
   // --- users ---------------------------------------------------------------
@@ -275,6 +284,48 @@ export class SessionService {
       lastUsedAt: String(row.last_used_at),
       expiresAt: String(row.expires_at),
       revokedAt: (row.revoked_at as string) ?? null,
+    };
+  }
+
+  /** One indexed lookup for the two records required by every authenticated request. */
+  getAuthContext(sessionId: string): AuthContext | null {
+    const row = this.db
+      .prepare(
+        `SELECT
+           s.id AS s_id, s.user_id AS s_user_id, s.device_id AS s_device_id,
+           s.device_name AS s_device_name, s.created_at AS s_created_at,
+           s.last_used_at AS s_last_used_at, s.expires_at AS s_expires_at,
+           s.revoked_at AS s_revoked_at,
+           u.id AS u_id, u.username AS u_username, u.display_name AS u_display_name,
+           u.email AS u_email, u.role AS u_role, u.groups_json AS u_groups_json
+         FROM sessions s
+         LEFT JOIN users u ON u.id = s.user_id
+         WHERE s.id = ?`,
+      )
+      .get(sessionId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+
+    const session: SessionRecord = {
+      id: String(row.s_id),
+      userId: String(row.s_user_id),
+      deviceId: String(row.s_device_id),
+      deviceName: (row.s_device_name as string) ?? null,
+      createdAt: String(row.s_created_at),
+      lastUsedAt: String(row.s_last_used_at),
+      expiresAt: String(row.s_expires_at),
+      revokedAt: (row.s_revoked_at as string) ?? null,
+    };
+    if (!row.u_id) return { session, user: null };
+    return {
+      session,
+      user: {
+        id: String(row.u_id),
+        username: String(row.u_username),
+        displayName: (row.u_display_name as string) ?? null,
+        email: (row.u_email as string) ?? null,
+        role: row.u_role as Role,
+        groups: JSON.parse(String(row.u_groups_json ?? '[]')) as string[],
+      },
     };
   }
 

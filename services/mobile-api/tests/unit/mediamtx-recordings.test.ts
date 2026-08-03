@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   MediaMtxRecordings,
   decodeRecordingId,
@@ -249,5 +249,45 @@ describe('MediaMtxRecordings.get', () => {
     const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
     expect(JSON.stringify(page)).not.toContain('hls.invalid');
     expect(JSON.stringify(page)).not.toContain('9996');
+  });
+});
+
+describe('MediaMtxRecordings.storage caching', () => {
+  it('reuses a complete storage snapshot instead of rescanning every refresh', async () => {
+    const fetchImpl = vi.fn(playback({ '56': [], '57': [] }));
+    const store = new MediaMtxRecordings('http://hls.invalid:9996', 2000, 7, fetchImpl);
+
+    const first = await store.storage(CAMERAS);
+    const second = await store.storage([...CAMERAS].reverse());
+
+    expect(second).toBe(first);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces concurrent storage scans into one upstream probe per camera', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return Response.json([]);
+    });
+    const store = new MediaMtxRecordings(
+      'http://hls.invalid:9996',
+      2000,
+      7,
+      fetchImpl as typeof fetch,
+    );
+
+    const first = store.storage(CAMERAS);
+    const second = store.storage(CAMERAS);
+    await Promise.resolve();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    release();
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(b).toBe(a);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,10 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PREFERENCES,
+  mapInBatches,
   shouldDeliver,
   type NotificationPreferences,
   type PushMessage,
 } from '../../src/notifications/push.ts';
+
+describe('bounded notification fan-out', () => {
+  it('starts at most four deliveries and preserves result order', async () => {
+    const releases: Array<() => void> = [];
+    const started: number[] = [];
+    const operation = async (value: number): Promise<number> => {
+      started.push(value);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return value * 10;
+    };
+
+    const pending = mapInBatches([1, 2, 3, 4, 5], 4, operation);
+    await Promise.resolve();
+    expect(started).toEqual([1, 2, 3, 4]);
+
+    releases.splice(0).forEach((release) => release());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(started).toEqual([1, 2, 3, 4, 5]);
+    releases.splice(0).forEach((release) => release());
+    await expect(pending).resolves.toEqual([10, 20, 30, 40, 50]);
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid concurrency %s', async (concurrency) => {
+    await expect(mapInBatches([1], concurrency, async (value) => value)).rejects.toThrow(
+      RangeError,
+    );
+  });
+});
 
 const message = (overrides: Partial<PushMessage> = {}): PushMessage => ({
   kind: 'event.person',

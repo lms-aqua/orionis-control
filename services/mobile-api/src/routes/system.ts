@@ -72,8 +72,7 @@ const ActionBody = z.object({
   reason: z.string().max(280).optional(),
 });
 
-/** Probes everything configured; never throws, always returns a row per service. */
-export async function collectHealth(req: {
+interface HealthRequest {
   services: {
     config: {
       orionis: { configured: boolean };
@@ -90,7 +89,19 @@ export async function collectHealth(req: {
     db: { prepare: (sql: string) => { get: () => unknown } };
     startedAt: Date;
   };
-}): Promise<ServiceHealth[]> {
+}
+
+interface HealthCacheEntry {
+  value: ServiceHealth[] | null;
+  expiresAt: number;
+  inFlight: Promise<ServiceHealth[]> | null;
+}
+
+const HEALTH_CACHE_TTL_MS = 5_000;
+const healthCache = new WeakMap<object, HealthCacheEntry>();
+
+/** Probes everything configured; never throws, always returns a row per service. */
+async function collectHealthUncached(req: HealthRequest): Promise<ServiceHealth[]> {
   const now = () => new Date().toISOString();
   const out: ServiceHealth[] = [];
   const s = req.services;
@@ -239,6 +250,36 @@ export async function collectHealth(req: {
   return out;
 }
 
+/**
+ * Shares a short health snapshot across dashboard/system callers and coalesces
+ * concurrent probes. Manual rechecks bypass retained values, not active work.
+ */
+export async function collectHealth(req: HealthRequest, force = false): Promise<ServiceHealth[]> {
+  const key = req.services as object;
+  const current = healthCache.get(key);
+  if (current?.inFlight) return current.inFlight;
+  if (!force && current?.value && current.expiresAt > Date.now()) return current.value;
+
+  const inFlight = collectHealthUncached(req);
+  healthCache.set(key, {
+    value: current?.value ?? null,
+    expiresAt: current?.expiresAt ?? 0,
+    inFlight,
+  });
+  try {
+    const value = await inFlight;
+    healthCache.set(key, {
+      value,
+      expiresAt: Date.now() + HEALTH_CACHE_TTL_MS,
+      inFlight: null,
+    });
+    return value;
+  } catch (error) {
+    healthCache.delete(key);
+    throw error;
+  }
+}
+
 export async function registerSystemRoutes(app: FastifyInstance): Promise<void> {
   // --- GET /system/services -------------------------------------------------
   app.get('/system/services', { preHandler: requirePermission('system.view') }, async (req) => {
@@ -314,7 +355,7 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
 
         switch (body.actionId) {
           case 'health.recheck': {
-            const services = await collectHealth(req as never);
+            const services = await collectHealth(req as never, true);
             const unhealthy = services.filter(
               (s) => s.status !== 'healthy' && s.status !== 'unknown',
             );

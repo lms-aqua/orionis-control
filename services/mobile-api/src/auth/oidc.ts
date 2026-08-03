@@ -38,6 +38,7 @@ const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 
 export class OidcClient {
   private discovery: { doc: DiscoveryDocument; fetchedAt: number } | null = null;
+  private discoveryInFlight: Promise<DiscoveryDocument> | null = null;
   private jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 
   constructor(
@@ -57,60 +58,69 @@ export class OidcClient {
     this.assertConfigured();
     const fresh = this.discovery && Date.now() - this.discovery.fetchedAt < DISCOVERY_TTL_MS;
     if (fresh && !force) return this.discovery!.doc;
+    if (this.discoveryInFlight) return this.discoveryInFlight;
 
-    const url = `${this.cfg.issuerUrl}/.well-known/openid-configuration`;
-    let res: Response;
+    const load = (async (): Promise<DiscoveryDocument> => {
+      const url = `${this.cfg.issuerUrl}/.well-known/openid-configuration`;
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        });
+      } catch (err) {
+        if (this.discovery) return this.discovery.doc; // serve stale rather than fail
+        throw new AppError('UPSTREAM_UNAVAILABLE', 'The identity provider could not be reached.', {
+          endpoint: redactUrl(url),
+          cause: (err as Error).name,
+        });
+      }
+
+      if (!res.ok) {
+        if (this.discovery) return this.discovery.doc;
+        throw new AppError(
+          'UPSTREAM_ERROR',
+          `The identity provider returned ${res.status} for its discovery document.`,
+        );
+      }
+
+      const doc = (await res.json()) as DiscoveryDocument;
+      if (!doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) {
+        throw new AppError(
+          'UPSTREAM_ERROR',
+          'The identity provider discovery document is missing required endpoints.',
+        );
+      }
+      if (doc.issuer && doc.issuer.replace(/\/+$/, '') !== this.cfg.issuerUrl) {
+        throw new AppError(
+          'UPSTREAM_ERROR',
+          'The identity provider issuer does not match the configured issuer URL.',
+        );
+      }
+      if (
+        doc.code_challenge_methods_supported &&
+        !doc.code_challenge_methods_supported.includes('S256')
+      ) {
+        throw new AppError(
+          'UPSTREAM_ERROR',
+          'The identity provider does not advertise PKCE S256 support, which this gateway requires.',
+        );
+      }
+
+      this.discovery = { doc, fetchedAt: Date.now() };
+      // The key set must go through the same injected fetch as everything else,
+      // otherwise it silently bypasses timeouts, proxies and test doubles.
+      this.jwks = createRemoteJWKSet(new URL(doc.jwks_uri), {
+        [customFetch]: this.fetchImpl,
+      });
+      return doc;
+    })();
+    this.discoveryInFlight = load;
     try {
-      res = await this.fetchImpl(url, {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(8000),
-      });
-    } catch (err) {
-      if (this.discovery) return this.discovery.doc; // serve stale rather than fail
-      throw new AppError('UPSTREAM_UNAVAILABLE', 'The identity provider could not be reached.', {
-        endpoint: redactUrl(url),
-        cause: (err as Error).name,
-      });
+      return await load;
+    } finally {
+      if (this.discoveryInFlight === load) this.discoveryInFlight = null;
     }
-
-    if (!res.ok) {
-      if (this.discovery) return this.discovery.doc;
-      throw new AppError(
-        'UPSTREAM_ERROR',
-        `The identity provider returned ${res.status} for its discovery document.`,
-      );
-    }
-
-    const doc = (await res.json()) as DiscoveryDocument;
-    if (!doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) {
-      throw new AppError(
-        'UPSTREAM_ERROR',
-        'The identity provider discovery document is missing required endpoints.',
-      );
-    }
-    if (doc.issuer && doc.issuer.replace(/\/+$/, '') !== this.cfg.issuerUrl) {
-      throw new AppError(
-        'UPSTREAM_ERROR',
-        'The identity provider issuer does not match the configured issuer URL.',
-      );
-    }
-    if (
-      doc.code_challenge_methods_supported &&
-      !doc.code_challenge_methods_supported.includes('S256')
-    ) {
-      throw new AppError(
-        'UPSTREAM_ERROR',
-        'The identity provider does not advertise PKCE S256 support, which this gateway requires.',
-      );
-    }
-
-    this.discovery = { doc, fetchedAt: Date.now() };
-    // The key set must go through the same injected fetch as everything else,
-    // otherwise it silently bypasses timeouts, proxies and test doubles.
-    this.jwks = createRemoteJWKSet(new URL(doc.jwks_uri), {
-      [customFetch]: this.fetchImpl,
-    });
-    return doc;
   }
 
   /** Builds the Authelia authorization URL for the gateway's own PKCE leg. */

@@ -274,7 +274,10 @@ export class HttpOrionisAdapter implements OrionisAdapter {
   }
 
   async listCameras(): Promise<Camera[]> {
-    const { data } = await this.client.request<unknown>({ path: '/api/v1/cameras' });
+    const { data } = await this.client.request<unknown>({
+      path: '/api/v1/cameras',
+      cacheTtlMs: 750,
+    });
     const parsed = parseOrThrow(ListSchema(CameraSchema), data, 'camera list');
     return parsed.items.map((c) => this.toCamera(c));
   }
@@ -282,6 +285,7 @@ export class HttpOrionisAdapter implements OrionisAdapter {
   async getCamera(cameraId: string): Promise<Camera> {
     const { data } = await this.client.request<unknown>({
       path: `/api/v1/cameras/${encodeURIComponent(cameraId)}`,
+      cacheTtlMs: 750,
     });
     return this.toCamera(parseOrThrow(CameraSchema, data, 'camera'));
   }
@@ -293,6 +297,8 @@ export class HttpOrionisAdapter implements OrionisAdapter {
       path: `/api/v1/cameras/${encodeURIComponent(cameraId)}/snapshot`,
       binary: true,
       headers: { accept: 'image/jpeg' },
+      cacheTtlMs: 500,
+      maxResponseBytes: 8 * 1024 * 1024,
     });
     if (!data || data.length === 0) {
       throw new AppError('CAMERA_OFFLINE', 'The camera did not return a snapshot.');
@@ -423,7 +429,10 @@ export class HttpOrionisAdapter implements OrionisAdapter {
   }
 
   async getStorageStatus(): Promise<StorageStatus> {
-    const { data } = await this.client.request<unknown>({ path: '/api/v1/storage' });
+    const { data } = await this.client.request<unknown>({
+      path: '/api/v1/storage',
+      cacheTtlMs: 30_000,
+    });
     const parsed = parseOrThrow(
       z.object({
         total_bytes: z.number().nullable().default(null),
@@ -446,7 +455,10 @@ export class HttpOrionisAdapter implements OrionisAdapter {
   }
 
   async listServiceHealth(): Promise<OrionisServiceHealth[]> {
-    const { data } = await this.client.request<unknown>({ path: '/api/v1/health/services' });
+    const { data } = await this.client.request<unknown>({
+      path: '/api/v1/health/services',
+      cacheTtlMs: 5_000,
+    });
     const parsed = parseOrThrow(
       z.object({
         items: z.array(

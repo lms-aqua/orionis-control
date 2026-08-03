@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { validateRule } from '../../src/adapters/adguard/http.ts';
+import { describe, expect, it, vi } from 'vitest';
+import { HttpAdGuardAdapter, validateRule } from '../../src/adapters/adguard/http.ts';
 
 describe('custom filtering rule validation', () => {
   it('accepts adblock-style block rules', () => {
@@ -54,5 +54,58 @@ describe('custom filtering rule validation', () => {
   it('trims surrounding whitespace when normalising', () => {
     const result = validateRule('   ||ads.example.com^   ');
     expect(result).toEqual({ ok: true, normalised: '||ads.example.com^' });
+  });
+});
+
+describe('AdGuard protection mutation isolation', () => {
+  it('does not retry a protection mutation through another endpoint after a generic 5xx', async () => {
+    const fetchImpl = vi.fn(
+      async (_input: string | URL | Request) => new Response('failed', { status: 500 }),
+    );
+    const adapter = new HttpAdGuardAdapter(
+      'http://adguard.invalid',
+      'user',
+      'password',
+      1_000,
+      fetchImpl,
+    );
+    await expect(
+      adapter.setProtection({ enabled: true, durationSeconds: null, reason: null }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/control/protection');
+  });
+
+  it('uses the legacy DNS-config endpoint only after a proven 404', async () => {
+    const paths: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === 'string' ? input : input instanceof URL ? input : input.url,
+      );
+      paths.push(url.pathname);
+      if (url.pathname === '/control/protection') return new Response('missing', { status: 404 });
+      if (url.pathname === '/control/dns_config') return Response.json({});
+      if (url.pathname === '/control/status') {
+        return Response.json({ protection_enabled: true, running: true });
+      }
+      if (url.pathname === '/control/filtering/status') return Response.json({ enabled: true });
+      return new Response('unexpected', { status: 500 });
+    });
+    const adapter = new HttpAdGuardAdapter(
+      'http://adguard.invalid',
+      'user',
+      'password',
+      1_000,
+      fetchImpl,
+    );
+    await expect(
+      adapter.setProtection({ enabled: true, durationSeconds: null, reason: null }),
+    ).resolves.toMatchObject({ protectionEnabled: true });
+    expect(paths).toEqual([
+      '/control/protection',
+      '/control/dns_config',
+      '/control/status',
+      '/control/filtering/status',
+    ]);
   });
 });

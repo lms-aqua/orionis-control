@@ -157,6 +157,9 @@ const DISRUPTIVE: ReadonlySet<CameraControlRequest['action']> = new Set([
 ]);
 
 export async function registerCameraRoutes(app: FastifyInstance): Promise<void> {
+  let streamSigningKey: Uint8Array | null = null;
+  const signingKey = (secret: string): Uint8Array =>
+    (streamSigningKey ??= new TextEncoder().encode(secret));
   /**
    * go2rtc mints a short-lived HLS session id for every `stream.m3u8` request
    * and drops it a few seconds after the last poll — or immediately if the
@@ -370,30 +373,43 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
              WHERE session_id = ? AND camera_id = ? AND revoked_at IS NULL`,
         )
         .all(principal.sessionId, cameraId) as { id: string; upstream_id: string | null }[];
-      if (superseded.length > 0) {
-        db.prepare(
-          `UPDATE stream_sessions SET revoked_at = ?
-             WHERE session_id = ? AND camera_id = ? AND revoked_at IS NULL`,
-        ).run(new Date().toISOString(), principal.sessionId, cameraId);
-        for (const row of superseded) {
-          hlsSessions.delete(row.id);
-          await orionis.revokeStreamSession(row.upstream_id ?? row.id).catch(() => undefined);
+      const createdAt = new Date().toISOString();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (superseded.length > 0) {
+          db.prepare(
+            `UPDATE stream_sessions SET revoked_at = ?
+               WHERE session_id = ? AND camera_id = ? AND revoked_at IS NULL`,
+          ).run(createdAt, principal.sessionId, cameraId);
         }
+        db.prepare(
+          `INSERT INTO stream_sessions (id, upstream_id, user_id, session_id, camera_id, protocol, quality, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          localId,
+          upstream.id,
+          principal.userId,
+          principal.sessionId,
+          cameraId,
+          upstream.protocol,
+          quality,
+          createdAt,
+          expiresAt.toISOString(),
+        );
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        await orionis.revokeStreamSession(upstream.id).catch(() => undefined);
+        throw error;
       }
 
-      db.prepare(
-        `INSERT INTO stream_sessions (id, upstream_id, user_id, session_id, camera_id, protocol, quality, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        localId,
-        upstream.id,
-        principal.userId,
-        principal.sessionId,
-        cameraId,
-        upstream.protocol,
-        quality,
-        new Date().toISOString(),
-        expiresAt.toISOString(),
+      // The replacement is already durable, so old upstream teardowns can run
+      // together without creating a window where neither session is usable.
+      await Promise.allSettled(
+        superseded.map((row) => {
+          hlsSessions.delete(row.id);
+          return orionis.revokeStreamSession(row.upstream_id ?? row.id);
+        }),
       );
 
       // The token binds playback to this user, session, camera and window.
@@ -409,7 +425,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         .setSubject(principal.userId)
         .setIssuedAt()
         .setExpirationTime(Math.floor(expiryMs / 1000))
-        .sign(new TextEncoder().encode(config.sessionSigningKey));
+        .sign(signingKey(config.sessionSigningKey));
 
       audit.record({
         action: 'camera.stream.session_created',
@@ -509,11 +525,10 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
 
     let claims;
     try {
-      ({ payload: claims } = await jwtVerify(
-        token,
-        new TextEncoder().encode(config.sessionSigningKey),
-        { issuer: 'orionis-control-gateway', audience: 'orionis-control-stream' },
-      ));
+      ({ payload: claims } = await jwtVerify(token, signingKey(config.sessionSigningKey), {
+        issuer: 'orionis-control-gateway',
+        audience: 'orionis-control-stream',
+      }));
     } catch {
       throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
     }
@@ -523,8 +538,16 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream token is invalid or has expired.');
     }
 
-    const row = db.prepare('SELECT * FROM stream_sessions WHERE id = ?').get(String(claims.str)) as
-      Record<string, unknown> | undefined;
+    const row = db
+      .prepare(
+        `SELECT ss.*,
+           s.revoked_at AS owner_session_revoked_at,
+           s.expires_at AS owner_session_expires_at
+         FROM stream_sessions ss
+         JOIN sessions s ON s.id = ss.session_id
+         WHERE ss.id = ?`,
+      )
+      .get(String(claims.str)) as Record<string, unknown> | undefined;
     if (!row || row.revoked_at) {
       throw new AppError('STREAM_UNAVAILABLE', 'This stream session was revoked.');
     }
@@ -538,7 +561,10 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     if (new Date(String(row.expires_at)).getTime() <= Date.now()) {
       throw new AppError('STREAM_TOKEN_EXPIRED', 'This stream session has expired.');
     }
-    if (!r.services.sessions.isActive(String(row.session_id))) {
+    if (
+      row.owner_session_revoked_at ||
+      new Date(String(row.owner_session_expires_at)).getTime() <= Date.now()
+    ) {
       throw new AppError('SESSION_REVOKED', 'The signed-in session is no longer valid.');
     }
     return { token, row };

@@ -4,6 +4,7 @@ import { validateRoleMapping } from './auth/roles.ts';
 import { buildServices } from './services.ts';
 import { buildApp } from './app.ts';
 import { SERVER_VERSION } from './version.ts';
+import { startRuntimeWatchdog } from './lib/runtime-watchdog.ts';
 
 async function main(): Promise<void> {
   const { config, findings } = loadConfig();
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
   purgeTimer.unref();
 
   await app.listen({ port: config.port, host: config.host });
+  const runtimeWatchdog = startRuntimeWatchdog(app.log);
   app.log.info(
     {
       version: SERVER_VERSION,
@@ -60,6 +62,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'shutting down');
     clearInterval(purgeTimer);
+    runtimeWatchdog.stop();
     await app.close();
     services.db.close();
     process.exit(0);

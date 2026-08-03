@@ -19,6 +19,9 @@ export function openDatabase(url: string): Db {
   // audit/session write. Keep temporary sort/index pages off disk.
   db.exec('PRAGMA synchronous = NORMAL;');
   db.exec('PRAGMA temp_store = MEMORY;');
+  db.exec('PRAGMA cache_size = -8192;');
+  db.exec('PRAGMA mmap_size = 67108864;');
+  db.exec('PRAGMA wal_autocheckpoint = 1000;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   return db;
@@ -63,6 +66,9 @@ export function migrate(db: Db): MigrationResult {
     }
   }
 
+  // Refresh planner statistics opportunistically; SQLite decides whether work
+  // is needed, so this remains cheap on ordinary restarts.
+  db.exec('PRAGMA optimize=0x10002;');
   return { applied, alreadyApplied };
 }
 

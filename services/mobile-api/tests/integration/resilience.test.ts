@@ -772,6 +772,103 @@ describe('idempotency', () => {
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json().error.code).toBe('IDEMPOTENCY_CONFLICT');
   });
+
+  it('coalesces identical writes that arrive while the first is still running', async () => {
+    let release!: () => void;
+    let signalEntered!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const entered = new Promise<void>((resolve) => (signalEntered = resolve));
+    class SlowAdGuard extends StubAdGuardAdapter {
+      writes = 0;
+      override async setCustomRules(rules: string[]): Promise<void> {
+        this.writes += 1;
+        signalEntered();
+        await gate;
+        return super.setCustomRules(rules);
+      }
+    }
+    const adguard = new SlowAdGuard();
+    harness = await createHarness({ orionis: new StubOrionisAdapter(), adguard });
+    const tokens = await harness.signIn();
+    const request = () =>
+      harness!.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/adguard/rules`,
+        headers: {
+          ...harness!.auth(tokens.accessToken),
+          'idempotency-key': 'concurrent-identical',
+        },
+        payload: { rule: 'coalesced.invalid', kind: 'block' },
+      });
+
+    const first = request();
+    const second = request();
+    await entered;
+    release();
+    const responses = await Promise.all([first, second]);
+    expect(responses.every((response) => response.statusCode === 200)).toBe(true);
+    expect(responses.filter((response) => response.json().data.replayed)).toHaveLength(1);
+    expect(adguard.writes).toBe(1);
+  });
+
+  it('rejects a different body while an idempotent write is still running', async () => {
+    let release!: () => void;
+    let signalEntered!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const entered = new Promise<void>((resolve) => (signalEntered = resolve));
+    class SlowAdGuard extends StubAdGuardAdapter {
+      writes = 0;
+      override async setCustomRules(rules: string[]): Promise<void> {
+        this.writes += 1;
+        signalEntered();
+        await gate;
+        return super.setCustomRules(rules);
+      }
+    }
+    const adguard = new SlowAdGuard();
+    harness = await createHarness({ orionis: new StubOrionisAdapter(), adguard });
+    const tokens = await harness.signIn();
+    const headers = {
+      ...harness.auth(tokens.accessToken),
+      'idempotency-key': 'concurrent-conflict',
+    };
+    const first = harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/adguard/rules`,
+      headers,
+      payload: { rule: 'first.invalid', kind: 'block' },
+    });
+    await entered;
+    const conflict = await harness.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/adguard/rules`,
+      headers,
+      payload: { rule: 'second.invalid', kind: 'block' },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error.code).toBe('IDEMPOTENCY_CONFLICT');
+    release();
+    expect((await first).statusCode).toBe(200);
+    expect(adguard.writes).toBe(1);
+  });
+
+  it.each(['contains spaces', 'contains/slash', 'nön-ascii'])(
+    'rejects an unsafe idempotency key: %s',
+    async (key) => {
+      const adguard = new StubAdGuardAdapter();
+      harness = await createHarness({ orionis: new StubOrionisAdapter(), adguard });
+      const tokens = await harness.signIn();
+      const response = await harness.app.inject({
+        method: 'POST',
+        url: `${API_PREFIX}/adguard/rules`,
+        headers: { ...harness.auth(tokens.accessToken), 'idempotency-key': key },
+        payload: { rule: 'invalid-key.invalid', kind: 'block' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('VALIDATION_FAILED');
+      expect(adguard.rules).not.toContain('||invalid-key.invalid^');
+    },
+  );
 });
 
 describe('AdGuard query-log paging', () => {

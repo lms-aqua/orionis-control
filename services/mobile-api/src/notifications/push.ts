@@ -68,6 +68,22 @@ export interface PushMessage {
   eventId?: string;
 }
 
+/** Runs asynchronous work in fixed-size waves so one fan-out cannot flood an upstream. */
+export async function mapInBatches<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError('concurrency must be a positive integer');
+  }
+  const results: R[] = [];
+  for (let index = 0; index < values.length; index += concurrency) {
+    results.push(...(await Promise.all(values.slice(index, index + concurrency).map(operation))));
+  }
+  return results;
+}
+
 /**
  * Decides whether a message should be delivered, given preferences and time.
  * Pure — unit tested directly.
@@ -272,13 +288,14 @@ export class PushService {
     const skipped: string[] = [];
     const token = await this.providerToken();
 
-    for (const device of devices) {
+    const sendOne = async (
+      device: Record<string, unknown>,
+    ): Promise<{ delivered: boolean; skipped?: string }> => {
       const deviceId = String(device.device_id);
       const prefs = this.getPreferences(userId, deviceId);
       const decision = shouldDeliver(prefs, message, minuteOfDay);
       if (!decision.deliver) {
-        skipped.push(decision.reason);
-        continue;
+        return { delivered: false, skipped: decision.reason };
       }
 
       const host =
@@ -311,17 +328,25 @@ export class PushService {
           signal: AbortSignal.timeout(8000),
         });
         if (res.ok) {
-          delivered += 1;
-        } else if (res.status === 410) {
+          return { delivered: true };
+        }
+        if (res.status === 410) {
           // Token no longer valid — drop it.
           this.db.prepare('DELETE FROM push_devices WHERE id = ?').run(String(device.id));
-          skipped.push('token_expired');
-        } else {
-          skipped.push(`apns_${res.status}`);
+          return { delivered: false, skipped: 'token_expired' };
         }
+        return { delivered: false, skipped: `apns_${res.status}` };
       } catch {
-        skipped.push('apns_unreachable');
+        return { delivered: false, skipped: 'apns_unreachable' };
       }
+    };
+
+    // Four-wide batches bound APNs pressure while ensuring one unreachable
+    // handset cannot serially delay every other device for eight seconds.
+    const results = await mapInBatches(devices, 4, sendOne);
+    for (const result of results) {
+      if (result.delivered) delivered += 1;
+      else if (result.skipped) skipped.push(result.skipped);
     }
 
     return { attempted: devices.length, delivered, skipped, configured: true };

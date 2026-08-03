@@ -64,6 +64,11 @@ export function decodeRecordingId(id: string): RecordingRef {
 }
 
 export class MediaMtxRecordings {
+  private readonly segmentCache = new Map<string, { value: RecordingRef[]; expiresAt: number }>();
+  private readonly segmentInFlight = new Map<string, Promise<RecordingRef[]>>();
+  private storageCache: { key: string; value: StorageStatus; expiresAt: number } | null = null;
+  private storageInFlight: { key: string; promise: Promise<StorageStatus> } | null = null;
+
   constructor(
     private readonly baseUrl: string,
     private readonly timeoutMs: number,
@@ -76,6 +81,30 @@ export class MediaMtxRecordings {
   ) {}
 
   private async segments(cameraId: string): Promise<RecordingRef[]> {
+    const cached = this.segmentCache.get(cameraId);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    if (cached) this.segmentCache.delete(cameraId);
+    const active = this.segmentInFlight.get(cameraId);
+    if (active) return active;
+
+    const load = this.loadSegments(cameraId);
+    this.segmentInFlight.set(cameraId, load);
+    try {
+      const value = await load;
+      this.segmentCache.delete(cameraId);
+      this.segmentCache.set(cameraId, { value, expiresAt: Date.now() + 2_000 });
+      while (this.segmentCache.size > 128) {
+        const oldest = this.segmentCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.segmentCache.delete(oldest);
+      }
+      return value;
+    } finally {
+      if (this.segmentInFlight.get(cameraId) === load) this.segmentInFlight.delete(cameraId);
+    }
+  }
+
+  private async loadSegments(cameraId: string): Promise<RecordingRef[]> {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}/list?path=${encodeURIComponent(cameraId)}`, {
@@ -208,6 +237,30 @@ export class MediaMtxRecordings {
   }
 
   async storage(cameras: { id: string; name?: string | null }[]): Promise<StorageStatus> {
+    const key = JSON.stringify(
+      cameras
+        .map((camera) => [camera.id, camera.name ?? null])
+        .sort(([a], [b]) => a!.localeCompare(b!)),
+    );
+    if (this.storageCache?.key === key && this.storageCache.expiresAt > Date.now()) {
+      return this.storageCache.value;
+    }
+    if (this.storageInFlight?.key === key) return this.storageInFlight.promise;
+
+    const promise = this.computeStorage(cameras);
+    this.storageInFlight = { key, promise };
+    try {
+      const value = await promise;
+      this.storageCache = { key, value, expiresAt: Date.now() + 30_000 };
+      return value;
+    } finally {
+      if (this.storageInFlight?.promise === promise) this.storageInFlight = null;
+    }
+  }
+
+  private async computeStorage(
+    cameras: { id: string; name?: string | null }[],
+  ): Promise<StorageStatus> {
     // Oldest footage comes from the playback API, which is authoritative about
     // what is actually playable — a file can exist on disk that the recorder will
     // not serve.

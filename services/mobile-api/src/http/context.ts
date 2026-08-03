@@ -59,11 +59,12 @@ export async function authenticate(req: FastifyRequest): Promise<Principal> {
 
   const claims = await req.services.sessions.verifyAccessToken(token);
   const sessionId = claims.sid;
-  const session = req.services.sessions.getSession(sessionId);
+  const auth = req.services.sessions.getAuthContext(sessionId);
 
-  if (!session) {
+  if (!auth) {
     throw new AppError('SESSION_REVOKED', 'This session no longer exists. Sign in again.');
   }
+  const { session, user } = auth;
   if (session.revokedAt) {
     throw new AppError('SESSION_REVOKED', 'This session was revoked. Sign in again.');
   }
@@ -71,7 +72,6 @@ export async function authenticate(req: FastifyRequest): Promise<Principal> {
     throw new AppError('REAUTHENTICATION_REQUIRED', 'This session has expired. Sign in again.');
   }
 
-  const user = req.services.sessions.getUser(session.userId);
   if (!user) {
     req.services.sessions.revokeSession(sessionId, 'user_missing');
     throw new AppError('SESSION_REVOKED', 'The account is no longer available.');
@@ -126,6 +126,14 @@ export interface IdempotencyOutcome<T> {
   value: T;
 }
 
+interface PendingIdempotency {
+  requestHash: string;
+  promise: Promise<unknown>;
+}
+
+/** Per-database so parallel test apps and future tenants never share work. */
+const pendingIdempotency = new WeakMap<object, Map<string, PendingIdempotency>>();
+
 /**
  * Replay protection for sensitive writes.
  *
@@ -139,16 +147,26 @@ export async function withIdempotency<T>(
   requestBody: unknown,
   execute: () => Promise<T>,
 ): Promise<IdempotencyOutcome<T>> {
-  const key = req.headers['idempotency-key'];
+  const rawKey = req.headers['idempotency-key'];
   const principal = req.principal;
-  if (!key || typeof key !== 'string' || !principal) {
+  if (!rawKey || typeof rawKey !== 'string' || !principal) {
     return { replayed: false, value: await execute() };
+  }
+  const key = rawKey.trim();
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key)) {
+    throw new AppError(
+      'VALIDATION_FAILED',
+      'The idempotency key must be 1-128 URL-safe characters.',
+    );
   }
 
   const db = req.services.db;
   const requestHash = hashToken(JSON.stringify(requestBody ?? null));
   const existing = db
-    .prepare('SELECT * FROM idempotency_keys WHERE key = ? AND user_id = ? AND endpoint = ?')
+    .prepare(
+      `SELECT request_hash, response_json FROM idempotency_keys
+       WHERE key = ? AND user_id = ? AND endpoint = ?`,
+    )
     .get(key, principal.userId, endpoint) as Record<string, unknown> | undefined;
 
   if (existing) {
@@ -161,21 +179,45 @@ export async function withIdempotency<T>(
     return { replayed: true, value: JSON.parse(String(existing.response_json)) as T };
   }
 
-  const value = await execute();
-  const now = new Date();
-  db.prepare(
-    `INSERT INTO idempotency_keys (key, user_id, endpoint, request_hash, status_code, response_json, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    key,
-    principal.userId,
-    endpoint,
-    requestHash,
-    200,
-    JSON.stringify(value),
-    now.toISOString(),
-    new Date(now.getTime() + 24 * 3600 * 1000).toISOString(),
-  );
+  let pending = pendingIdempotency.get(db);
+  if (!pending) {
+    pending = new Map();
+    pendingIdempotency.set(db, pending);
+  }
+  const pendingKey = `${principal.userId}\u0000${endpoint}\u0000${key}`;
+  const active = pending.get(pendingKey);
+  if (active) {
+    if (active.requestHash !== requestHash) {
+      throw new AppError(
+        'IDEMPOTENCY_CONFLICT',
+        'This idempotency key is already running with a different request body.',
+      );
+    }
+    return { replayed: true, value: (await active.promise) as T };
+  }
 
-  return { replayed: false, value };
+  const run = (async (): Promise<T> => {
+    const value = await execute();
+    const now = new Date();
+    db.prepare(
+      `INSERT INTO idempotency_keys (key, user_id, endpoint, request_hash, status_code, response_json, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      key,
+      principal.userId,
+      endpoint,
+      requestHash,
+      200,
+      JSON.stringify(value),
+      now.toISOString(),
+      new Date(now.getTime() + 24 * 3600 * 1000).toISOString(),
+    );
+    return value;
+  })();
+  pending.set(pendingKey, { requestHash, promise: run });
+  try {
+    return { replayed: false, value: await run };
+  } finally {
+    if (pending.get(pendingKey)?.promise === run) pending.delete(pendingKey);
+  }
 }

@@ -56,4 +56,130 @@ describe('upstream resilience', () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(5);
   });
+
+  it('coalesces identical concurrent GET requests', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return Response.json({ ok: true });
+    });
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+
+    const requests = [
+      client.request({ path: '/status' }),
+      client.request({ path: '/status' }),
+      client.request({ path: '/status' }),
+    ];
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    release();
+    await expect(Promise.all(requests)).resolves.toHaveLength(3);
+  });
+
+  it('does not coalesce GET requests with different query strings', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await Promise.all([
+      client.request({ path: '/items', query: { page: 1 } }),
+      client.request({ path: '/items', query: { page: 2 } }),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a successful GET for its configured TTL', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ value: 1 }));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    const first = await client.request({ path: '/status', cacheTtlMs: 1_000 });
+    const second = await client.request({ path: '/status', cacheTtlMs: 1_000 });
+    expect(second).toEqual(first);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes a cached GET after its TTL expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(async () => Response.json({ call: fetchImpl.mock.calls.length }));
+      const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+      await client.request({ path: '/status', cacheTtlMs: 500 });
+      vi.advanceTimersByTime(501);
+      await client.request({ path: '/status', cacheTtlMs: 500 });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidates retained GETs before a write', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await client.request({ path: '/status', cacheTtlMs: 10_000 });
+    await client.request({ method: 'POST', path: '/control', body: { enabled: false } });
+    await client.request({ path: '/status', cacheTtlMs: 10_000 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects an oversized declared response before buffering it', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response('small', {
+          headers: { 'content-length': '1000' },
+        }),
+    );
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await expect(client.request({ path: '/large', maxResponseBytes: 16 })).rejects.toMatchObject({
+      code: 'UPSTREAM_ERROR',
+    });
+  });
+
+  it('rejects a chunked response that crosses the byte cap', async () => {
+    const fetchImpl = vi.fn(async () => new Response('123456789'));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await expect(client.request({ path: '/large', maxResponseBytes: 8 })).rejects.toMatchObject({
+      code: 'UPSTREAM_ERROR',
+    });
+  });
+
+  it('returns a bounded binary response intact', async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4])));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    const result = await client.request<Buffer>({
+      path: '/frame',
+      binary: true,
+      maxResponseBytes: 4,
+    });
+    expect(result.data).toEqual(Buffer.from([1, 2, 3, 4]));
+  });
+
+  it('keeps representations with different request headers separate', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await client.request({ path: '/item', headers: { accept: 'application/json' } });
+    await client.request({ path: '/item', headers: { accept: 'image/jpeg' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retain failed GET responses', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('bad', { status: 500 }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await expect(client.request({ path: '/status', cacheTtlMs: 10_000 })).rejects.toMatchObject({
+      code: 'UPSTREAM_ERROR',
+    });
+    await expect(client.request({ path: '/status', cacheTtlMs: 10_000 })).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('never coalesces state-changing requests', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
+    const client = new UpstreamClient('test', 'http://upstream.invalid', {}, 1_000, fetchImpl);
+    await Promise.all([
+      client.request({ method: 'POST', path: '/control', body: { value: 1 } }),
+      client.request({ method: 'POST', path: '/control', body: { value: 1 } }),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
