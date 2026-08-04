@@ -47,6 +47,39 @@ describe('OIDC discovery caching', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('does not answer a forced refresh from a load that started before it', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return Response.json(document);
+    });
+    const client = new OidcClient(config, fetchImpl);
+    // The health check forces a refresh while an ordinary load is in flight. It
+    // needs its own request: joining the older one would report a result that
+    // predates the probe as live reachability.
+    const ordinary = client.discover();
+    const forced = client.discover(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    release();
+    await expect(Promise.all([ordinary, forced])).resolves.toEqual([document, document]);
+  });
+
+  it('coalesces concurrent forced refreshes with each other', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return Response.json(document);
+    });
+    const client = new OidcClient(config, fetchImpl);
+    const first = client.discover(true);
+    const second = client.discover(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([document, document]);
+  });
+
   it('does not force a network request while the cached document is fresh', async () => {
     const fetchImpl = vi.fn(async () => Response.json(document));
     const client = new OidcClient(config, fetchImpl);

@@ -38,7 +38,7 @@ const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 
 export class OidcClient {
   private discovery: { doc: DiscoveryDocument; fetchedAt: number } | null = null;
-  private discoveryInFlight: Promise<DiscoveryDocument> | null = null;
+  private discoveryInFlight: { forced: boolean; promise: Promise<DiscoveryDocument> } | null = null;
   private jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 
   constructor(
@@ -58,7 +58,13 @@ export class OidcClient {
     this.assertConfigured();
     const fresh = this.discovery && Date.now() - this.discovery.fetchedAt < DISCOVERY_TTL_MS;
     if (fresh && !force) return this.discovery!.doc;
-    if (this.discoveryInFlight) return this.discoveryInFlight;
+    // An ordinary caller is happy with whatever load is already running. A forced
+    // caller is the health check asking whether the identity provider is reachable
+    // right now, so it may only join another forced load — joining a load that
+    // started before it would report a stale result as a live probe.
+    if (this.discoveryInFlight && (!force || this.discoveryInFlight.forced)) {
+      return this.discoveryInFlight.promise;
+    }
 
     const load = (async (): Promise<DiscoveryDocument> => {
       const url = `${this.cfg.issuerUrl}/.well-known/openid-configuration`;
@@ -115,11 +121,11 @@ export class OidcClient {
       });
       return doc;
     })();
-    this.discoveryInFlight = load;
+    this.discoveryInFlight = { forced: force, promise: load };
     try {
       return await load;
     } finally {
-      if (this.discoveryInFlight === load) this.discoveryInFlight = null;
+      if (this.discoveryInFlight?.promise === load) this.discoveryInFlight = null;
     }
   }
 

@@ -11,18 +11,43 @@ import { redactUrl } from './redact.ts';
 export interface CircuitOptions {
   failureThreshold: number;
   openMs: number;
+  /**
+   * How long a half-open probe reservation is honoured before it is treated as
+   * abandoned. Must exceed the upstream request timeout, or a slow-but-working
+   * upstream loses probes it would have passed.
+   */
+  probeTimeoutMs?: number;
 }
+
+const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 
 export class CircuitBreaker {
   private failures = 0;
   private openedAt: number | null = null;
-  private halfOpenProbeInFlight = false;
+  /** When the outstanding half-open probe was admitted, or null if there is none. */
+  private halfOpenSince: number | null = null;
 
   constructor(private readonly opts: CircuitOptions = { failureThreshold: 5, openMs: 15_000 }) {}
 
+  /**
+   * Whether a probe reservation is still outstanding, expiring it if it is older
+   * than the bound. A probe that never reports back must not hold the circuit
+   * open forever: every caller is then rejected until the process restarts, even
+   * though the upstream may be healthy.
+   */
+  private probePending(now: number): boolean {
+    if (this.halfOpenSince === null) return false;
+    if (now - this.halfOpenSince < (this.opts.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS)) {
+      return true;
+    }
+    this.halfOpenSince = null;
+    return false;
+  }
+
   get isOpen(): boolean {
     if (this.openedAt === null) return false;
-    return Date.now() - this.openedAt < this.opts.openMs || this.halfOpenProbeInFlight;
+    const now = Date.now();
+    return now - this.openedAt < this.opts.openMs || this.probePending(now);
   }
 
   /**
@@ -31,23 +56,24 @@ export class CircuitBreaker {
    */
   canRequest(): boolean {
     if (this.openedAt === null) return true;
-    if (Date.now() - this.openedAt < this.opts.openMs) return false;
-    if (this.halfOpenProbeInFlight) return false;
-    this.halfOpenProbeInFlight = true;
+    const now = Date.now();
+    if (now - this.openedAt < this.opts.openMs) return false;
+    if (this.probePending(now)) return false;
+    this.halfOpenSince = now;
     return true;
   }
 
   succeed(): void {
     this.failures = 0;
     this.openedAt = null;
-    this.halfOpenProbeInFlight = false;
+    this.halfOpenSince = null;
   }
 
   fail(): void {
-    if (this.halfOpenProbeInFlight) {
+    if (this.probePending(Date.now())) {
       this.failures = this.opts.failureThreshold;
       this.openedAt = Date.now();
-      this.halfOpenProbeInFlight = false;
+      this.halfOpenSince = null;
       return;
     }
     this.failures += 1;

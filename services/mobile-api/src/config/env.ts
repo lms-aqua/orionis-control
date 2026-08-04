@@ -157,6 +157,16 @@ const RawSchema = z.object({
 
 export type RawEnv = z.infer<typeof RawSchema>;
 
+/**
+ * Every setting this gateway reads. Exported so a test can prove `.env.example`
+ * documents all of them: a setting that exists in code but not in the example is
+ * invisible to whoever writes the deployment's env, and an operator cannot set a
+ * key they have never seen.
+ */
+export const CONFIG_KEYS: readonly (keyof RawEnv)[] = Object.keys(
+  RawSchema.shape,
+) as (keyof RawEnv)[];
+
 export interface RoleMapping {
   viewer: string[];
   operator: string[];
@@ -382,6 +392,20 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       key: 'ORIONIS_INTERNAL_URL',
       message:
         'Orionis Guard upstream not configured. Camera, event, recording and stream routes return SERVICE_NOT_CONFIGURED (no placeholder data is served).',
+    });
+  }
+
+  // An empty recorder URL is a legitimate deployment (cameras without playback),
+  // so it cannot be an error. But "no recorder configured" and "the recorder has
+  // no footage" both surface in the app as an empty timeline, which is
+  // indistinguishable from a broken recorder. Name it at startup so a dropped
+  // variable is not mistaken for missing footage.
+  if (orionisConfigured && !e.ORIONIS_RECORDINGS_BASE_URL) {
+    findings.push({
+      level: 'warn',
+      key: 'ORIONIS_RECORDINGS_BASE_URL',
+      message:
+        'MediaMTX playback server not configured, so the gateway reports an empty recording history for every camera and the app shows "Nothing was recorded on this day." Set it to the playback base URL to enable recordings, or leave it unset deliberately if this deployment has no recorder.',
     });
   }
 

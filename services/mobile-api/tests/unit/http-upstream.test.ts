@@ -36,6 +36,54 @@ describe('upstream resilience', () => {
     }
   });
 
+  it('does not stay open forever when a recovery probe never reports back', () => {
+    vi.useFakeTimers();
+    try {
+      const breaker = new CircuitBreaker({
+        failureThreshold: 1,
+        openMs: 500,
+        probeTimeoutMs: 5_000,
+      });
+      breaker.fail();
+      vi.advanceTimersByTime(501);
+      // The probe is admitted, then its caller vanishes without ever calling
+      // succeed() or fail(). Other callers are refused in the meantime.
+      expect(breaker.canRequest()).toBe(true);
+      expect(breaker.canRequest()).toBe(false);
+      expect(breaker.state).toBe('open');
+
+      // Once the reservation expires the circuit offers another probe, rather
+      // than rejecting every request until the process restarts.
+      vi.advanceTimersByTime(5_001);
+      expect(breaker.state).toBe('closed');
+      expect(breaker.canRequest()).toBe(true);
+      breaker.succeed();
+      expect(breaker.canRequest()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds a recovery probe reservation for the whole probe timeout', () => {
+    vi.useFakeTimers();
+    try {
+      const breaker = new CircuitBreaker({
+        failureThreshold: 1,
+        openMs: 500,
+        probeTimeoutMs: 5_000,
+      });
+      breaker.fail();
+      vi.advanceTimersByTime(501);
+      expect(breaker.canRequest()).toBe(true);
+
+      // A slow upstream must not have its probe stolen before the bound elapses.
+      vi.advanceTimersByTime(4_999);
+      expect(breaker.canRequest()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not send a request while the circuit is open', async () => {
     const fetchImpl = vi.fn(async () => new Response('unavailable', { status: 503 }));
     const client = new UpstreamClient(
