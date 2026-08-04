@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orionis Control — self-hosted infrastructure, in your pocket</title>
+<meta name="description" content="A native iOS app for your self-hosted cameras, DNS filtering, system health, and infrastructure — sub-second live video, a scrubbable DVR, and OIDC-secured access.">
+<style>
+  :root{
+    --bg:#0b0f17; --bg-soft:#111725; --card:#141b2b; --card-2:#0f1521;
+    --line:#212c42; --text:#e8edf7; --muted:#93a1bd; --faint:#63708c;
+    --brand:#3b6be0; --brand-2:#5b8bff; --accent:#38d39f; --warn:#f0a53a;
+    --radius:16px; --maxw:1080px;
+    --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"]{
+    --bg:#f6f8fc; --bg-soft:#eef2f9; --card:#ffffff; --card-2:#f4f7fc;
+    --line:#e2e8f2; --text:#141b2b; --muted:#556080; --faint:#8290ab;
+    --shadow:0 10px 30px rgba(20,40,90,.08);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand-2); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+  .eyebrow{color:var(--brand-2); font-weight:700; letter-spacing:.14em; text-transform:uppercase; font-size:12.5px}
+  h1,h2,h3{line-height:1.15; letter-spacing:-.02em; margin:0}
+  h2{font-size:clamp(23px,3.4vw,32px); margin:0 0 6px}
+  section{padding:72px 0; border-top:1px solid var(--line)}
+  .muted{color:var(--muted)}
+  .lead{font-size:18px; color:var(--muted); max-width:62ch}
+
+  /* header */
+  header.site{position:sticky; top:0; z-index:20; backdrop-filter:saturate(140%) blur(10px);
+    background:color-mix(in srgb, var(--bg) 82%, transparent); border-bottom:1px solid var(--line)}
+  .nav{display:flex; align-items:center; gap:14px; height:60px}
+  .brand{display:flex; align-items:center; gap:11px; font-weight:800; letter-spacing:-.01em}
+  .logo{width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+    background:linear-gradient(150deg,var(--brand),#7aa2ff); box-shadow:0 4px 14px rgba(59,107,224,.5)}
+  .logo svg{width:18px;height:18px}
+  .nav .spacer{flex:1}
+  .nav a.navlink{color:var(--muted); font-weight:600; font-size:14px; padding:6px 4px}
+  .nav a.navlink:hover{color:var(--text); text-decoration:none}
+  .toggle{cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--text);
+    border-radius:9px; padding:6px 10px; font-size:13px; font-weight:600}
+  @media(max-width:720px){ .nav a.navlink{display:none} }
+
+  /* hero */
+  .hero{padding:76px 0 40px; position:relative; overflow:hidden}
+  .hero:before{content:""; position:absolute; inset:-40% 30% auto -10%; height:520px;
+    background:radial-gradient(60% 60% at 30% 30%, rgba(59,107,224,.35), transparent 70%); filter:blur(20px); z-index:-1}
+  .hero h1{font-size:clamp(34px,6vw,58px); margin:16px 0 0}
+  .hero .lead{margin-top:16px; font-size:clamp(17px,2.4vw,21px)}
+  .cta{display:flex; gap:12px; flex-wrap:wrap; margin-top:26px}
+  .btn{display:inline-flex; align-items:center; gap:8px; padding:12px 18px; border-radius:11px; font-weight:700; font-size:15px}
+  .btn.primary{background:linear-gradient(150deg,var(--brand),#6a97ff); color:#fff; box-shadow:0 8px 22px rgba(59,107,224,.4)}
+  .btn.primary:hover{text-decoration:none; filter:brightness(1.06)}
+  .btn.ghost{border:1px solid var(--line); color:var(--text); background:var(--card)}
+  .btn.ghost:hover{text-decoration:none; border-color:var(--brand)}
+  .pill{display:inline-flex; align-items:center; gap:8px; padding:5px 12px; border:1px solid var(--line);
+    border-radius:999px; background:var(--card); font-size:13px; font-weight:600; color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 25%,transparent)}
+
+  /* stat row */
+  .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:44px}
+  .stat{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px}
+  .stat b{display:block; font-size:26px; letter-spacing:-.02em}
+  .stat span{color:var(--muted); font-size:13px}
+  @media(max-width:720px){ .stats{grid-template-columns:repeat(2,1fr)} }
+
+  /* grid cards */
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:34px}
+  @media(max-width:860px){ .grid{grid-template-columns:1fr 1fr} }
+  @media(max-width:560px){ .grid{grid-template-columns:1fr} }
+  .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px; transition:.18s}
+  .card:hover{transform:translateY(-3px); border-color:color-mix(in srgb,var(--brand) 55%,var(--line)); box-shadow:var(--shadow)}
+  .ico{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;font-size:20px;margin-bottom:12px;
+    background:color-mix(in srgb,var(--brand) 16%,transparent); border:1px solid color-mix(in srgb,var(--brand) 30%,transparent)}
+  .card h3{font-size:17px; margin-bottom:6px}
+  .card p{margin:0; color:var(--muted); font-size:14.5px}
+
+  /* pipeline */
+  .flow{display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; margin-top:30px}
+  .node{flex:1 1 150px; background:var(--card); border:1px solid var(--line); border-radius:13px; padding:14px 16px; position:relative}
+  .node .k{font-size:12px; color:var(--brand-2); font-weight:800; letter-spacing:.06em; text-transform:uppercase}
+  .node .v{font-weight:700; margin-top:3px}
+  .node .d{color:var(--muted); font-size:13px; margin-top:2px}
+  .arrow{align-self:center; color:var(--faint); font-size:20px; padding:0 2px}
+  @media(max-width:720px){ .arrow{transform:rotate(90deg)} .node{flex-basis:100%} }
+
+  /* timeline */
+  .tl{margin-top:30px; border-left:2px solid var(--line); padding-left:22px; display:grid; gap:20px}
+  .tl .row{position:relative}
+  .tl .row:before{content:""; position:absolute; left:-29px; top:5px; width:12px;height:12px;border-radius:50%;
+    background:var(--bg); border:2px solid var(--brand)}
+  .tl .row.new:before{background:var(--accent); border-color:var(--accent); box-shadow:0 0 0 5px color-mix(in srgb,var(--accent) 22%,transparent)}
+  .ver{display:inline-flex; gap:8px; align-items:baseline}
+  .ver b{font-size:16px}
+  .ver .tag{font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--brand-2)}
+  .tl .row p{margin:4px 0 0; color:var(--muted); font-size:14.5px}
+
+  /* roadmap */
+  .road{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:30px}
+  @media(max-width:820px){ .road{grid-template-columns:1fr} }
+  .lane{background:var(--card-2); border:1px solid var(--line); border-radius:var(--radius); padding:20px}
+  .lane h3{font-size:15px; display:flex; align-items:center; gap:9px; margin-bottom:14px}
+  .lane h3 .lb{font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; padding:3px 9px; border-radius:999px}
+  .lb.now{background:color-mix(in srgb,var(--accent) 18%,transparent); color:var(--accent)}
+  .lb.next{background:color-mix(in srgb,var(--brand) 18%,transparent); color:var(--brand-2)}
+  .lb.later{background:color-mix(in srgb,var(--warn) 16%,transparent); color:var(--warn)}
+  .item{display:flex; gap:11px; padding:11px 0; border-top:1px dashed var(--line)}
+  .item:first-of-type{border-top:0}
+  .item .m{flex-shrink:0; margin-top:1px}
+  .item b{font-weight:700; font-size:14.5px}
+  .item p{margin:2px 0 0; color:var(--muted); font-size:13.5px}
+
+  /* stack */
+  .badges{display:flex; flex-wrap:wrap; gap:9px; margin-top:26px}
+  .badge{border:1px solid var(--line); background:var(--card); border-radius:9px; padding:8px 13px; font-size:13.5px; font-weight:600; color:var(--muted)}
+  .badge b{color:var(--text)}
+
+  footer{padding:44px 0 60px; color:var(--faint); font-size:13.5px; border-top:1px solid var(--line)}
+  .note{margin-top:14px; padding:14px 16px; border:1px dashed var(--line); border-radius:12px; color:var(--muted); font-size:13.5px; background:var(--card-2)}
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap nav">
+    <span class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l7.2 3.2v5.4c0 4.6-3 8.7-7.2 10.2C7.8 19.9 4.8 15.8 4.8 11.2V5.8L12 2.6z" fill="#fff" opacity=".95"/><path d="M9.4 12.2l1.9 1.9 3.6-3.9" stroke="#3b6be0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      Orionis&nbsp;Control
+    </span>
+    <span class="spacer"></span>
+    <a class="navlink" href="#features">Features</a>
+    <a class="navlink" href="#architecture">Architecture</a>
+    <a class="navlink" href="#whatsnew">What's new</a>
+    <a class="navlink" href="#roadmap">Roadmap</a>
+    <button class="toggle" id="themeBtn" aria-label="Toggle theme">◐ Theme</button>
+  </div>
+</header>
+
+<div class="wrap hero">
+  <span class="pill"><span class="dot"></span> Actively developed · v0.2.5</span>
+  <h1>Your self-hosted world,<br>in one native app.</h1>
+  <p class="lead">Orionis Control is a privacy-first iOS app for the infrastructure you run yourself — live cameras, a DVR you can scrub, DNS filtering, system health, and edge configuration — reached over your own identity provider. No third-party cloud in the middle.</p>
+  <div class="cta">
+    <a class="btn primary" href="#features">Explore the features →</a>
+    <a class="btn ghost" href="#roadmap">See the roadmap</a>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b>~0.5s</b><span>Glass-to-glass live video over WebRTC</span></div>
+    <div class="stat"><b>7 days</b><span>Continuous DVR, scrub to any moment</span></div>
+    <div class="stat"><b>OIDC + PKCE</b><span>Your identity provider, your rules</span></div>
+    <div class="stat"><b>0 clouds</b><span>Media never leaves your infrastructure</span></div>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <span class="eyebrow">What it does</span>
+    <h2>One app, the whole stack</h2>
+    <p class="lead">Every surface is built around the same idea: your data stays on your hardware, and the app is just a secure, fast window into it.</p>
+    <div class="grid">
+      <div class="card"><div class="ico">🎥</div><h3>Sub-second live view</h3><p>Native WebRTC with a per-session relay for low latency, plus automatic HLS fallback so there is always a picture — even on a rough cellular link.</p></div>
+      <div class="card"><div class="ico">⏪</div><h3>Scrubbable DVR</h3><p>A real timeline: drag through a week of continuous recording, see exactly where footage exists, and jump to any instant — with audio.</p></div>
+      <div class="card"><div class="ico">🔊</div><h3>Camera audio</h3><p>Live and recorded audio, transcoded on the fly so it plays everywhere — WebRTC, HLS, and saved clips alike.</p></div>
+      <div class="card"><div class="ico">🛡️</div><h3>DNS filtering</h3><p>AdGuard at your fingertips: a trustworthy query log, allow/block rules, client management, and one-tap protection pauses.</p></div>
+      <div class="card"><div class="ico">📊</div><h3>System health</h3><p>A live dashboard of your services and hosts, so you know the state of the whole box from the home screen.</p></div>
+      <div class="card"><div class="ico">⚙️</div><h3>Edge configuration</h3><p>Manage your reverse proxy and identity provider safely from the app, behind guard rails and an audit trail.</p></div>
+      <div class="card"><div class="ico">💾</div><h3>Storage &amp; retention</h3><p>See what recordings actually cost against a quota — not the whole disk — and tune retention without new privileges.</p></div>
+      <div class="card"><div class="ico">⭐</div><h3>Favourites &amp; order</h3><p>Pin the cameras you care about and arrange them your way, synced across the app.</p></div>
+      <div class="card"><div class="ico">🔐</div><h3>Least-privilege access</h3><p>Role-based permissions enforced server-side, biometric confirmation for sensitive actions, and short-lived, scoped playback tokens.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="wrap">
+    <span class="eyebrow">How it fits together</span>
+    <h2>A thin, secure window over your own media plane</h2>
+    <p class="lead">The app never talks to your cameras or services directly. A gateway you control mediates everything — authorizing each request, minting short-lived tokens, and keeping internal services off the public internet.</p>
+    <div class="flow">
+      <div class="node"><div class="k">Device</div><div class="v">iOS app</div><div class="d">SwiftUI · WebRTC · AVFoundation</div></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="k">Edge</div><div class="v">OIDC + PKCE</div><div class="d">Your identity provider signs you in</div></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="k">Control</div><div class="v">Gateway</div><div class="d">Authorizes · relays · tokenizes</div></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="k">Media</div><div class="v">Your stack</div><div class="d">Cameras · DVR · DNS · services</div></div>
+    </div>
+    <div class="note">🔒 <b>Privacy by design:</b> video is proxied through the gateway over per-session relay credentials, so the streaming layer is never exposed and never needs a public IP allowlist. Recorded footage is served only to the authenticated owner, with no shared caching.</div>
+  </div>
+</section>
+
+<section id="whatsnew">
+  <div class="wrap">
+    <span class="eyebrow">Recent releases</span>
+    <h2>What's new</h2>
+    <p class="lead">The last stretch has been about making the fast path <em>reliable</em> — smoother video, trustworthy data, and releases that can't ship broken.</p>
+    <div class="tl">
+      <div class="row new">
+        <div class="ver"><b>0.2.5</b><span class="tag">latest</span></div>
+        <p>Backend hot-path and upstream hardening, and CI that publishes only the intended release artifacts.</p>
+      </div>
+      <div class="row new">
+        <div class="ver"><b>0.2.4</b><span class="tag">streaming</span></div>
+        <p>Adaptive 1080p streaming — the live view scales to the connection instead of stalling on a fixed bitrate.</p>
+      </div>
+      <div class="row">
+        <div class="ver"><b>0.2.0 – 0.2.3</b><span class="tag">reliability</span></div>
+        <p>WebRTC TURN fallback prioritization, deinit-safe stream observation, clearer "gateway unreachable" states, and serialized, validated iOS releases that block on real device-test lanes.</p>
+      </div>
+      <div class="row">
+        <div class="ver"><b>0.2.1</b><span class="tag">adguard</span></div>
+        <p>Made AdGuard query activity trustworthy — precise allowed/blocked/unknown classification instead of guesswork.</p>
+      </div>
+      <div class="row">
+        <div class="ver"><b>0.1.7 – 0.1.9</b><span class="tag">foundation</span></div>
+        <p>Smoother camera playback, AdGuard usability, and broad reliability improvements across the app.</p>
+      </div>
+      <div class="row">
+        <div class="ver"><b>0.1.x</b><span class="tag">the big build-out</span></div>
+        <p>Native WebRTC player with automatic HLS fallback, camera audio (AAC transcode), the scrubbable recordings timeline, offline-camera handling, tolerant permission decoding, an infrastructure-management screen, and reliable AltStore delivery.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <span class="eyebrow">Where it's going</span>
+    <h2>Roadmap</h2>
+    <p class="lead">Near-term is polish and trust; the middle distance adds intelligence to the cameras; the horizon widens what "your stack" can mean.</p>
+    <div class="road">
+      <div class="lane">
+        <h3><span class="lb now">Now</span> Polish &amp; trust</h3>
+        <div class="item"><span class="m">🎬</span><div><b>Rock-steady live video</b><p>Kill the remaining WebRTC stutter and low-FPS dips on weak links with short-keyframe streaming and a warmed, always-ready feed.</p></div></div>
+        <div class="item"><span class="m">⚡</span><div><b>Snappier backend calls</b><p>Fail fast with tight, bounded timeouts so a slow or dead endpoint never leaves you waiting.</p></div></div>
+        <div class="item"><span class="m">📱</span><div><b>Home-screen app icon</b><p>Ship the app icon into the build so the installed app is unmistakably Orionis.</p></div></div>
+        <div class="item"><span class="m">🛡️</span><div><b>Query-log accuracy</b><p>Guarantee the AdGuard log reflects real allow/block reality, verified against the source.</p></div></div>
+      </div>
+      <div class="lane">
+        <h3><span class="lb next">Next</span> Bigger, smarter cameras</h3>
+        <div class="item"><span class="m">📺</span><div><b>4K support — soon</b><p>End-to-end 4K: full-resolution live view and recording for higher-detail cameras, with quality that adapts to your connection.</p></div></div>
+        <div class="item"><span class="m">⏬</span><div><b>Full recording control &amp; downloads</b><p>Download clips straight to your device, trim &amp; export any moment, lock footage so it survives retention, and manage recordings in bulk.</p></div></div>
+        <div class="item"><span class="m">🔔</span><div><b>Motion &amp; object events</b><p>A real event feed — person / vehicle / motion — powered by on-device detection, feeding the events tab and timeline markers.</p></div></div>
+        <div class="item"><span class="m">📩</span><div><b>Push notifications</b><p>APNs alerts for the events that matter, delivered the moment they happen.</p></div></div>
+        <div class="item"><span class="m">🌊</span><div><b>Low-latency HLS fallback</b><p>A buttery, ~1.5s smooth fallback for when the network is too rough for real-time.</p></div></div>
+      </div>
+      <div class="lane">
+        <h3><span class="lb later">Later</span> Wider horizon</h3>
+        <div class="item"><span class="m">🧱</span><div><b>Richer camera wall</b><p>Multi-camera layouts, grouping, and faster switching for larger installs.</p></div></div>
+        <div class="item"><span class="m">🔌</span><div><b>More integrations</b><p>Bring additional self-hosted services under the same secure roof.</p></div></div>
+        <div class="item"><span class="m">👥</span><div><b>Multi-user &amp; sharing</b><p>Scoped access for household members and guests, with per-role limits.</p></div></div>
+        <div class="item"><span class="m">🖥️</span><div><b>Beyond iPhone</b><p>Explore iPad and desktop surfaces for the same trusted control plane.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="stack">
+  <div class="wrap">
+    <span class="eyebrow">Built with</span>
+    <h2>Tech stack</h2>
+    <div class="badges">
+      <span class="badge"><b>Swift</b> · SwiftUI</span>
+      <span class="badge"><b>WebRTC</b> · libwebrtc</span>
+      <span class="badge"><b>AVFoundation</b> · HLS</span>
+      <span class="badge"><b>Node</b> · Fastify · TypeScript</span>
+      <span class="badge"><b>SQLite</b> · single-writer</span>
+      <span class="badge"><b>OIDC</b> · Authelia</span>
+      <span class="badge"><b>go2rtc</b> + <b>MediaMTX</b></span>
+      <span class="badge"><b>coturn</b> · scoped TURN</span>
+      <span class="badge"><b>Docker</b> · Caddy · Cloudflare</span>
+      <span class="badge"><b>AltStore</b> delivery</span>
+    </div>
+    <div class="note">Distributed as an unsigned, self-re-signed build through AltStore / SideStore — no App Store gatekeeper, no distribution certificate, and updates that land the moment they're built.</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="brand" style="font-size:15px"><span class="logo" style="width:24px;height:24px"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l7.2 3.2v5.4c0 4.6-3 8.7-7.2 10.2C7.8 19.9 4.8 15.8 4.8 11.2V5.8L12 2.6z" fill="#fff" opacity=".95"/></svg></span> Orionis Control</div>
+    <p style="margin-top:12px">A privacy-first control plane for self-hosted infrastructure. Built and maintained by Lost Media Studios.</p>
+    <p>This page describes the product and its direction; it intentionally contains no operational, network, or credential details.</p>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var btn=document.getElementById('themeBtn'), root=document.documentElement;
+    var saved=null; try{saved=localStorage.getItem('orionis-theme');}catch(e){}
+    if(saved){ root.setAttribute('data-theme',saved); }
+    btn.addEventListener('click',function(){
+      var t=root.getAttribute('data-theme')==='dark'?'light':'dark';
+      root.setAttribute('data-theme',t);
+      try{localStorage.setItem('orionis-theme',t);}catch(e){}
+    });
+  })();
+</script>
+</body>
+</html>

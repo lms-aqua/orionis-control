@@ -1,8 +1,0 @@
-// Copy to Production.xcconfig and fill in. The real file is gitignored.
-// Release builds refuse a non-HTTPS base URL and refuse the fixture
-// environment — see AppConfiguration.validate().
-
-ORIONIS_API_BASE_URL = https:/$()/gateway.example.invalid
-ORIONIS_OAUTH_CLIENT_ID = orionis-control-mobile
-ORIONIS_OAUTH_REDIRECT_SCHEME = orioniscontrol
-ORIONIS_BUILD_ENVIRONMENT = production
