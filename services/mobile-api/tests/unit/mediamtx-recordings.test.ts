@@ -96,6 +96,15 @@ describe('MediaMtxRecordings.list', () => {
     expect(page.items[0]!.startedAt).toBe('2026-08-01T12:00:00.000Z');
   });
 
+  it('keeps a multi-hour continuous run — the timeline needs every run', async () => {
+    // MediaMTX reports continuous recording as one long run. Capping it (the old
+    // 30-minute clip cap) dropped whole days as "no recordings this day".
+    const s = store(playback({ '57': [{ start: '2026-08-01T00:00:00Z', duration: 12 * 3600 }] }));
+    const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);
+    expect(page.total).toBe(1);
+    expect(page.items[0]!.durationSeconds).toBe(12 * 3600);
+  });
+
   it('derives retentionUntil from the configured retention', async () => {
     const s = store(playback({ '57': [{ start: '2026-08-01T00:00:00Z', duration: 60 }] }), 7);
     const page = await s.list({ limit: 10, offset: 0 }, CAMERAS);

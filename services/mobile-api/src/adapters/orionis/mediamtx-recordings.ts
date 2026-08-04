@@ -29,6 +29,14 @@ export interface RecordingRef {
 /** Same resource bound as the arbitrary timeline/export endpoint. */
 export const MAX_RECORDING_CLIP_SECONDS = 1_800;
 
+/**
+ * Upper sanity bound for a single reported recording run. MediaMTX reports
+ * continuous recording as one run that can legitimately be many hours long, so
+ * this only rejects clearly-corrupt durations (e.g. tens of years), never real
+ * footage. Distinct from the clip cap, which bounds a single playback/export.
+ */
+export const MAX_RECORDING_RUN_SECONDS = 30 * 24 * 60 * 60;
+
 /** Opaque, URL-safe, and self-describing so no server-side index is needed. */
 export function encodeRecordingId(ref: RecordingRef): string {
   const raw = `${ref.cameraId}|${ref.start}|${ref.durationSeconds}`;
@@ -131,7 +139,14 @@ export class MediaMtxRecordings {
           typeof entry?.duration === 'number' &&
           Number.isFinite(entry.duration) &&
           entry.duration > 0 &&
-          entry.duration <= MAX_RECORDING_CLIP_SECONDS,
+          entry.duration <= MAX_RECORDING_RUN_SECONDS,
+        // NB: bound by MAX_RECORDING_RUN_SECONDS (a garbage filter), NOT by
+        // MAX_RECORDING_CLIP_SECONDS. MediaMTX reports a continuous recording as
+        // one long run — often many hours — and the coverage/timeline needs every
+        // run to know where footage exists. The old 30-minute cap dropped whole
+        // days of continuous recording as "no footage". The 30-minute cap belongs
+        // on clip *playback/export* (bounded windows via /recordings/clip and the
+        // decoded id), not on the coverage listing.
       )
       .map((entry) => ({
         cameraId,
