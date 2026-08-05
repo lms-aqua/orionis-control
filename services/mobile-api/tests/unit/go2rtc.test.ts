@@ -107,3 +107,56 @@ describe('Go2rtcOrionisAdapter camera identity', () => {
     expect(page.items[0]!.cameraName).toBe('Offline Camera');
   });
 });
+
+describe('Go2rtcOrionisAdapter snapshots', () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+
+  function snapshotFetch(opts: { fail?: () => boolean; empty?: boolean } = {}) {
+    let frameCalls = 0;
+    const impl = (async (url: string | URL) => {
+      if (String(url).includes('frame.jpeg')) {
+        frameCalls += 1;
+        if (opts.fail?.()) return new Response('upstream down', { status: 502 });
+        const body = opts.empty ? new Uint8Array(0) : JPEG;
+        return new Response(body, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+      }
+      return new Response(
+        JSON.stringify({ front: { producers: [{ url: 'rtsp://camera.invalid' }] } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    return { impl, frames: () => frameCalls };
+  }
+
+  it('serves a warm frame from cache without re-hitting the transcode', async () => {
+    const fetchMock = snapshotFetch();
+    const adapter = new Go2rtcOrionisAdapter('http://go2rtc.invalid', 1_000, fetchMock.impl);
+
+    const first = await adapter.getSnapshot('front');
+    expect(first.bytes.length).toBe(JPEG.length);
+    expect(fetchMock.frames()).toBe(1);
+
+    // Immediately after, the cache is fresh, so no second transcode is triggered.
+    const second = await adapter.getSnapshot('front');
+    expect(second.bytes.length).toBe(JPEG.length);
+    expect(fetchMock.frames()).toBe(1);
+  });
+
+  it('keeps serving the last good frame when the transcode later fails', async () => {
+    let broken = false;
+    const fetchMock = snapshotFetch({ fail: () => broken });
+    const adapter = new Go2rtcOrionisAdapter('http://go2rtc.invalid', 1_000, fetchMock.impl);
+
+    await adapter.getSnapshot('front'); // primes the cache
+    broken = true;
+    const stale = await adapter.getSnapshot('front');
+    expect(stale.bytes.length).toBe(JPEG.length); // served from cache, never a 502
+  });
+
+  it('reports offline when no frame has ever decoded', async () => {
+    const fetchMock = snapshotFetch({ empty: true });
+    const adapter = new Go2rtcOrionisAdapter('http://go2rtc.invalid', 1_000, fetchMock.impl);
+
+    await expect(adapter.getSnapshot('front')).rejects.toMatchObject({ code: 'CAMERA_OFFLINE' });
+  });
+});

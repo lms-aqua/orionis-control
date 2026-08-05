@@ -73,6 +73,8 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
             config.orionis.enableWebrtc,
             config.orionis.wyzeBridgeUrl,
             config.orionis.recordingExclude,
+            // Keep recently-viewed cameras' snapshots warm so the grid is instant.
+            true,
           )
         : new HttpOrionisAdapter(
             config.orionis.baseUrl,

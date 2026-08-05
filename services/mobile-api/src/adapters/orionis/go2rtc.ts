@@ -43,6 +43,25 @@ interface WyzeCameraMetadata {
   state?: string;
 }
 
+type SnapshotResult = { bytes: Buffer; contentType: string; capturedAt: string };
+
+/**
+ * Snapshot freshness policy. go2rtc's frame.jpeg is a ~1.7s on-demand transcode
+ * on EVERY call (measured; it never reuses a warm one), so it can never be made
+ * instant on the request path. Instead the last decoded frame is served
+ * immediately and a fresh grab runs in the background — a security thumbnail a
+ * couple of seconds old is indistinguishable from live, and every request after
+ * the first returns in microseconds.
+ */
+const SNAPSHOT_FRESH_MS = 2_000; // younger than this: serve as-is, no refresh
+const SNAPSHOT_MAX_SERVE_MS = 10 * 60_000; // older than this: stop serving stale
+// Background warmer: keep a recently-viewed camera's frame ready so even the
+// first request after switching screens is instant. Demand-gated — a camera is
+// only warmed while it has been asked for in the last WARM_IDLE_MS, so idle
+// cameras cost nothing.
+const SNAPSHOT_WARM_REFRESH_MS = 10_000;
+const SNAPSHOT_WARM_IDLE_MS = 5 * 60_000;
+
 const CAPABILITIES = {
   ptz: false,
   presets: false,
@@ -86,6 +105,15 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
    * error, so a failed grab falls back to the most recent good frame.
    */
   private readonly lastSnapshot = new Map<string, { bytes: Buffer; capturedAt: string; at: number }>();
+  /** One in-flight frame grab per camera, so a burst of tile requests and the
+   *  background refresh collapse onto a single upstream transcode. */
+  private readonly snapshotInFlight = new Map<string, Promise<SnapshotResult | null>>();
+  /** Whether to keep recently-viewed cameras warm in the background. */
+  private readonly snapshotWarm: boolean;
+  /** camera id → epoch ms until which it should stay warm (extended per request). */
+  private readonly snapshotWarmUntil = new Map<string, number>();
+  /** cameras with a warm loop currently running, so only one runs per camera. */
+  private readonly snapshotWarming = new Set<string>();
 
   constructor(
     baseUrl: string,
@@ -96,8 +124,10 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     enableWebrtc = false,
     wyzeBridgeUrl = '',
     recordingExclude: string[] = [],
+    snapshotWarm = false,
   ) {
     this.recordings = recordings;
+    this.snapshotWarm = snapshotWarm;
     // Advertising a protocol is a promise that it plays. WebRTC stays off until
     // it is verified end-to-end on a real network, so the app is never steered
     // onto a path that renders nothing.
@@ -227,53 +257,91 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     return this.toCamera(cameraId, streams[cameraId], metadata[cameraId]);
   }
 
-  async getSnapshot(
-    cameraId: string,
-  ): Promise<{ bytes: Buffer; contentType: string; capturedAt: string }> {
+  async getSnapshot(cameraId: string): Promise<SnapshotResult> {
     const streams = await this.streams();
     if (!Object.hasOwn(streams, cameraId)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
 
-    // Serve-stale window: a failed or empty grab reuses the last good frame if
-    // it is recent enough that showing it is honest for a live thumbnail.
-    const STALE_MS = 30_000;
-    const fallback = () => {
-      const cached = this.lastSnapshot.get(cameraId);
-      if (cached && Date.now() - cached.at <= STALE_MS) {
-        return { bytes: cached.bytes, contentType: 'image/jpeg', capturedAt: cached.capturedAt };
+    if (this.snapshotWarm) this.markWarm(cameraId);
+
+    const cached = this.lastSnapshot.get(cameraId);
+    const age = cached ? Date.now() - cached.at : Infinity;
+
+    // Warm and recent enough to trust: return instantly. If it is getting old,
+    // kick a background refresh (single-flight) but do not wait on it — the next
+    // poll picks up the newer frame.
+    if (cached && age <= SNAPSHOT_MAX_SERVE_MS) {
+      if (age > SNAPSHOT_FRESH_MS) void this.refreshSnapshot(cameraId);
+      return { bytes: cached.bytes, contentType: 'image/jpeg', capturedAt: cached.capturedAt };
+    }
+
+    // Cold camera (never grabbed, or the cache aged past the serve window): pay
+    // the one transcode. A concurrent burst collapses onto the same in-flight
+    // grab, so a grid open transcodes each camera once, not once per tile.
+    const fresh = await this.refreshSnapshot(cameraId);
+    if (fresh) return fresh;
+
+    // Grab failed. Anything we still hold beats a broken tile.
+    if (cached) {
+      return { bytes: cached.bytes, contentType: 'image/jpeg', capturedAt: cached.capturedAt };
+    }
+    throw new AppError('CAMERA_OFFLINE', 'The camera did not return a snapshot.');
+  }
+
+  /** Grab one JPEG from go2rtc, updating the warm cache. Coalesces concurrent
+   *  callers for the same camera onto a single upstream transcode. */
+  private refreshSnapshot(cameraId: string): Promise<SnapshotResult | null> {
+    const existing = this.snapshotInFlight.get(cameraId);
+    if (existing) return existing;
+
+    const work = (async (): Promise<SnapshotResult | null> => {
+      try {
+        const { data } = await this.client.request<Buffer>({
+          path: '/api/frame.jpeg',
+          query: { src: cameraId },
+          binary: true,
+          headers: { accept: 'image/jpeg' },
+          maxResponseBytes: 8 * 1024 * 1024,
+        });
+        if (!data || data.length === 0) return null;
+        const capturedAt = new Date().toISOString();
+        this.lastSnapshot.set(cameraId, { bytes: data, capturedAt, at: Date.now() });
+        return { bytes: data, contentType: 'image/jpeg', capturedAt };
+      } catch {
+        return null;
+      } finally {
+        this.snapshotInFlight.delete(cameraId);
       }
-      return null;
-    };
+    })();
 
-    let data: Buffer | undefined;
+    this.snapshotInFlight.set(cameraId, work);
+    return work;
+  }
+
+  /** Mark a camera as in-demand and ensure a background warm loop is running. */
+  private markWarm(cameraId: string): void {
+    this.snapshotWarmUntil.set(cameraId, Date.now() + SNAPSHOT_WARM_IDLE_MS);
+    if (this.snapshotWarming.has(cameraId)) return;
+    this.snapshotWarming.add(cameraId);
+    void this.warmLoop(cameraId);
+  }
+
+  /** Refresh a camera's frame on an interval until its demand window lapses.
+   *  Timers are unref'd so a warm loop never keeps the process alive at exit. */
+  private async warmLoop(cameraId: string): Promise<void> {
     try {
-      ({ data } = await this.client.request<Buffer>({
-        path: '/api/frame.jpeg',
-        query: { src: cameraId },
-        binary: true,
-        headers: { accept: 'image/jpeg' },
-        // Reuse a just-grabbed frame across the burst of tile + widget requests
-        // that a grid open fires, so each camera transcodes at most ~once/3s
-        // instead of once per request.
-        cacheTtlMs: 3_000,
-        maxResponseBytes: 8 * 1024 * 1024,
-      }));
-    } catch (err) {
-      const stale = fallback();
-      if (stale) return stale;
-      throw err;
+      while (Date.now() < (this.snapshotWarmUntil.get(cameraId) ?? 0)) {
+        await this.refreshSnapshot(cameraId);
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, SNAPSHOT_WARM_REFRESH_MS);
+          if (typeof timer.unref === 'function') timer.unref();
+        });
+      }
+    } finally {
+      this.snapshotWarming.delete(cameraId);
+      this.snapshotWarmUntil.delete(cameraId);
     }
-
-    if (!data || data.length === 0) {
-      const stale = fallback();
-      if (stale) return stale;
-      throw new AppError('CAMERA_OFFLINE', 'The camera did not return a snapshot.');
-    }
-
-    const capturedAt = new Date().toISOString();
-    this.lastSnapshot.set(cameraId, { bytes: data, capturedAt, at: Date.now() });
-    return { bytes: data, contentType: 'image/jpeg', capturedAt };
   }
 
   async createStreamSession(input: {
