@@ -33,6 +33,16 @@ interface Go2rtcStream {
   consumers?: unknown[] | null;
 }
 
+interface WyzeCameraMetadata {
+  name?: string;
+  nickname?: string;
+  model?: string;
+  model_name?: string;
+  firmware?: string;
+  fw_version?: string;
+  state?: string;
+}
+
 const CAPABILITIES = {
   ptz: false,
   presets: false,
@@ -66,6 +76,8 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   /** Present only when a MediaMTX playback server is configured. */
   private readonly recordings: MediaMtxRecordings | null;
   private readonly protocols: StreamProtocol[];
+  private readonly wyzeBridge: UpstreamClient | null;
+  private readonly recordingExclude: Set<string>;
 
   constructor(
     baseUrl: string,
@@ -74,6 +86,8 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     labels: Record<string, { name: string; location: string | null }> = {},
     recordings: MediaMtxRecordings | null = null,
     enableWebrtc = false,
+    wyzeBridgeUrl = '',
+    recordingExclude: string[] = [],
   ) {
     this.recordings = recordings;
     // Advertising a protocol is a promise that it plays. WebRTC stays off until
@@ -90,6 +104,24 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       fetchImpl,
     );
     this.labels = labels;
+    this.wyzeBridge = wyzeBridgeUrl
+      ? new UpstreamClient('wyze-bridge', wyzeBridgeUrl, { accept: 'application/json' }, timeoutMs, fetchImpl)
+      : null;
+    this.recordingExclude = new Set(recordingExclude.map((value) => value.trim().toLowerCase()).filter(Boolean));
+  }
+
+  private async metadata(): Promise<Record<string, WyzeCameraMetadata>> {
+    if (!this.wyzeBridge) return {};
+    const { data } = await this.wyzeBridge.request<WyzeCameraMetadata[]>({
+      path: '/api/cameras',
+      cacheTtlMs: 2_000,
+    });
+    const result: Record<string, WyzeCameraMetadata> = {};
+    for (const camera of data ?? []) {
+      const id = camera.name;
+      if (id) result[id] = camera;
+    }
+    return result;
   }
 
   private async streams(): Promise<Record<string, Go2rtcStream>> {
@@ -112,7 +144,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     return visible;
   }
 
-  private toCamera(id: string, stream: Go2rtcStream | undefined): Camera {
+  private toCamera(id: string, stream: Go2rtcStream | undefined, metadata?: WyzeCameraMetadata): Camera {
     // A configured camera that has dropped out of go2rtc entirely (its source
     // went unreachable, so the sync pruned it) is still a camera the user owns.
     // Rather than have it vanish from the app, it is surfaced as offline with a
@@ -140,11 +172,11 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
 
     return {
       id,
-      name: label?.name ?? `Camera ${id}`,
+      name: label?.name ?? metadata?.nickname ?? metadata?.name ?? `Camera ${id}`,
       location: label?.location ?? null,
       group: null,
-      model: 'go2rtc',
-      firmware: null,
+      model: metadata?.model_name ?? metadata?.model ?? 'go2rtc',
+      firmware: metadata?.fw_version ?? metadata?.firmware ?? null,
       capabilities: { ...CAPABILITIES, audio: hasAudio, protocols: [...this.protocols] },
       health: {
         status: online ? 'online' : 'offline',
@@ -173,18 +205,18 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   }
 
   async listCameras(): Promise<Camera[]> {
-    const streams = await this.streams();
-    return this.roster(Object.keys(streams)).map((id) => this.toCamera(id, streams[id]));
+    const [streams, metadata] = await Promise.all([this.streams(), this.metadata()]);
+    return this.roster(Object.keys(streams)).map((id) => this.toCamera(id, streams[id], metadata[id]));
   }
 
   async getCamera(cameraId: string): Promise<Camera> {
-    const streams = await this.streams();
+    const [streams, metadata] = await Promise.all([this.streams(), this.metadata()]);
     // A labelled camera that is temporarily gone from go2rtc still resolves — as
     // offline — so opening it shows the reason rather than a 404.
     if (!Object.hasOwn(streams, cameraId) && !Object.hasOwn(this.labels, cameraId)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
-    return this.toCamera(cameraId, streams[cameraId]);
+    return this.toCamera(cameraId, streams[cameraId], metadata[cameraId]);
   }
 
   async getSnapshot(
@@ -266,7 +298,10 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     return this.roster(Object.keys(streams)).map((id) => ({
       id,
       name: (Object.hasOwn(this.labels, id) ? this.labels[id]?.name : null) ?? `Camera ${id}`,
-    }));
+    })).filter((camera) =>
+      !this.recordingExclude.has(camera.id.toLowerCase()) &&
+      !this.recordingExclude.has((camera.name ?? '').toLowerCase()),
+    );
   }
 
   async listRecordings(query: RecordingQuery): Promise<Page<Recording>> {

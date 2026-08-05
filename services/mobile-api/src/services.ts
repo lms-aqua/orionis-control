@@ -71,6 +71,8 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
                 )
               : null,
             config.orionis.enableWebrtc,
+            config.orionis.wyzeBridgeUrl,
+            config.orionis.recordingExclude,
           )
         : new HttpOrionisAdapter(
             config.orionis.baseUrl,

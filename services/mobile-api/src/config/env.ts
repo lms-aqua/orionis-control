@@ -80,6 +80,8 @@ const RawSchema = z.object({
   ROLE_ADMIN_GROUPS: z.string().default('orionis-admins'),
 
   ORIONIS_INTERNAL_URL: z.string().default(''),
+  // Optional docker-wyze-bridge WebUI/API endpoint for camera metadata.
+  ORIONIS_WYZE_BRIDGE_URL: z.string().default(''),
   ORIONIS_SERVICE_TOKEN: z.string().default(''),
   // 'http' (default) speaks the Orionis Guard contract; 'go2rtc' speaks a
   // go2rtc server's API for camera list + snapshots.
@@ -115,6 +117,7 @@ const RawSchema = z.object({
   ORIONIS_RECORDINGS_QUOTA_GB: z.coerce.number().int().min(0).max(1_000_000).default(0),
   // Must match the recorder's own retention, so retentionUntil is not a lie.
   ORIONIS_RECORDINGS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
+  ORIONIS_RECORDING_EXCLUDE: z.string().default('LostPrinter'),
   // TURN relay for WebRTC. Comma separated, e.g.
   //   turn:203.0.113.10:16143?transport=udp,turn:203.0.113.10:16143?transport=tcp
   // Empty disables WebRTC rather than offering an unauthenticated relay.
@@ -177,6 +180,8 @@ export interface OrionisConfig {
   configured: boolean;
   adapter: 'http' | 'go2rtc';
   baseUrl: string;
+  /** Optional Wyze bridge API used to enrich go2rtc cameras. */
+  wyzeBridgeUrl: string;
   /** MediaMTX HLS base URL; empty means relay HLS from go2rtc itself. */
   hlsBaseUrl: string;
   /** Per-camera display names, keyed by upstream camera id. */
@@ -191,6 +196,8 @@ export interface OrionisConfig {
   recordingsQuotaBytes: number | null;
   /** Recorder retention in days, or null when not configured. */
   recordingsRetentionDays: number | null;
+  /** Camera ids/names that must never enter the recording index. */
+  recordingExclude: string[];
   /** Whether WebRTC may be advertised to clients. */
   enableWebrtc: boolean;
   serviceToken: string;
@@ -437,6 +444,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       configured: orionisConfigured,
       adapter: e.ORIONIS_ADAPTER,
       baseUrl: e.ORIONIS_INTERNAL_URL.replace(/\/+$/, ''),
+      wyzeBridgeUrl: e.ORIONIS_WYZE_BRIDGE_URL.replace(/\/+$/, ''),
       hlsBaseUrl: e.ORIONIS_HLS_BASE_URL.replace(/\/+$/, ''),
       cameraLabels: parseCameraLabels(e.ORIONIS_CAMERA_LABELS),
       recordingsBaseUrl: e.ORIONIS_RECORDINGS_BASE_URL.replace(/\/+$/, ''),
@@ -446,6 +454,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
         e.ORIONIS_RECORDINGS_QUOTA_GB > 0 ? e.ORIONIS_RECORDINGS_QUOTA_GB * 1024 ** 3 : null,
       recordingsRetentionDays:
         e.ORIONIS_RECORDINGS_RETENTION_DAYS > 0 ? e.ORIONIS_RECORDINGS_RETENTION_DAYS : null,
+      recordingExclude: csv(e.ORIONIS_RECORDING_EXCLUDE),
       enableWebrtc: e.ORIONIS_ENABLE_WEBRTC,
       serviceToken: e.ORIONIS_SERVICE_TOKEN,
       timeoutMs: e.ORIONIS_TIMEOUT_MS,

@@ -4,6 +4,10 @@
 !.env.example
 *.p8
 *.p12
+# Local deploy staging: image tarballs, real (non-.example) env files, compose
+# overrides with live secrets. This is a build-and-ship scratch area — its
+# contents (server-mobile.env, *.tar, overrides) must never reach this public repo.
+/deploy/
 *.mobileprovision
 *.cer
 *.certSigningRequest
