@@ -459,7 +459,13 @@ final class AuthenticationService: NSObject {
             let user: CurrentUser
             let session: SessionSummary
         }
-        return try await api.request(Endpoint(path: "/me"), as: MeResponse.self).user
+        // Session-restore identity read — a person is waiting on the launch
+        // spinner. A GET is safe to retry, so bound it tight and retry once
+        // rather than sitting on the default 20s single attempt.
+        return try await api.request(
+            Endpoint(path: "/me", timeout: 8, isRetryable: true, maxRetries: 1),
+            as: MeResponse.self
+        ).user
     }
 
     private func clearPending() {

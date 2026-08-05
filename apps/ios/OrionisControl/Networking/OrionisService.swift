@@ -316,8 +316,11 @@ struct OrionisService: OrionisServicing {
     // MARK: Meta
 
     func meta() async throws -> GatewayMeta {
+        // Interactive setup / session-restore probe: a person is staring at a
+        // spinner, so fail fast. 6s + one retry ≈ 12s worst case, not 30s+.
         try await api.requestPublic(
-            Endpoint(path: "/meta", timeout: 10, isRetryable: true), as: GatewayMeta.self)
+            Endpoint(path: "/meta", timeout: 6, isRetryable: true, maxRetries: 1),
+            as: GatewayMeta.self)
     }
 
     // MARK: Cameras
@@ -729,14 +732,19 @@ struct OrionisService: OrionisServicing {
     // MARK: System
 
     func dashboard() async throws -> DashboardSnapshot {
+        // Foreground dashboard read. The gateway already caps its own upstream
+        // aggregation at ~8s and degrades section-by-section, so a full 25s here
+        // only ever meant "the gateway itself is unreachable" — and three of them
+        // stacked into the minutes-long hangs. Bound it and retry at most once.
         try await api.request(
-            Endpoint(path: "/dashboard", timeout: 25, isRetryable: true),
+            Endpoint(path: "/dashboard", timeout: 8, isRetryable: true, maxRetries: 1),
             as: DashboardSnapshot.self)
     }
 
     func services() async throws -> SystemHealthSnapshot {
+        // Foreground System-tab read; same reasoning as `dashboard()`.
         try await api.request(
-            Endpoint(path: "/system/services", timeout: 25, isRetryable: true),
+            Endpoint(path: "/system/services", timeout: 8, isRetryable: true, maxRetries: 1),
             as: SystemHealthSnapshot.self)
     }
 

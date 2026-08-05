@@ -57,6 +57,11 @@ struct Endpoint: Sendable {
     var timeout: TimeInterval = 20
     /// Retrying is opt-in per endpoint, never automatic for writes.
     var isRetryable = false
+    /// Hard ceiling on retry attempts for a retryable read; total requests sent
+    /// is `maxRetries + 1`. Keep this small (ideally 1) for anything a person is
+    /// actively waiting on, so a dead or slow upstream fails in seconds rather
+    /// than stacking full timeouts into minutes.
+    var maxRetries = 2
 }
 
 /// Watches the network path so the app can distinguish "offline" from "broken".
@@ -345,7 +350,7 @@ actor APIClient {
         } catch let error as URLError {
             let mapped = APIError.from(urlError: error)
             // Only idempotent reads are retried, and only for transport faults.
-            if endpoint.isRetryable, mapped.isRetryable, attempt < 2 {
+            if endpoint.isRetryable, mapped.isRetryable, attempt < endpoint.maxRetries {
                 try await backoff(attempt: attempt)
                 return try await perform(
                     endpoint, as: type, authenticated: authenticated,
@@ -385,7 +390,7 @@ actor APIClient {
         }
 
         // Server-side transient failures: retry reads only.
-        if endpoint.isRetryable, apiError.isRetryable, attempt < 2,
+        if endpoint.isRetryable, apiError.isRetryable, attempt < endpoint.maxRetries,
             endpoint.method == .get
         {
             try await backoff(attempt: attempt)
