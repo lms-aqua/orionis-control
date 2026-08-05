@@ -78,6 +78,14 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
   private readonly protocols: StreamProtocol[];
   private readonly wyzeBridge: UpstreamClient | null;
   private readonly recordingExclude: Set<string>;
+  /**
+   * Last frame that actually decoded, per camera. go2rtc's frame.jpeg is an
+   * on-demand RTSP→JPEG transcode: it is slow (1–6s) and intermittently returns
+   * an empty body or a 502 while the source is warming or busy. For a grid
+   * thumbnail a frame a few seconds old is far better than a spinner or an
+   * error, so a failed grab falls back to the most recent good frame.
+   */
+  private readonly lastSnapshot = new Map<string, { bytes: Buffer; capturedAt: string; at: number }>();
 
   constructor(
     baseUrl: string,
@@ -226,19 +234,46 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     if (!Object.hasOwn(streams, cameraId)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
-    const { data } = await this.client.request<Buffer>({
-      path: '/api/frame.jpeg',
-      query: { src: cameraId },
-      binary: true,
-      headers: { accept: 'image/jpeg' },
-      // The app and widgets can ask for the same frame simultaneously.
-      cacheTtlMs: 500,
-      maxResponseBytes: 8 * 1024 * 1024,
-    });
+
+    // Serve-stale window: a failed or empty grab reuses the last good frame if
+    // it is recent enough that showing it is honest for a live thumbnail.
+    const STALE_MS = 30_000;
+    const fallback = () => {
+      const cached = this.lastSnapshot.get(cameraId);
+      if (cached && Date.now() - cached.at <= STALE_MS) {
+        return { bytes: cached.bytes, contentType: 'image/jpeg', capturedAt: cached.capturedAt };
+      }
+      return null;
+    };
+
+    let data: Buffer | undefined;
+    try {
+      ({ data } = await this.client.request<Buffer>({
+        path: '/api/frame.jpeg',
+        query: { src: cameraId },
+        binary: true,
+        headers: { accept: 'image/jpeg' },
+        // Reuse a just-grabbed frame across the burst of tile + widget requests
+        // that a grid open fires, so each camera transcodes at most ~once/3s
+        // instead of once per request.
+        cacheTtlMs: 3_000,
+        maxResponseBytes: 8 * 1024 * 1024,
+      }));
+    } catch (err) {
+      const stale = fallback();
+      if (stale) return stale;
+      throw err;
+    }
+
     if (!data || data.length === 0) {
+      const stale = fallback();
+      if (stale) return stale;
       throw new AppError('CAMERA_OFFLINE', 'The camera did not return a snapshot.');
     }
-    return { bytes: data, contentType: 'image/jpeg', capturedAt: new Date().toISOString() };
+
+    const capturedAt = new Date().toISOString();
+    this.lastSnapshot.set(cameraId, { bytes: data, capturedAt, at: Date.now() });
+    return { bytes: data, contentType: 'image/jpeg', capturedAt };
   }
 
   async createStreamSession(input: {

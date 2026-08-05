@@ -8,8 +8,17 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AppError } from '../lib/errors.ts';
 import { ok } from '../lib/envelope.ts';
+import { withDeadline } from '../lib/deadline.ts';
 import { actorOf, requirePermission, withIdempotency } from '../http/context.ts';
 import { SERVER_VERSION } from '../version.ts';
+
+/**
+ * Per-upstream ceiling for the aggregate screens. Comfortably above a healthy
+ * probe (tens of ms) yet well under the app's foreground request timeout, so a
+ * single stalled dependency degrades its own section instead of the whole
+ * dashboard or system-health response.
+ */
+const SECTION_DEADLINE_MS = 4_000;
 
 export type ServiceStatus = 'healthy' | 'warning' | 'critical' | 'offline' | 'unknown';
 
@@ -155,7 +164,7 @@ async function collectHealthUncached(req: HealthRequest): Promise<ServiceHealth[
         };
       }
       try {
-        await s.oidc.discover(true);
+        await withDeadline(s.oidc.discover(true), SECTION_DEADLINE_MS);
         return {
           id: 'authelia',
           name: 'Authelia',
@@ -181,7 +190,7 @@ async function collectHealthUncached(req: HealthRequest): Promise<ServiceHealth[
     })(),
     (async (): Promise<ServiceHealth[]> => {
       try {
-        const rows = (await s.orionis.listServiceHealth()) as {
+        const rows = (await withDeadline(s.orionis.listServiceHealth(), SECTION_DEADLINE_MS)) as {
           id: string;
           name: string;
           status: ServiceStatus;
@@ -421,7 +430,7 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
 
     const section = async <T>(load: () => Promise<T>) => {
       try {
-        return { available: true as const, data: await load(), error: null };
+        return { available: true as const, data: await withDeadline(load(), SECTION_DEADLINE_MS), error: null };
       } catch (err) {
         const e = err instanceof AppError ? err : new AppError('INTERNAL_ERROR', 'Unavailable.');
         return {
