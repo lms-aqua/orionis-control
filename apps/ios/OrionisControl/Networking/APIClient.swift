@@ -380,8 +380,16 @@ actor APIClient {
                     endpoint, as: type, authenticated: authenticated,
                     allowRefresh: false, attempt: attempt)
             } catch {
-                await provider.handleAuthenticationFailure(apiError)
-                throw apiError
+                // A failed refresh only means "sign in again" when the gateway
+                // actually rejected the session. A transient network failure here
+                // (offline/timeout/unreachable during a Wi-Fi↔cellular switch) must
+                // not destroy it — surface the error and let the caller retry.
+                let refreshRejected = (error as? APIError)?.requiresReauthentication ?? false
+                if refreshRejected {
+                    await provider.handleAuthenticationFailure(apiError)
+                    throw apiError
+                }
+                throw (error as? APIError) ?? apiError
             }
         }
 

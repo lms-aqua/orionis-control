@@ -131,6 +131,50 @@ final class AuthenticationStorageTests: XCTestCase {
         XCTAssertNil(try secrets.get(.refreshToken))
         XCTAssertNil(try secrets.get(.sessionId))
     }
+
+    @MainActor
+    func testTransientNetworkFailureDuringRestoreKeepsTheSession() async throws {
+        // A profile cached from a previous successful session.
+        let cached = CurrentUser(
+            id: "u1", username: "pat", displayName: "Pat", email: nil,
+            role: .administrator, groups: ["admins"], permissions: [.camerasView])
+        let cachedJSON = String(data: try JSONEncoder().encode(cached), encoding: .utf8)!
+        let secrets = InMemorySecretStore(seed: [
+            .deviceId: "install-1",
+            .accessToken: "access",
+            .refreshToken: "refresh",
+            .accessTokenExpiry: "9999999999",
+            .cachedUser: cachedJSON,
+        ])
+
+        // Every request fails as a transient network timeout — a Wi-Fi/cellular
+        // switch at launch, exactly the case that used to wipe the session.
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailingURLProtocol.self]
+        let api = APIClient(
+            baseURL: URL(string: "https://gateway.example.com")!,
+            session: URLSession(configuration: config))
+        let auth = AuthenticationService(
+            configuration: configuration(), api: api, secrets: secrets)
+
+        await auth.restore(hasConfiguredServer: true)
+
+        // Credentials survive the blip...
+        XCTAssertEqual(try secrets.get(.refreshToken), "refresh")
+        XCTAssertNotNil(try secrets.get(.cachedUser))
+        // ...and the app stays signed in on the cached profile — no forced re-auth.
+        XCTAssertTrue(auth.state.isSignedIn)
+    }
+}
+
+/// Fails every request as a transient network timeout.
+private final class FailingURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+    }
+    override func stopLoading() {}
 }
 
 final class PermissionTests: XCTestCase {

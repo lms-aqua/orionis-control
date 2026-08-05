@@ -22,6 +22,9 @@ enum SecretKey: String, CaseIterable, Sendable {
     case deviceId = "device-id"
     case pendingVerifier = "pending-pkce-verifier"
     case pendingState = "pending-oauth-state"
+    /// Last successfully-loaded profile, so a network blip during session
+    /// restore keeps the user signed in instead of forcing a re-auth.
+    case cachedUser = "cached-user"
 }
 
 enum KeychainError: Error, Equatable {

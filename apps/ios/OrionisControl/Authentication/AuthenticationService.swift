@@ -129,14 +129,46 @@ final class AuthenticationService: NSObject {
         do {
             _ = try await performRefresh(using: refresh)
             let user = try await loadCurrentUser()
+            cacheUser(user)
             state = .signedIn(user)
-        } catch let error as APIError {
-            logger.notice("session restore failed: \(String(describing: error.title), privacy: .public)")
+        } catch let error as APIError where error.requiresReauthentication {
+            // The gateway actively rejected the session (revoked, refresh token no
+            // longer valid, re-auth required). This is the only case that should
+            // destroy stored credentials.
+            logger.notice("session restore rejected: \(String(describing: error.title), privacy: .public)")
             clearSessionSecrets()
             state = .signedOut(reason: reason(for: error))
         } catch {
-            state = .signedOut(reason: .failed("The saved session could not be restored."))
+            // Transient failure — offline, timeout, unreachable gateway, a 5xx, or
+            // a decode hiccup. A Wi-Fi/cellular switch at launch must NOT wipe the
+            // saved session. Keep the credentials and stay signed in on the last
+            // known profile; the next authenticated request re-validates and, if
+            // the session really is dead, triggers a proper sign-out then.
+            logger.notice(
+                "session restore deferred (transient): \(String(describing: (error as? APIError)?.title), privacy: .public)"
+            )
+            if let cached = cachedUser() {
+                state = .signedIn(cached)
+            } else {
+                state = .signedOut(
+                    reason: .failed("Couldn’t reach the gateway. Check your connection and reopen."))
+            }
         }
+    }
+
+    /// Persist the profile so a later restore can ride out a network blip without
+    /// forcing re-authentication. Cleared with everything else on real sign-out.
+    private func cacheUser(_ user: CurrentUser) {
+        guard let data = try? JSONEncoder().encode(user),
+            let json = String(data: data, encoding: .utf8)
+        else { return }
+        try? secrets.set(json, for: .cachedUser)
+    }
+
+    private func cachedUser() -> CurrentUser? {
+        guard let json = try? secrets.get(.cachedUser), let data = json.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(CurrentUser.self, from: data)
     }
 
     // MARK: - Sign in
@@ -334,6 +366,7 @@ final class AuthenticationService: NSObject {
             sessionId: response.session.id
         )
 
+        cacheUser(response.user)
         state = .signedIn(response.user)
     }
 
