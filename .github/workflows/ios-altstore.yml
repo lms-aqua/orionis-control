@@ -105,7 +105,10 @@ jobs:
           # Full timestamp, not a bare date. A date-only value is read as UTC
           # midnight, and UTC midnight is the previous evening in the Americas --
           # so a build published today showed up in the installer as "yesterday".
-          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Use a numeric +00:00 offset, NOT the Zulu 'Z' suffix: AltStore's source
+          # decoder rejects 'Z' with "data couldn't be read ... not the correct
+          # format". Its documented ISO-8601 examples all use a numeric offset.
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 
           {
             echo "version=$VERSION"
