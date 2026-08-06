@@ -36,18 +36,9 @@ struct QueryLogView: View {
                 detailPane
             }
         }
-        .background {
-            // GeometryReader rather than onGeometryChange: the latter is iOS 18
-            // and this app deploys to 17.
-            AppBackground()
-                .overlay {
-                    GeometryReader { geometry in
-                        Color.clear
-                            .preference(key: ActivityWidthKey.self, value: geometry.size.width)
-                    }
-                }
-        }
-        .onPreferenceChange(ActivityWidthKey.self) { width in
+        .background { AppBackground() }
+        // Measures without propagating a preference on every layout pass.
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
             availableWidth = width
         }
         .navigationTitle("Query log")
@@ -437,15 +428,6 @@ struct QueryLogView: View {
     private func toggleWatched(_ domain: String) {
         watchedDomainsRaw = WatchedDomainStore.encode(
             WatchedDomainStore.toggling(domain, in: watchedDomains))
-    }
-}
-
-/// Carries the feed's measured width up so the split decision reacts to Stage
-/// Manager and Slide Over, not just to the device idiom.
-private struct ActivityWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 

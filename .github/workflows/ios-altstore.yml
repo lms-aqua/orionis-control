@@ -167,7 +167,10 @@ jobs:
               "downloadURL": ipa,
               "size": size,
               "sha256": sha,
-              "minOSVersion": "17.0",
+              # Must track IPHONEOS_DEPLOYMENT_TARGET in apps/ios/project.yml.
+              # If this advertises a lower floor than the binary supports,
+              # AltStore offers the build to devices that cannot run it.
+              "minOSVersion": "18.0",
           }
 
           source = {
