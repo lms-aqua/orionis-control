@@ -74,16 +74,23 @@ final class CameraStreamController {
     /// Touched from the nonisolated `deinit` purely to cancel and deregister.
     /// `Task.cancel()` and `NotificationCenter.removeObserver` are both safe from
     /// any isolation domain.
-    private var connectTask: Task<Void, Never>?
-    private var recoveryTask: Task<Void, Never>?
-    private var renewalTask: Task<Void, Never>?
-    private var webRTCWatchdog: Task<Void, Never>?
-    private var webRTCFrameWatchdog: Task<Void, Never>?
-    private var webRTCHealthTask: Task<Void, Never>?
-    private var itemTokens: [NSObjectProtocol] = []
-    private var audioTokens: [NSObjectProtocol] = []
+    ///
+    /// Swift 6.2 warns that `nonisolated(unsafe)` "has no effect" here and
+    /// suggests plain `nonisolated`. Both are wrong for this case: the attribute
+    /// is what lets `deinit` reach these at all, and removing it turns every
+    /// line of the deinit into a main-actor-isolation error. The warning is
+    /// accepted deliberately. The real modernisation is an `isolated deinit`,
+    /// which is a separate change to the most delicate file in the app.
+    private nonisolated(unsafe) var connectTask: Task<Void, Never>?
+    private nonisolated(unsafe) var recoveryTask: Task<Void, Never>?
+    private nonisolated(unsafe) var renewalTask: Task<Void, Never>?
+    private nonisolated(unsafe) var webRTCWatchdog: Task<Void, Never>?
+    private nonisolated(unsafe) var webRTCFrameWatchdog: Task<Void, Never>?
+    private nonisolated(unsafe) var webRTCHealthTask: Task<Void, Never>?
+    private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
+    private nonisolated(unsafe) var audioTokens: [NSObjectProtocol] = []
 
-    private var timeObserver: Any?
+    private nonisolated(unsafe) var timeObserver: Any?
 
     init(
         cameraId: String,

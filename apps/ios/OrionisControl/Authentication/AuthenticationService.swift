@@ -603,8 +603,11 @@ extension AuthenticationService: ASWebAuthenticationPresentationContextProviding
             // iOS 26 deprecated the bare UIWindow initialiser in favour of the
             // scene-based one, so build from a scene when there is one at all.
             if let scene { return ASPresentationAnchor(windowScene: scene) }
-            // No window scene exists, so nothing can actually be presented. The
-            // protocol still demands an anchor; `init(frame:)` is not deprecated.
+            // No window scene exists at all, so nothing could be presented from
+            // any anchor this returns — but the protocol is non-failable and
+            // demands one. Every scene-less `UIWindow` initialiser is deprecated
+            // in iOS 26, so this line warns and cannot not warn; the branch is
+            // unreachable while the app has a UI.
             return ASPresentationAnchor(frame: .zero)
         }
     }
