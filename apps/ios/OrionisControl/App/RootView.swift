@@ -40,14 +40,14 @@ struct RootView: View {
 struct PrivacyShieldView: View {
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(.background)
+            AppBackground()
             VStack(spacing: 12) {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 44))
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(Theme.accent)
                 Text("Orionis Control")
                     .font(.headline)
+                    .foregroundStyle(Theme.textPrimary)
             }
         }
         .ignoresSafeArea()
@@ -171,6 +171,8 @@ struct LockScreenView: View {
             .padding(.bottom, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { AppBackground() }
+        .tint(Theme.accent)
         .task { await unlock() }
     }
 

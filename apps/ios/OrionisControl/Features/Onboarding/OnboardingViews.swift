@@ -24,9 +24,12 @@ struct ServerSetupView: View {
             }
             .padding(.horizontal, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background { AppBackground() }
             .navigationTitle(phase == .welcome ? "" : "Connect")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
         }
+        .tint(Theme.accent)
     }
 
     // MARK: Welcome
@@ -156,7 +159,7 @@ struct ServerSetupView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Label("Connected", systemImage: "checkmark.circle.fill")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Theme.good)
                     .padding(.top, 12)
 
                 VStack(alignment: .leading, spacing: 10) {
@@ -169,7 +172,7 @@ struct ServerSetupView: View {
                             ? "Ready" : "Not configured on the gateway")
                 }
                 .padding(16)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .orionisCard()
 
                 if !meta.unconfigured.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
@@ -182,7 +185,7 @@ struct ServerSetupView: View {
                         .foregroundStyle(.secondary)
                     }
                     .padding(14)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                    .background(Theme.soft(Theme.warn), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
 
                 Spacer()
@@ -257,7 +260,7 @@ struct ErrorSummary: View {
         VStack(alignment: .leading, spacing: 4) {
             Label(error.title, systemImage: "exclamationmark.triangle.fill")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.warn)
             Text(error.message)
                 .font(.footnote)
             if let suggestion = error.recoverySuggestion {
@@ -268,7 +271,7 @@ struct ErrorSummary: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .background(Theme.soft(Theme.warn), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("error-summary")
     }
@@ -307,7 +310,7 @@ struct SignInView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(14)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                    .background(Theme.soft(Theme.warn), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .padding(.horizontal, 24)
             }
 
@@ -341,5 +344,8 @@ struct SignInView: View {
             }
             .padding(.bottom, 32)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { AppBackground() }
+        .tint(Theme.accent)
     }
 }
