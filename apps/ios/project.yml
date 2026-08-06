@@ -50,7 +50,8 @@ settings:
     GCC_TREAT_WARNINGS_AS_ERRORS: NO
     SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
     DEAD_CODE_STRIPPING: YES
-    ENABLE_BITCODE: NO
+    # ENABLE_BITCODE is deliberately absent: bitcode was removed in Xcode 14 and
+    # setting it at all draws a warning from newer toolchains.
   configs:
     Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
