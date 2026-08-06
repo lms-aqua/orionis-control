@@ -218,21 +218,25 @@ struct CameraDetailView: View {
         if let error = model.loadError, model.camera == nil {
             ErrorStateView(error: error, retry: { await model.load() })
         } else if let camera = model.camera {
+            // Hierarchy: the camera first, then what it is doing, then the two
+            // things people actually came for -- footage and controls. Device
+            // metadata and diagnostics sit at the bottom, behind a push.
             ScrollView {
                 VStack(spacing: 16) {
                     playerSection(model, camera: camera)
+                    statusRow(camera)
+                    recordingsSection(camera)
                     if camera.capabilities.hasAnyControl {
                         controlsSection(model, camera: camera)
                     }
                     if let message = model.controlMessage {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        SettingsNoteRow(
+                            text: message, systemImage: "checkmark.circle.fill", tint: Theme.good
+                        )
+                        .orionisCard()
                     }
-                    detailsSection(camera)
-                    recordingsSection(camera)
                     eventsSection(model)
+                    informationRow(camera)
                 }
                 .padding(16)
             }
@@ -433,37 +437,45 @@ struct CameraDetailView: View {
     }
 
     @ViewBuilder
+    /// Media controls, in media-control language.
+    ///
+    /// A row of generic bordered buttons read as a form, not a player. These are
+    /// circular controls sized to 44pt with material backing, so they stay
+    /// legible whether they sit over video or under it. Obscure controls live
+    /// behind the trailing menu rather than competing with playback.
     private func playerControls(_ model: CameraDetailViewModel, camera: Camera) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             if let stream, !stream.state.isTerminal {
-                Button {
+                MediaControlButton(
+                    systemImage: stream.state == .paused ? "play.fill" : "pause.fill",
+                    label: stream.state == .paused ? "Resume live view" : "Pause live view",
+                    tint: Theme.textPrimary
+                ) {
                     if stream.state == .paused { stream.resume() } else { stream.pause() }
-                } label: {
-                    Label(
-                        stream.state == .paused ? "Play" : "Pause",
-                        systemImage: stream.state == .paused ? "play.fill" : "pause.fill"
-                    )
-                    .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(
-                    stream.state == .paused ? "Resume live view" : "Pause live view")
             }
 
             if camera.capabilities.audio == true {
-                Button {
+                MediaControlButton(
+                    systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                    label: isMuted ? "Unmute audio" : "Mute audio",
+                    isActive: !isMuted,
+                    tint: Theme.textPrimary
+                ) {
                     isMuted.toggle()
                     stream?.setAudioMuted(isMuted)
-                } label: {
-                    Label(
-                        isMuted ? "Unmute" : "Mute",
-                        systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
-                    )
-                    .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(isMuted ? "Unmute audio" : "Mute audio")
             }
+
+            if camera.health.status.isUsable {
+                MediaControlButton(
+                    systemImage: "arrow.up.left.and.arrow.down.right",
+                    label: "Open full screen",
+                    tint: Theme.textPrimary
+                ) { showFullScreen = true }
+            }
+
+            Spacer(minLength: 4)
 
             if camera.capabilities.qualities.count > 1 {
                 Picker("Quality", selection: $quality) {
@@ -472,33 +484,133 @@ struct CameraDetailView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .tint(Theme.textSecondary)
                 .onChange(of: quality) { _, _ in Task { await startStream() } }
             }
 
-            if camera.health.status.isUsable {
-                Button {
-                    showFullScreen = true
-                } label: {
-                    Label(
-                        "Full screen",
-                        systemImage: "arrow.up.left.and.arrow.down.right"
-                    )
-                    .labelStyle(.iconOnly)
+            // Advanced information belongs behind the overflow, not on the
+            // primary control row.
+            Menu {
+                Toggle(isOn: $showDiagnostics) {
+                    Label("Stream Diagnostics", systemImage: "waveform.path.ecg")
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Open full screen")
-            }
-
-            Spacer()
-
-            Button {
-                showDiagnostics.toggle()
             } label: {
-                Label("Diagnostics", systemImage: "waveform.path.ecg")
-                    .labelStyle(.iconOnly)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .background(Theme.inset, in: Circle())
+                    .overlay(Circle().strokeBorder(Theme.hairline, lineWidth: 1))
             }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Stream diagnostics")
+            .accessibilityLabel("More controls")
+        }
+        .sensoryFeedback(OrionisHaptic.controlSucceeded.feedback, trigger: isMuted)
+    }
+
+    // MARK: Status
+
+    /// One compact line of live state. Deliberately not another card — it
+    /// belongs to the video above it.
+    private func statusRow(_ camera: Camera) -> some View {
+        let tint: Color =
+            switch camera.health.status {
+            case .online: Theme.good
+            case .degraded: Theme.warn
+            case .offline: Theme.critical
+            case .unknown: Theme.textTertiary
+            }
+
+        return HStack(alignment: .top, spacing: 10) {
+            StatusDot(color: tint).padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Text(camera.health.status.accessibleDescription.capitalized)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tint)
+                    if camera.health.recording == true {
+                        StatusPill(title: "Recording", systemImage: "record.circle", tint: Theme.critical)
+                    }
+                    if camera.health.privacyEnabled {
+                        StatusPill(
+                            title: "Privacy", systemImage: "eye.slash.fill", tint: Theme.textSecondary)
+                    }
+                }
+                if let location = camera.location {
+                    Text(location)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                if let message = camera.health.message {
+                    Text(message)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            if camera.health.status == .offline, let lastSeen = camera.health.lastSeenAt {
+                Text("Last seen \(lastSeen.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Theme.textTertiary)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Device metadata, pushed rather than stacked. It must not compete with
+    /// video and recordings for attention.
+    private func informationRow(_ camera: Camera) -> some View {
+        DetailGroup {
+            SettingsNavRow(
+                title: "Camera Information",
+                subtitle: [camera.model, camera.firmware].compactMap { $0 }.joined(separator: " · "),
+                systemImage: "info.circle.fill",
+                tint: Theme.textSecondary
+            ) {
+                SettingsScreen(title: "Camera Information") {
+                    DetailGroup("Device") {
+                        DetailValueRow(label: "Name", value: camera.name)
+                        if let location = camera.location {
+                            SettingsDivider()
+                            DetailValueRow(label: "Location", value: location)
+                        }
+                        if let group = camera.group {
+                            SettingsDivider()
+                            DetailValueRow(label: "Group", value: group)
+                        }
+                        if let model = camera.model {
+                            SettingsDivider()
+                            DetailValueRow(label: "Model", value: model)
+                        }
+                        if let firmware = camera.firmware {
+                            SettingsDivider()
+                            DetailValueRow(label: "Firmware", value: firmware, monospaced: true)
+                        }
+                        SettingsDivider()
+                        DetailValueRow(label: "Identifier", value: camera.id, monospaced: true)
+                    }
+
+                    DetailGroup("Status") {
+                        DetailValueRow(
+                            label: "State",
+                            value: camera.health.status.accessibleDescription.capitalized)
+                        if let lastSeen = camera.health.lastSeenAt {
+                            SettingsDivider()
+                            DetailValueRow(
+                                label: "Last seen", value: lastSeen.relativeDescription)
+                        }
+                        if let message = camera.health.message {
+                            SettingsDivider()
+                            DetailValueRow(label: "Message", value: message)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -673,37 +785,7 @@ struct CameraDetailView: View {
                 : "Requires a higher role than \(environment.auth.state.user?.role.displayName ?? "yours")")
     }
 
-    // MARK: Details and events
-
-    private func detailsSection(_ camera: Camera) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            CardHeader(title: "Details", systemImage: "info.circle")
-            CameraStatusBadge(health: camera.health)
-            if let location = camera.location { detailRow("Location", location) }
-            if let group = camera.group { detailRow("Group", group) }
-            if let model = camera.model { detailRow("Model", model) }
-            if let firmware = camera.firmware { detailRow("Firmware", firmware) }
-            if let lastSeen = camera.health.lastSeenAt {
-                detailRow("Last seen", lastSeen.relativeDescription)
-            }
-            if let message = camera.health.message {
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .orionisCard()
-    }
-
-    private func detailRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-        }
-        .font(.subheadline)
-        .accessibilityElement(children: .combine)
-    }
+    // MARK: Recordings and activity
 
     @ViewBuilder
     private func recordingsSection(_ camera: Camera) -> some View {
