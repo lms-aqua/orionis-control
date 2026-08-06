@@ -60,3 +60,65 @@ workflows:
     artifacts:
       - $IOS_DIR/build/Build/Products/**/*.app
       - /tmp/xcodebuild_logs/*.log
+
+  # Produces an UNSIGNED, device-arch .ipa for sideloading via AltStore/SideStore,
+  # which re-sign the app with your own Apple ID at install time. No Apple
+  # Developer account or Codemagic signing setup required. This workflow is
+  # manual-only (no triggering block) so it doesn't double-build on every push;
+  # start it from the Codemagic UI when you want a fresh IPA.
+  ios-unsigned-ipa:
+    name: iOS unsigned IPA (AltStore sideload)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: 16.0
+      vars:
+        XCODE_PROJECT: "OrionisControl.xcodeproj"
+        XCODE_SCHEME: "OrionisControl"
+        IOS_DIR: "apps/ios"
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          set -euo pipefail
+          cd "$IOS_DIR"
+          xcodegen generate
+      - name: Resolve Swift Package dependencies
+        script: |
+          set -euo pipefail
+          cd "$IOS_DIR"
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME"
+      - name: Build unsigned device app
+        script: |
+          set -euo pipefail
+          cd "$IOS_DIR"
+          # generic/platform=iOS -> arm64 device build (not the simulator).
+          # Signing fully disabled; AltStore re-signs on install.
+          xcodebuild \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build | xcpretty
+      - name: Package unsigned .ipa
+        script: |
+          set -euo pipefail
+          cd "$IOS_DIR"
+          APP_PATH="build/Build/Products/Release-iphoneos/OrionisControl.app"
+          rm -rf Payload OrionisControl.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          # An .ipa is just a zip with the .app inside a top-level Payload/ dir.
+          zip -qr OrionisControl.ipa Payload
+          echo "Built unsigned IPA:"
+          ls -lh OrionisControl.ipa
+    artifacts:
+      - $IOS_DIR/OrionisControl.ipa
