@@ -128,6 +128,7 @@ struct InfrastructureView: View {
                 Section { LoadingStateView(message: "Reading infrastructure…") }
             }
         }
+        .orionisScreen()
         .navigationTitle("Infrastructure")
         .task {
             if model == nil { model = InfrastructureModel(service: environment.service) }
@@ -396,6 +397,7 @@ struct InfraConfigView: View {
                 ProgressView().padding()
             }
         }
+        .orionisScreen()
         .navigationTitle(kind.title)
         .navigationBarTitleDisplayMode(.inline)
         .task {

@@ -1,39 +1,34 @@
 import SwiftUI
 
+/// Settings, as a hub rather than one long wall of controls.
+///
+/// The screen answers "where is that setting?" in two ways: search, which jumps
+/// straight to the screen holding a control, and a short list of icon-led
+/// categories that each open a focused screen. Nothing was removed in the
+/// redesign — every control from the old single `Form` lives in a category.
 struct SettingsView: View {
     @Environment(AppEnvironment.self) private var environment
+    @State private var query = ""
     @State private var showSignOutConfirmation = false
-    @State private var diagnosticsReport: String?
-    @State private var connectionTest: ConnectionTestResult?
-    @State private var isTestingConnection = false
-
-    private enum ConnectionTestResult {
-        case success(GatewayMeta)
-        case failure(APIError)
-    }
 
     var body: some View {
-        @Bindable var preferences = environment.preferences
-
         NavigationStack {
-            Form {
-                accountSection
-                connectionSection
-                securitySection($preferences)
-                camerasSection($preferences)
-                infrastructureSection
-                notificationsSection
-                appearanceSection($preferences)
-                diagnosticsSection
-                signOutSection
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if searchIsActive {
+                        searchResults
+                    } else {
+                        hub
+                    }
+                }
+                .padding(16)
             }
+            .orionisScreen()
             .navigationTitle("Settings")
-            .sheet(item: Binding(
-                get: { diagnosticsReport.map { DiagnosticsPayload(text: $0) } },
-                set: { if $0 == nil { diagnosticsReport = nil } }
-            )) { payload in
-                DiagnosticsSheet(report: payload.text)
-            }
+            .searchable(
+                text: $query,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search settings")
             .confirmationDialog(
                 "Sign out of Orionis Control?",
                 isPresented: $showSignOutConfirmation,
@@ -51,404 +46,319 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Sections
+    private var searchIsActive: Bool {
+        !query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    // MARK: Hub
 
     @ViewBuilder
-    private var accountSection: some View {
+    private var hub: some View {
         if let user = environment.auth.state.user {
-            Section("Account") {
-                LabeledContent("Signed in as", value: user.name)
-                if let email = user.email {
-                    LabeledContent("Email", value: email)
-                }
-                LabeledContent("Role", value: user.role.displayName)
-                if !user.groups.isEmpty {
-                    LabeledContent("Groups") {
-                        Text(user.groups.joined(separator: ", "))
-                            .multilineTextAlignment(.trailing)
-                            .font(.caption)
+            profileCard(user)
+        }
+
+        SectionLabel("Preferences")
+        SettingsGroup {
+            SettingsNavRow(
+                title: "Security & Privacy",
+                subtitle: "Face ID, auto-lock, app-switcher privacy",
+                systemImage: "lock.shield.fill",
+                tint: Theme.good
+            ) { SecuritySettingsView() }
+
+            SettingsDivider(inset: 56)
+
+            SettingsNavRow(
+                title: "Cameras & Streaming",
+                subtitle: "Quality, layout, recordings",
+                systemImage: "video.fill",
+                tint: Theme.accent
+            ) { CameraSettingsView() }
+
+            SettingsDivider(inset: 56)
+
+            SettingsNavRow(
+                title: "Notifications",
+                subtitle: "Alerts, quiet hours, alert types",
+                systemImage: "bell.fill",
+                tint: Theme.warn
+            ) { NotificationSettingsView() }
+
+            SettingsDivider(inset: 56)
+
+            SettingsNavRow(
+                title: "Appearance",
+                subtitle: "Theme",
+                systemImage: "circle.lefthalf.filled",
+                tint: Color(lightHex: 0x8A6CFF, darkHex: 0x8A6CFF),
+                value: environment.preferences.appearance.displayName
+            ) { AppearanceSettingsView() }
+        }
+
+        SectionLabel("System")
+        SettingsGroup {
+            SettingsNavRow(
+                title: "Server & Connection",
+                subtitle: connectionSubtitle,
+                systemImage: "wifi",
+                tint: Theme.accent,
+                statusColor: environment.meta == nil ? Theme.warn : Theme.good
+            ) { ServerConnectionView() }
+
+            if environment.auth.state.user?.role == .administrator {
+                SettingsDivider(inset: 56)
+                SettingsNavRow(
+                    title: "Infrastructure",
+                    subtitle: "Caddy & Authelia",
+                    systemImage: "server.rack",
+                    tint: Theme.warn,
+                    chip: "Admin"
+                ) { InfrastructureView() }
+            }
+
+            SettingsDivider(inset: 56)
+
+            SettingsNavRow(
+                title: "About & Diagnostics",
+                subtitle: "Version, connection test, export report",
+                systemImage: "info.circle.fill",
+                tint: Theme.textSecondary,
+                value: environment.configuration.version
+            ) { AboutSettingsView() }
+        }
+
+        Button(role: .destructive) {
+            showSignOutConfirmation = true
+        } label: {
+            Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.critical)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    Theme.soft(Theme.critical),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+    }
+
+    private var connectionSubtitle: String {
+        let host =
+            URL(string: environment.preferences.serverURLString)?.host
+            ?? environment.preferences.serverURLString
+        let state = environment.meta == nil ? "Not verified yet" : "Connected"
+        return host.isEmpty ? state : "\(host) · \(state)"
+    }
+
+    /// Who you are signed in as, opening the account screen.
+    private func profileCard(_ user: CurrentUser) -> some View {
+        NavigationLink {
+            AccountSettingsView()
+        } label: {
+            HStack(spacing: 13) {
+                Text(String(user.name.prefix(1)).uppercased())
+                    .font(.system(size: 19, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(
+                        LinearGradient(
+                            colors: [
+                                Theme.accent, Color(lightHex: 0x8A6CFF, darkHex: 0x6A4CFF),
+                            ],
+                            startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(user.name)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Theme.textPrimary)
+                    HStack(spacing: 6) {
+                        if let email = user.email {
+                            Text(email)
+                                .font(.caption)
+                                .foregroundStyle(Theme.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        SettingsChip(
+                            text: user.role == .administrator ? "Admin" : user.role.displayName,
+                            tint: Theme.accent)
                     }
                 }
-                Button("Sign in again") {
-                    Task { await environment.auth.beginSignIn() }
-                }
-                NavigationLink {
-                    DeviceSessionsView()
-                } label: {
-                    LabeledContent("Signed-in devices", value: "Manage")
-                }
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
             }
+            .padding(14)
+            .orionisCard(fill: Theme.surfaceRaised)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private var connectionSection: some View {
-        Section {
-            LabeledContent("Gateway") {
-                Text(environment.preferences.serverURLString)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if let meta = environment.meta {
-                LabeledContent("Server version", value: meta.serverVersion)
-                LabeledContent("API version", value: meta.apiVersion)
-                LabeledContent("Environment", value: meta.environment.capitalized)
-            }
-
-            Button {
-                Task { await testConnection() }
-            } label: {
-                HStack {
-                    Text("Test connection")
-                    Spacer()
-                    if isTestingConnection { ProgressView() }
-                }
-            }
-            .disabled(isTestingConnection)
-
-            switch connectionTest {
-            case .success(let meta):
-                Label(
-                    "Connected to \(meta.product) \(meta.serverVersion)",
-                    systemImage: "checkmark.circle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.green)
-            case .failure(let error):
-                ErrorSummary(error: error)
-            case nil:
-                EmptyView()
-            }
-        } header: {
-            Text("Server connection")
-        } footer: {
-            Text("Orionis Control connects only to this address, over HTTPS.")
-        }
-    }
+    // MARK: Search
 
     @ViewBuilder
-    private func securitySection(_ preferences: Bindable<Preferences>) -> some View {
-        Section {
-            Toggle(
-                "Require \(environment.biometrics.availability.displayName)",
-                isOn: preferences.requireBiometricUnlock
-            )
-            .disabled(!environment.biometrics.availability.isAvailable)
-
-            if preferences.wrappedValue.requireBiometricUnlock {
-                Picker("Lock after", selection: preferences.autoLockMinutes) {
-                    Text("Immediately").tag(0)
-                    Text("1 minute").tag(1)
-                    Text("5 minutes").tag(5)
-                    Text("15 minutes").tag(15)
-                    Text("1 hour").tag(60)
-                }
+    private var searchResults: some View {
+        let matches = SettingsIndex.matches(for: query, isAdministrator: isAdministrator)
+        if matches.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 26, weight: .light))
+                    .foregroundStyle(Theme.textTertiary)
+                Text("No settings match “\(query)”")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
             }
-
-            Toggle(
-                "Confirm privileged actions",
-                isOn: preferences.requireBiometricForAdminActions
-            )
-            .disabled(!environment.biometrics.availability.isAvailable)
-
-            Toggle("Hide previews in the app switcher", isOn: preferences.hidePreviewsInAppSwitcher)
-        } header: {
-            Text("Security")
-        } footer: {
-            if environment.biometrics.availability.isAvailable {
-                Text(
-                    "Privileged actions include pausing DNS filtering, restarting a camera and running system operations. These are always checked by the server as well."
-                )
-            } else {
-                Text(
-                    "Biometric options are unavailable because this device has no passcode or enrolled biometrics."
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func camerasSection(_ preferences: Bindable<Preferences>) -> some View {
-        Section("Cameras") {
-            Picker("Default quality", selection: preferences.defaultStreamQuality) {
-                ForEach(StreamQuality.allCases) { quality in
-                    Text(quality.displayName).tag(quality)
-                }
-            }
-            Picker("Grid size", selection: preferences.gridColumns) {
-                Text("Large").tag(1)
-                Text("Medium").tag(2)
-                Text("Compact").tag(3)
-            }
-            Toggle("Start live view automatically", isOn: preferences.autoplayLiveView)
-            Toggle("Start muted", isOn: preferences.startMuted)
-            Toggle("Reduce quality on cellular", isOn: preferences.limitQualityOnCellular)
-
-            if environment.auth.state.user?.can(.recordingsView) == true {
-                NavigationLink {
-                    RecordingStorageView()
-                } label: {
-                    LabeledContent("Recordings", value: "Storage and retention")
+            .frame(maxWidth: .infinity)
+            .padding(.top, 40)
+        } else {
+            SectionLabel("\(matches.count) result\(matches.count == 1 ? "" : "s")")
+            SettingsGroup {
+                ForEach(Array(matches.enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 { SettingsDivider(inset: 56) }
+                    SettingsNavRow(
+                        title: entry.title,
+                        subtitle: entry.category.title,
+                        systemImage: entry.category.systemImage,
+                        tint: entry.category.tint
+                    ) { destination(for: entry.category) }
                 }
             }
         }
     }
 
-    /// Administrator-only, and gated on the same role the gateway enforces.
-    @ViewBuilder
-    private var infrastructureSection: some View {
-        if environment.auth.state.user?.role == .administrator {
-            Section {
-                NavigationLink {
-                    InfrastructureView()
-                } label: {
-                    LabeledContent("Caddy and Authelia", value: "Manage")
-                }
-            } header: {
-                Text("Infrastructure")
-            } footer: {
-                Text("Affects every site on the server and everyone's ability to sign in.")
-            }
-        }
+    private var isAdministrator: Bool {
+        environment.auth.state.user?.role == .administrator
     }
 
     @ViewBuilder
-    private var notificationsSection: some View {
-        Section {
-            NavigationLink("Notification preferences") { NotificationSettingsView() }
-        } header: {
-            Text("Notifications")
-        } footer: {
-            if environment.meta?.capabilities.push == false {
-                Text(
-                    "Push notifications are not configured on this gateway, so nothing will be delivered yet. Your preferences are still saved."
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func appearanceSection(_ preferences: Bindable<Preferences>) -> some View {
-        Section("Appearance") {
-            Picker("Theme", selection: preferences.appearance) {
-                ForEach(AppearanceSetting.allCases) { setting in
-                    Text(setting.displayName).tag(setting)
-                }
-            }
-            .pickerStyle(.segmented)
-        }
-    }
-
-    @ViewBuilder
-    private var diagnosticsSection: some View {
-        Section {
-            LabeledContent(
-                "Version",
-                value: "\(environment.configuration.version) (\(environment.configuration.build))")
-            LabeledContent("Build", value: environment.configuration.environment.displayName)
-            Button("Export diagnostic report") {
-                diagnosticsReport = DiagnosticsReport.build(environment: environment)
-            }
-        } header: {
-            Text("Diagnostics")
-        } footer: {
-            Text(
-                "The report contains no tokens, passwords, cookies or personal information. You can read it before sharing it."
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var signOutSection: some View {
-        Section {
-            Button("Sign out", role: .destructive) { showSignOutConfirmation = true }
-        }
-    }
-
-    private func testConnection() async {
-        isTestingConnection = true
-        connectionTest = nil
-        defer { isTestingConnection = false }
-        do {
-            connectionTest = .success(try await environment.service.meta())
-        } catch let error as APIError {
-            connectionTest = .failure(error)
-        } catch {
-            connectionTest = .failure(.unexpectedStatus(0, requestId: nil))
+    private func destination(for category: SettingsCategory) -> some View {
+        switch category {
+        case .account: AccountSettingsView()
+        case .security: SecuritySettingsView()
+        case .cameras: CameraSettingsView()
+        case .notifications: NotificationSettingsView()
+        case .appearance: AppearanceSettingsView()
+        case .connection: ServerConnectionView()
+        case .infrastructure: InfrastructureView()
+        case .about: AboutSettingsView()
         }
     }
 }
 
-private struct DiagnosticsPayload: Identifiable {
-    let text: String
-    var id: String { text }
+// MARK: - Search index
+
+/// The categories a setting can live in, and how each is presented.
+enum SettingsCategory: String, CaseIterable {
+    case account, security, cameras, notifications, appearance, connection, infrastructure, about
+
+    var title: String {
+        switch self {
+        case .account: return "Account"
+        case .security: return "Security & Privacy"
+        case .cameras: return "Cameras & Streaming"
+        case .notifications: return "Notifications"
+        case .appearance: return "Appearance"
+        case .connection: return "Server & Connection"
+        case .infrastructure: return "Infrastructure"
+        case .about: return "About & Diagnostics"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .account: return "person.crop.circle.fill"
+        case .security: return "lock.shield.fill"
+        case .cameras: return "video.fill"
+        case .notifications: return "bell.fill"
+        case .appearance: return "circle.lefthalf.filled"
+        case .connection: return "wifi"
+        case .infrastructure: return "server.rack"
+        case .about: return "info.circle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .account: return Theme.accent
+        case .security: return Theme.good
+        case .cameras: return Theme.accent
+        case .notifications: return Theme.warn
+        case .appearance: return Color(lightHex: 0x8A6CFF, darkHex: 0x8A6CFF)
+        case .connection: return Theme.accent
+        case .infrastructure: return Theme.warn
+        case .about: return Theme.textSecondary
+        }
+    }
+
+    /// Only administrators see infrastructure, matching what the gateway enforces.
+    var isAdministratorOnly: Bool { self == .infrastructure }
 }
 
-struct DiagnosticsSheet: View {
-    let report: String
-    @Environment(\.dismiss) private var dismiss
+/// A flat, searchable list of every control in Settings.
+///
+/// Kept next to the screens themselves: when a control is added, add its entry
+/// here so search keeps covering the whole surface.
+struct SettingsIndex {
+    struct Entry: Identifiable {
+        let title: String
+        let category: SettingsCategory
+        /// Extra words a person might type instead of the control's own name.
+        var keywords: String = ""
 
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                Text(report)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-            }
-            .navigationTitle("Diagnostics")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarLeading) {
-                    ShareLink(item: report) { Label("Share", systemImage: "square.and.arrow.up") }
-                }
-            }
-        }
-    }
-}
-
-struct NotificationSettingsView: View {
-    @Environment(AppEnvironment.self) private var environment
-    @State private var preferences = NotificationPreferences.default
-    @State private var availableKinds: [String] = []
-    @State private var pushConfigured = false
-    @State private var isLoading = true
-    @State private var isSaving = false
-    @State private var error: APIError?
-    @State private var savedPreferences = NotificationPreferences.default
-    @State private var saveConfirmation: String?
-
-    var body: some View {
-        Form {
-            if let error { Section { ErrorSummary(error: error) } }
-
-            if let saveConfirmation {
-                Section {
-                    Label(saveConfirmation, systemImage: "checkmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.green)
-                }
-            }
-
-            if !pushConfigured && !isLoading {
-                Section {
-                    Label(
-                        "Push notifications are not configured on this gateway. Preferences are saved but nothing will be delivered.",
-                        systemImage: "bell.slash"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                }
-            }
-
-            Section {
-                Toggle("Enable notifications", isOn: $preferences.enabled)
-                Picker("Minimum severity", selection: $preferences.minimumSeverity) {
-                    ForEach(EventSeverity.allCases, id: \.self) { severity in
-                        Text(severity.displayName).tag(severity)
-                    }
-                }
-            }
-
-            Section("Quiet hours") {
-                Toggle("Enabled", isOn: $preferences.quietHours.enabled)
-                if preferences.quietHours.enabled {
-                    Stepper(
-                        "From \(minuteLabel(preferences.quietHours.startMinute))",
-                        value: $preferences.quietHours.startMinute, in: 0...1439, step: 30)
-                    Stepper(
-                        "Until \(minuteLabel(preferences.quietHours.endMinute))",
-                        value: $preferences.quietHours.endMinute, in: 0...1439, step: 30)
-                    Toggle(
-                        "Allow critical alerts through",
-                        isOn: $preferences.criticalBypassesQuietHours)
-                }
-            }
-
-            if !availableKinds.isEmpty {
-                Section("Alert types") {
-                    ForEach(availableKinds, id: \.self) { kind in
-                        Toggle(
-                            kindLabel(kind),
-                            isOn: Binding(
-                                get: { preferences.kinds[kind] ?? true },
-                                set: { preferences.kinds[kind] = $0 }
-                            ))
-                    }
-                }
-            }
-        }
-        .navigationTitle("Notifications")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { Task { await save() } }
-                    .disabled(isLoading || isSaving || preferences == savedPreferences)
-            }
-        }
-        .task { await load() }
-        .onChange(of: preferences) { _, updated in
-            if updated != savedPreferences { saveConfirmation = nil }
-        }
-        .overlay {
-            if isLoading {
-                LoadingStateView()
-            } else if isSaving {
-                ProgressView("Saving…")
-                    .padding()
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
-        }
+        var id: String { "\(category.rawValue).\(title)" }
     }
 
-    private func minuteLabel(_ minute: Int) -> String {
-        String(format: "%02d:%02d", minute / 60, minute % 60)
-    }
+    static let entries: [Entry] = [
+        .init(title: "Signed in as", category: .account, keywords: "name user profile who"),
+        .init(title: "Email", category: .account, keywords: "address"),
+        .init(title: "Role and groups", category: .account, keywords: "admin permissions member"),
+        .init(title: "Sign in again", category: .account, keywords: "reauthenticate login refresh"),
+        .init(title: "Signed-in devices", category: .account, keywords: "sessions revoke phone"),
 
-    private func kindLabel(_ raw: String) -> String {
-        raw.replacingOccurrences(of: ".", with: " ").capitalized
-    }
+        .init(title: "Require Face ID / Touch ID", category: .security, keywords: "biometric unlock passcode"),
+        .init(title: "Lock after", category: .security, keywords: "auto-lock timeout idle"),
+        .init(title: "Confirm privileged actions", category: .security, keywords: "biometric admin confirm"),
+        .init(title: "Hide previews in the app switcher", category: .security, keywords: "privacy screenshot blur"),
 
-    private func load() async {
-        defer { isLoading = false }
-        do {
-            let response = try await environment.service.notificationPreferences()
-            preferences = response.preferences
-            savedPreferences = response.preferences
-            availableKinds = response.availableKinds
-            pushConfigured = response.pushConfigured
-            error = nil
-        } catch let apiError as APIError {
-            error = apiError
-        } catch {
-            self.error = .unexpectedStatus(0, requestId: nil)
-        }
-    }
+        .init(title: "Default quality", category: .cameras, keywords: "stream resolution bitrate hd"),
+        .init(title: "Grid size", category: .cameras, keywords: "layout columns tiles compact"),
+        .init(title: "Start live view automatically", category: .cameras, keywords: "autoplay"),
+        .init(title: "Start muted", category: .cameras, keywords: "audio sound mute volume"),
+        .init(title: "Reduce quality on cellular", category: .cameras, keywords: "data 5g lte mobile"),
+        .init(title: "Recordings storage & retention", category: .cameras, keywords: "disk keep days delete"),
 
-    private func save() async {
-        guard preferences != savedPreferences, !isSaving else { return }
-        let submitted = preferences
-        isSaving = true
-        error = nil
-        saveConfirmation = nil
-        defer { isSaving = false }
-        do {
-            try await environment.service.updateNotificationPreferences(submitted)
-            // The controls remain editable while the request is in flight. Mark
-            // only the exact payload the server accepted as saved, so a newer
-            // local edit does not silently lose its dirty state.
-            savedPreferences = submitted
-            saveConfirmation =
-                preferences == submitted
-                ? "Notification preferences saved."
-                : "Saved. You have newer changes that still need saving."
-        } catch let apiError as APIError {
-            error = apiError
-        } catch {
-            self.error = .unexpectedStatus(0, requestId: nil)
+        .init(title: "Enable notifications", category: .notifications, keywords: "push alerts"),
+        .init(title: "Minimum severity", category: .notifications, keywords: "critical warning filter"),
+        .init(title: "Quiet hours", category: .notifications, keywords: "do not disturb night schedule"),
+        .init(title: "Alert types", category: .notifications, keywords: "kinds motion offline events"),
+
+        .init(title: "Theme", category: .appearance, keywords: "dark light appearance mode"),
+
+        .init(title: "Gateway address", category: .connection, keywords: "server url host https"),
+        .init(title: "Test connection", category: .connection, keywords: "check reachability ping"),
+        .init(title: "Server and API version", category: .connection, keywords: "build environment"),
+
+        .init(title: "Caddy and Authelia", category: .infrastructure, keywords: "proxy sso sites routes"),
+
+        .init(title: "App version", category: .about, keywords: "build number release"),
+        .init(title: "Export diagnostic report", category: .about, keywords: "support logs share troubleshoot"),
+    ]
+
+    /// Case- and diacritic-insensitive match over a control's name, its keywords
+    /// and its category name.
+    static func matches(for query: String, isAdministrator: Bool) -> [Entry] {
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        guard !needle.isEmpty else { return [] }
+        return entries.filter { entry in
+            guard !entry.category.isAdministratorOnly || isAdministrator else { return false }
+            let haystack = "\(entry.title) \(entry.keywords) \(entry.category.title)"
+            return haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive])
+                != nil
         }
     }
 }

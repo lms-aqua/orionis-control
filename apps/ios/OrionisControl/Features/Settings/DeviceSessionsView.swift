@@ -81,6 +81,7 @@ struct DeviceSessionsView: View {
                 LoadingStateView(message: "Loading devices...")
             }
         }
+        .orionisScreen()
         .navigationTitle("Signed-in devices")
         .navigationBarTitleDisplayMode(.inline)
         .task {

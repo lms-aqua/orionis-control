@@ -75,3 +75,5 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+mock-preview.html
+settings-mock-all-screens.html

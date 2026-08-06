@@ -107,6 +107,7 @@ struct RecordingStorageView: View {
                 Section { LoadingStateView(message: "Loading storage…") }
             }
         }
+        .orionisScreen()
         .navigationTitle("Recordings")
         .task {
             if model == nil { model = RecordingStorageModel(service: environment.service) }
