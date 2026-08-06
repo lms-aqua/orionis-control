@@ -155,9 +155,14 @@ struct AdGuardView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var model: AdGuardViewModel?
     @State private var showProtectionSheet = false
+    @State private var path = NavigationPath()
+
+    /// Pushing DNS activity from a ranked row, which pre-fills the feed's
+    /// search so tapping "doubleclick.net" lands on that domain's queries.
+    private enum ActivityRoute: Hashable { case activity }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if let model { content(model) } else { LoadingStateView() }
             }
@@ -191,149 +196,220 @@ struct AdGuardView: View {
             }
         } else if let status = model.status {
             ScrollView {
-                VStack(spacing: 16) {
-                    protectionCard(status, model: model)
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    protectionHero(status)
+
                     if let stats = model.stats {
-                        rangePicker(model)
-                        statsCard(stats)
-                        chartCard(stats)
-                        topListsCard(stats)
+                        analytics(stats, model: model)
                     }
-                    NavigationLink {
-                        QueryLogView(model: model)
-                    } label: {
-                        Label("Query log", systemImage: "list.bullet.rectangle")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
-                            .background(
-                                .background.secondary, in: RoundedRectangle(cornerRadius: 16))
-                    }
-                    .buttonStyle(.plain)
+
+                    activityEntry(model)
                 }
                 .padding(16)
+            }
+            .orionisScreen()
+            .navigationDestination(for: ActivityRoute.self) { _ in
+                QueryLogView(model: model)
             }
             .refreshable { await model.load(showSpinner: false) }
         }
     }
 
-    private func protectionCard(_ status: AdGuardStatus, model: AdGuardViewModel) -> some View {
-        DashboardCard(
-            title: "Protection",
-            systemImage: status.protectionEnabled ? "shield.fill" : "shield.slash.fill"
-        ) {
-            if status.protectionEnabled {
-                StatusBadge(status: .healthy, label: "Filtering active")
-            } else {
-                ProtectionPausedBanner(status: status)
-            }
+    // MARK: Protection hero
 
-            if let version = status.version {
-                Text("AdGuard Home \(version)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+    /// One unambiguous protection state, with the action beside it rather than
+    /// buried in a card body.
+    @ViewBuilder
+    private func protectionHero(_ status: AdGuardStatus) -> some View {
+        let canPause = environment.auth.state.user?.can(.adguardProtectionPause) == true
+        let resumeText = status.override?.resumeAt.map { resumeAt -> String in
+            let remaining = resumeAt.timeIntervalSinceNow
+            guard remaining > 0 else { return "Resuming now" }
+            let minutes = Int((remaining / 60).rounded(.up))
+            return minutes < 60
+                ? "Resumes in \(minutes) minute\(minutes == 1 ? "" : "s")"
+                : "Resumes at \(resumeAt.formatted(date: .omitted, time: .shortened))"
+        }
 
-            if environment.auth.state.user?.can(.adguardProtectionPause) == true {
-                Button(status.protectionEnabled ? "Pause protection" : "Resume protection") {
-                    showProtectionSheet = true
-                }
-                .buttonStyle(.bordered)
-                .tint(status.protectionEnabled ? .orange : .green)
-            } else {
-                Text("Your role cannot change protection.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        OperationalStatusHero(
+            title: status.protectionEnabled ? "Protection active" : "Protection paused",
+            message: status.protectionEnabled
+                ? "DNS filtering is protecting your network."
+                : resumeText
+                    ?? "DNS filtering is stopped for every device on this network.",
+            systemImage: status.protectionEnabled ? "shield.fill" : "shield.slash.fill",
+            // Amber, not red: a deliberate pause is a warning state, not a
+            // failure.
+            tint: status.protectionEnabled ? Theme.good : Theme.warn,
+            caption: status.version.map { "AdGuard Home \($0)" },
+            actionTitle: canPause
+                ? (status.protectionEnabled ? "Pause Protection" : "Resume Now") : nil,
+            actionIsDestructive: status.protectionEnabled,
+            action: canPause ? { showProtectionSheet = true } : nil)
+
+        if !canPause {
+            Text("Your role cannot change protection.")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 
-    private func rangePicker(_ model: AdGuardViewModel) -> some View {
+    // MARK: Analytics
+
+    @ViewBuilder
+    private func analytics(_ stats: AdGuardStats, model: AdGuardViewModel) -> some View {
         @Bindable var model = model
-        return Picker("Range", selection: $model.range) {
-            ForEach(AdGuardRange.allCases) { range in
-                Text(range.displayName).tag(range)
-            }
-        }
-        .pickerStyle(.segmented)
-        .onChange(of: model.range) { _, _ in Task { await model.load(showSpinner: false) } }
-    }
 
-    private func statsCard(_ stats: AdGuardStats) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 12) {
-            MetricTile(
-                title: "Queries", value: stats.totalQueries.formattedCount,
-                systemImage: "arrow.left.arrow.right")
-            MetricTile(
-                title: "Blocked", value: stats.blockedQueries.formattedCount,
-                caption: String(format: "%.1f%%", stats.blockedPercent),
-                systemImage: "hand.raised.fill", tint: .orange)
-            MetricTile(
-                title: "Avg response",
-                value: String(format: "%.0f ms", stats.averageProcessingMs),
-                systemImage: "timer")
+        VStack(alignment: .leading, spacing: 13) {
+            SectionLabel(title: "Activity") {
+                // The range control belongs with the analytics it scopes, not
+                // floating above the whole screen.
+                Picker("Range", selection: $model.range) {
+                    ForEach(AdGuardRange.allCases) { range in
+                        Text(range.displayName).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 210)
+                // Generation checks inside the model keep an older range's
+                // response from overwriting a newer one.
+                .onChange(of: model.range) { _, _ in
+                    Task { await model.load(showSpinner: false) }
+                }
+            }
+
+            MetricStrip(metrics: [
+                .init(value: stats.totalQueries.formattedCount, label: "Queries"),
+                .init(
+                    value: stats.blockedQueries.formattedCount, label: "Blocked",
+                    caption: String(format: "%.1f%%", stats.blockedPercent),
+                    tint: Theme.accent),
+                .init(
+                    value: String(format: "%.0f ms", stats.averageProcessingMs),
+                    label: "Avg response"),
+            ])
+
+            chart(stats)
         }
+
+        topActivity(stats, model: model)
     }
 
     @ViewBuilder
-    private func chartCard(_ stats: AdGuardStats) -> some View {
+    private func chart(_ stats: AdGuardStats) -> some View {
         if stats.series.count > 1 {
-            DashboardCard(title: "Query volume", systemImage: "chart.bar.fill") {
-                Chart {
-                    ForEach(stats.series) { point in
-                        BarMark(
-                            x: .value("Time", point.at),
-                            y: .value("Allowed", max(0, point.queries - point.blocked))
-                        )
-                        .foregroundStyle(by: .value("Result", "Allowed"))
+            Chart {
+                ForEach(stats.series) { point in
+                    BarMark(
+                        x: .value("Time", point.at),
+                        y: .value("Allowed", max(0, point.queries - point.blocked))
+                    )
+                    .foregroundStyle(by: .value("Result", "Allowed"))
 
-                        BarMark(
-                            x: .value("Time", point.at),
-                            y: .value("Blocked", point.blocked)
-                        )
-                        .foregroundStyle(by: .value("Result", "Blocked"))
+                    BarMark(
+                        x: .value("Time", point.at),
+                        y: .value("Blocked", point.blocked)
+                    )
+                    .foregroundStyle(by: .value("Result", "Blocked"))
+                }
+            }
+            // Blocked is the accent, not a warning colour: a blocked query is
+            // protection succeeding.
+            .chartForegroundStyleScale([
+                "Allowed": Theme.good, "Blocked": Theme.accent,
+            ])
+            .chartLegend(position: .bottom, spacing: 10)
+            .chartYAxis {
+                AxisMarks(position: .leading) { value in
+                    AxisGridLine().foregroundStyle(Theme.hairline)
+                    AxisValueLabel {
+                        if let count = value.as(Int.self) {
+                            Text(count.formattedCount)
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(Theme.textTertiary)
+                        }
                     }
                 }
-                .chartForegroundStyleScale(["Allowed": Color.accentColor, "Blocked": Color.orange])
-                .chartLegend(position: .bottom)
-                .frame(height: 180)
-                .accessibilityLabel(
-                    "Query volume chart. \(stats.totalQueries) queries, \(stats.blockedQueries) blocked."
-                )
             }
+            .chartXAxis {
+                AxisMarks { value in
+                    AxisValueLabel {
+                        if let date = value.as(Date.self) {
+                            Text(date.formatted(date: .omitted, time: .shortened))
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                }
+            }
+            .frame(height: 170)
+            .padding(.top, 2)
+            .accessibilityLabel("Query volume over time")
+            .accessibilityValue(
+                "\(stats.totalQueries) queries, \(stats.blockedQueries) blocked, "
+                    + String(format: "%.1f percent", stats.blockedPercent))
         }
     }
 
-    private func topListsCard(_ stats: AdGuardStats) -> some View {
-        DashboardCard(title: "Top activity", systemImage: "list.number") {
-            topList("Most blocked", stats.topBlockedDomains)
-            if !stats.topClients.isEmpty {
-                Divider().padding(.vertical, 4)
-                topList("Busiest clients", stats.topClients)
-            }
-        }
-    }
+    // MARK: Top activity
 
     @ViewBuilder
-    private func topList(_ title: String, _ items: [NameCount]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline.weight(.medium))
-            if items.isEmpty {
+    private func topActivity(_ stats: AdGuardStats, model: AdGuardViewModel) -> some View {
+        rankedGroup(
+            "Top blocked domains", items: stats.topBlockedDomains, tint: Theme.accent,
+            model: model)
+        rankedGroup(
+            "Busiest clients", items: stats.topClients, tint: Theme.good, model: model)
+    }
+
+    /// Ranked rows that filter DNS activity when tapped, so the list is a way
+    /// into the feed rather than a dead end.
+    @ViewBuilder
+    private func rankedGroup(
+        _ title: String, items: [NameCount], tint: Color, model: AdGuardViewModel
+    ) -> some View {
+        if items.isEmpty {
+            DetailGroup(title) {
                 Text("Nothing recorded in this period.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(items.prefix(5)) { item in
-                    HStack {
-                        Text(item.name).font(.caption).lineLimit(1)
-                        Spacer()
-                        Text(item.count.formattedCount)
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            }
+        } else {
+            let top = Array(items.prefix(5))
+            let peak = Double(top.map(\.count).max() ?? 1)
+            DetailGroup(title) {
+                ForEach(Array(top.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { SettingsDivider() }
+                    RankedActivityRow(
+                        name: item.name,
+                        count: item.count,
+                        fraction: peak > 0 ? Double(item.count) / peak : 0,
+                        tint: tint
+                    ) {
+                        model.querySearch = item.name
+                        path.append(ActivityRoute.activity)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Activity entry
+
+    /// The way into the feed. Kept as an honest navigation row rather than a
+    /// preview: this screen does not load queries, and fetching some purely to
+    /// decorate an entry point would be a hidden request per §25.
+    private func activityEntry(_ model: AdGuardViewModel) -> some View {
+        DetailGroup {
+            SettingsNavRow(
+                title: "DNS Activity",
+                subtitle: "Search and filter recent queries by domain or client",
+                systemImage: "list.bullet.rectangle.fill"
+            ) { QueryLogView(model: model) }
+        }
     }
 }
 

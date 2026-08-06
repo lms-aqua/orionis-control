@@ -336,6 +336,55 @@ struct OperationalStatusHero: View {
     }
 }
 
+/// A row of headline figures separated by hairlines rather than boxed into
+/// individual cards.
+///
+/// Three related numbers describing one subject are one surface, not three
+/// floating tiles — typography carries the hierarchy. Wraps to a second line at
+/// large Dynamic Type sizes instead of truncating.
+struct MetricStrip: View {
+    struct Metric: Identifiable {
+        let id = UUID()
+        let value: String
+        let label: String
+        var caption: String?
+        var tint: Color?
+    }
+
+    let metrics: [Metric]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        let columns = dynamicTypeSize >= .accessibility1 ? 1 : min(3, max(1, metrics.count))
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), alignment: .topLeading), count: columns),
+            spacing: 16
+        ) {
+            ForEach(metrics) { metric in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(metric.value)
+                        .font(.system(size: 25, weight: .bold).monospacedDigit())
+                        .foregroundStyle(metric.tint ?? Theme.textPrimary)
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                    Text(metric.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                    if let caption = metric.caption {
+                        Text(caption)
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(
+                    "\(metric.label): \(metric.value)\(metric.caption.map { ", \($0)" } ?? "")")
+            }
+        }
+    }
+}
+
 // MARK: - Detail surfaces
 
 /// The hero at the top of a detail sheet: the subject, its outcome, and one or
