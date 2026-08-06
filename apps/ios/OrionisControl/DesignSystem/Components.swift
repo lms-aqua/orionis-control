@@ -265,6 +265,77 @@ struct SheetScaffold<Content: View>: View {
     }
 }
 
+// MARK: - Operational status
+
+/// The single "is anything wrong?" statement at the top of an operations
+/// screen. Used by System and by the Network protection state.
+///
+/// Deliberately not a card: it is the screen's headline, so it reads as
+/// typography on the ground rather than as one more rounded box among several.
+struct OperationalStatusHero: View {
+    let title: String
+    let message: String
+    var systemImage: String
+    var tint: Color
+    var caption: String?
+    /// Optional trailing action, e.g. Pause / Resume protection.
+    var actionTitle: String?
+    var actionIsDestructive: Bool = false
+    var actionIsBusy: Bool = false
+    var action: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .top, spacing: 13) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 46, height: 46)
+                    .background(
+                        Theme.soft(tint),
+                        in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 21, weight: .bold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(message)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let caption {
+                        Text(caption)
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    HStack(spacing: 7) {
+                        if actionIsBusy { ProgressView().controlSize(.small) }
+                        Text(actionTitle)
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(actionIsDestructive ? Theme.critical : Theme.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        Theme.soft(actionIsDestructive ? Theme.critical : Theme.accent),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(actionIsBusy)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 // MARK: - Detail surfaces
 
 /// The hero at the top of a detail sheet: the subject, its outcome, and one or
