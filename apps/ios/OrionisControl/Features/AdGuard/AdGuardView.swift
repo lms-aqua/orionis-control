@@ -360,63 +360,22 @@ struct ProtectionSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if status.protectionEnabled {
-                    Section {
-                        Picker("Pause for", selection: $duration) {
-                            ForEach(durations, id: \.1) { label, seconds in
-                                Text(label).tag(seconds)
-                            }
-                        }
-                        TextField("Reason (optional)", text: $reason, axis: .vertical)
-                            .lineLimit(2...3)
-                    } header: {
-                        Text("Pause DNS filtering")
-                    } footer: {
-                        Text(
-                            "Every device on this network will resolve DNS unfiltered until protection resumes. Filtering restores automatically when the timer ends. This action is recorded against your account."
-                        )
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if status.protectionEnabled {
+                        pauseFlow
+                    } else {
+                        resumeFlow
                     }
 
-                    Section {
-                        Button(role: .destructive) {
-                            Task { await submit(enabled: false) }
-                        } label: {
-                            if isSubmitting {
-                                ProgressView()
-                            } else {
-                                Text("Pause protection")
-                            }
-                        }
-                        .disabled(isSubmitting)
-                    }
-                } else {
-                    Section {
-                        Button {
-                            Task { await submit(enabled: true) }
-                        } label: {
-                            if isSubmitting {
-                                ProgressView()
-                            } else {
-                                Text("Resume protection now")
-                            }
-                        }
-                        .disabled(isSubmitting)
-                    } header: {
-                        Text("Protection is paused")
-                    } footer: {
-                        if let override = status.override, let resumeAt = override.resumeAt {
-                            Text(
-                                "Scheduled to resume at \(resumeAt.formatted(date: .omitted, time: .shortened))."
-                            )
-                        }
+                    if let error {
+                        WarningBanner(
+                            title: error.title, message: error.message, tint: Theme.critical)
                     }
                 }
-
-                if let error {
-                    Section { ErrorSummary(error: error) }
-                }
+                .padding(16)
             }
+            .orionisScreen()
             .navigationTitle("Protection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -424,6 +383,131 @@ struct ProtectionSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+        }
+    }
+
+    // MARK: Pause
+
+    private var pauseFlow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // The consequence leads. Everything below is how long and why.
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: "shield.slash.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(Theme.critical)
+                Text("Pause network protection?")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text("DNS filtering will stop for every device on this network.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+
+            SectionLabel("Pause for")
+            // A wrapping grid rather than a Picker: every option is visible, so
+            // the shortest safe duration is as easy to choose as the longest.
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8
+            ) {
+                ForEach(durations, id: \.1) { label, seconds in
+                    Button {
+                        duration = seconds
+                    } label: {
+                        Text(label)
+                            .font(.system(size: 13, weight: duration == seconds ? .semibold : .medium))
+                            .foregroundStyle(duration == seconds ? .white : Theme.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(
+                                duration == seconds ? Theme.critical : Theme.inset,
+                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .strokeBorder(
+                                        duration == seconds ? .clear : Theme.hairline, lineWidth: 1)
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(duration == seconds ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+
+            SectionLabel("Reason")
+            TextField("Optional — recorded in the audit log", text: $reason, axis: .vertical)
+                .lineLimit(2...3)
+                .font(.system(size: 15))
+                .padding(12)
+                .background(Theme.inset, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1))
+
+            DestructiveActionButton(
+                title: "Pause Protection", systemImage: "shield.slash.fill", isBusy: isSubmitting
+            ) {
+                Task { await submit(enabled: false) }
+            }
+            .padding(.top, 2)
+
+            Text(
+                "Filtering restores automatically when the timer ends. This action is recorded against your account."
+            )
+            .font(.caption)
+            .foregroundStyle(Theme.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Resume
+
+    private var resumeFlow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: "shield.lefthalf.filled.slash")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(Theme.warn)
+                Text("Protection is paused")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                // The scheduled resume is the single most useful fact here, so
+                // it is stated prominently rather than as a footnote.
+                if let override = status.override, let resumeAt = override.resumeAt {
+                    Text(
+                        "Resumes automatically at \(resumeAt.formatted(date: .omitted, time: .shortened))."
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+
+            Button {
+                Task { await submit(enabled: true) }
+            } label: {
+                HStack(spacing: 8) {
+                    if isSubmitting {
+                        ProgressView().tint(.white)
+                    } else {
+                        Image(systemName: "shield.fill").font(.system(size: 15, weight: .semibold))
+                    }
+                    Text("Resume Protection Now")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Theme.good, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSubmitting)
         }
     }
 
