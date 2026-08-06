@@ -265,6 +265,205 @@ struct SheetScaffold<Content: View>: View {
     }
 }
 
+// MARK: - Detail surfaces
+
+/// The hero at the top of a detail sheet: the subject, its outcome, and one or
+/// two lines of context. The subject is the only loud element.
+struct SheetHero: View {
+    let title: String
+    var subtitle: String?
+    var caption: String?
+    var badge: String?
+    var badgeTint: Color = Theme.accent
+    var monospacedTitle: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title)
+                .font(
+                    monospacedTitle
+                        ? .system(size: 21, weight: .semibold, design: .monospaced)
+                        : .system(size: 22, weight: .bold)
+                )
+                .foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if let badge {
+                StatusPill(title: badge, tint: badgeTint)
+            }
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            if let caption {
+                Text(caption)
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+    }
+}
+
+/// A labelled group of detail rows on one Orionis surface. The V2 replacement
+/// for `Form` + `Section` on sheets.
+struct DetailGroup<Content: View>: View {
+    let title: String?
+    @ViewBuilder var content: Content
+
+    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title { SectionLabel(title) }
+            VStack(spacing: 0) { content }
+                .orionisCard()
+        }
+    }
+}
+
+/// A label and its value. Values worth copying are selectable, and technical
+/// values render monospaced so an address or a rule stays readable.
+struct DetailValueRow: View {
+    let label: String
+    let value: String
+    var monospaced: Bool = false
+    var tint: Color?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.textSecondary)
+            Spacer(minLength: 10)
+            Text(value)
+                .font(
+                    monospaced
+                        ? .system(size: 13, design: .monospaced)
+                        : .system(size: 14, weight: .medium)
+                )
+                .foregroundStyle(tint ?? Theme.textPrimary)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
+    }
+}
+
+/// A ranked row with a proportional bar — top domains, top clients.
+///
+/// The bar is scaled against the largest value in the list, so it compares
+/// items against each other rather than implying an absolute ceiling.
+struct RankedActivityRow: View {
+    let name: String
+    let count: Int
+    let fraction: Double
+    var tint: Color = Theme.accent
+    var action: (() -> Void)?
+
+    var body: some View {
+        let row = VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text(name)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(count.formatted())
+                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            GeometryReader { geo in
+                Capsule()
+                    .fill(tint.opacity(0.55))
+                    .frame(width: max(2, geo.size.width * min(1, max(0, fraction))))
+            }
+            .frame(height: 3)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(name), \(count)")
+
+        if let action {
+            Button(action: action) { row }
+                .buttonStyle(.plain)
+                .accessibilityHint("Filters DNS activity to this")
+        } else {
+            row
+        }
+    }
+}
+
+/// A single stacked bar showing an outcome mix. Chosen over a pie or donut
+/// because the numbers stay the primary information and a bar reads correctly
+/// at any Dynamic Type size.
+struct OutcomeMixBar: View {
+    struct Segment: Identifiable {
+        let id = UUID()
+        let label: String
+        let count: Int
+        let tint: Color
+    }
+
+    let segments: [Segment]
+
+    private var total: Int { max(1, segments.reduce(0) { $0 + $1.count }) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            GeometryReader { geo in
+                HStack(spacing: 2) {
+                    ForEach(segments.filter { $0.count > 0 }) { segment in
+                        Capsule()
+                            .fill(segment.tint)
+                            .frame(
+                                width: max(
+                                    3,
+                                    geo.size.width * (Double(segment.count) / Double(total))
+                                        - 2))
+                    }
+                }
+            }
+            .frame(height: 9)
+
+            // The legend carries the numbers, so the bar never has to be
+            // measured by eye and colour is never the only signal.
+            HStack(spacing: 14) {
+                ForEach(segments.filter { $0.count > 0 }) { segment in
+                    HStack(spacing: 5) {
+                        Circle().fill(segment.tint).frame(width: 7, height: 7)
+                        Text(segment.label)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.textSecondary)
+                        Text(segment.count.formatted())
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(Theme.textPrimary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            segments.filter { $0.count > 0 }
+                .map { "\($0.label) \($0.count)" }
+                .joined(separator: ", "))
+    }
+}
+
 // MARK: - Sensory feedback
 
 /// Meaningful-moment haptics, funnelled through one place so the app never

@@ -551,58 +551,137 @@ struct QueryDetailSheet: View {
     @State private var isSubmitting = false
     @State private var confirming: RuleKind?
 
+    /// Outcome presentation, matching the activity feed exactly so a query
+    /// looks the same in the list and in its detail.
+    private var outcome: (label: String, tint: Color) {
+        switch query.status {
+        case .allowed: ("Allowed", Theme.good)
+        case .blocked: ("Blocked", Theme.accent)
+        case .rewritten: ("Rewritten", Theme.warn)
+        case .safeSearch: ("Safe Search", Theme.good)
+        case .unknown: ("Unknown", Theme.textTertiary)
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Query") {
-                    LabeledContent("Domain") {
-                        Text(query.domain).textSelection(.enabled)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    SheetHero(
+                        title: query.domain,
+                        subtitle: query.clientName ?? query.client,
+                        caption: query.at.formatted(date: .abbreviated, time: .standard),
+                        badge: outcome.label,
+                        badgeTint: outcome.tint,
+                        monospacedTitle: true)
+
+                    DetailGroup("Request") {
+                        DetailValueRow(label: "Type", value: query.type, monospaced: true)
+                        SettingsDivider()
+                        DetailValueRow(label: "Client", value: query.clientName ?? query.client)
+                        if let ms = query.processingMs {
+                            SettingsDivider()
+                            DetailValueRow(
+                                label: "Processing", value: String(format: "%.2f ms", ms),
+                                monospaced: true)
+                        }
+                        if let upstream = query.upstream {
+                            SettingsDivider()
+                            DetailValueRow(
+                                label: "Upstream", value: upstream, monospaced: true)
+                        }
+                        if let code = query.responseCode, !code.isEmpty {
+                            SettingsDivider()
+                            DetailValueRow(label: "Response", value: code, monospaced: true)
+                        }
                     }
-                    LabeledContent("Client", value: query.clientName ?? query.client)
-                    LabeledContent("Type", value: query.type)
-                    LabeledContent("Result", value: query.status.displayName)
-                    if let reason = query.reason, !reason.isEmpty {
-                        LabeledContent("AdGuard reason", value: reason)
+
+                    // Only shown when AdGuard actually explained itself; an
+                    // empty "Filtering" group would imply missing information.
+                    if hasFilteringDetail {
+                        DetailGroup("Filtering") {
+                            DetailValueRow(
+                                label: "Result", value: query.status.displayName,
+                                tint: outcome.tint)
+                            if let reason = query.reason, !reason.isEmpty {
+                                SettingsDivider()
+                                DetailValueRow(label: "Reason", value: reason)
+                            }
+                            if let rule = query.rule, !rule.isEmpty {
+                                SettingsDivider()
+                                DetailValueRow(
+                                    label: "Matching rule", value: rule, monospaced: true)
+                            }
+                        }
                     }
-                    LabeledContent(
-                        "Time", value: query.at.formatted(date: .abbreviated, time: .standard))
-                    if let ms = query.processingMs {
-                        LabeledContent("Processing", value: String(format: "%.2f ms", ms))
+
+                    if !query.answers.isEmpty {
+                        DetailGroup("Answers") {
+                            ForEach(Array(query.answers.enumerated()), id: \.offset) { index, answer in
+                                if index > 0 { SettingsDivider() }
+                                DetailValueRow(
+                                    label: "Record \(index + 1)", value: answer, monospaced: true)
+                            }
+                        }
                     }
-                    if let upstream = query.upstream {
-                        LabeledContent("Upstream", value: upstream)
+
+                    DetailGroup {
+                        SettingsButtonRow(
+                            title: isWatched ? "Stop Watching Domain" : "Watch Domain",
+                            systemImage: isWatched ? "star.slash" : "star",
+                            tint: Theme.warn
+                        ) { isWatched.toggle() }
+                        SettingsDivider()
+                        ShareLink(item: query.domain) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(width: 22)
+                                Text("Share Domain")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(Theme.accent)
+                                Spacer(minLength: 8)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                        }
+                    }
+
+                    // Network-wide changes are kept visually separate from the
+                    // per-device actions above, because their blast radius is
+                    // every device on the network.
+                    if environment.auth.state.user?.can(.adguardRulesWrite) == true {
+                        DetailGroup("Network-wide") {
+                            SettingsButtonRow(
+                                title: "Block This Domain",
+                                subtitle: "Blocks it for every device",
+                                systemImage: "hand.raised.fill",
+                                tint: Theme.critical,
+                                isEnabled: !isSubmitting
+                            ) { confirming = .block }
+                            SettingsDivider()
+                            SettingsButtonRow(
+                                title: "Always Allow This Domain",
+                                subtitle: "Bypasses every filter list",
+                                systemImage: "checkmark.shield.fill",
+                                tint: Theme.good,
+                                isEnabled: !isSubmitting
+                            ) { confirming = .allow }
+                        }
+                        SettingsHint(
+                            "Rule changes apply network-wide and are recorded in the audit log.")
+                    }
+
+                    if let error {
+                        WarningBanner(
+                            title: error.title, message: error.message, tint: Theme.critical)
                     }
                 }
-
-                if let rule = query.rule {
-                    Section("Matching rule") {
-                        Text(rule).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                }
-
-                Section {
-                    Button { isWatched.toggle() } label: {
-                        Label(
-                            isWatched ? "Stop watching domain" : "Watch domain",
-                            systemImage: isWatched ? "star.slash" : "star")
-                    }
-                    ShareLink(item: query.domain) {
-                        Label("Share domain", systemImage: "square.and.arrow.up")
-                    }
-                }
-
-                if environment.auth.state.user?.can(.adguardRulesWrite) == true {
-                    Section {
-                        Button("Block this domain", role: .destructive) { confirming = .block }
-                        Button("Always allow this domain") { confirming = .allow }
-                    } footer: {
-                        Text("Rule changes apply network-wide and are recorded in the audit log.")
-                    }
-                    .disabled(isSubmitting)
-                }
-
-                if let error { Section { ErrorSummary(error: error) } }
+                .padding(16)
             }
+            .orionisScreen()
             .navigationTitle("Query")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -629,6 +708,12 @@ struct QueryDetailSheet: View {
         }
     }
 
+    private var hasFilteringDetail: Bool {
+        query.status != .allowed
+            || (query.reason.map { !$0.isEmpty } ?? false)
+            || (query.rule.map { !$0.isEmpty } ?? false)
+    }
+
     private func submit(_ kind: RuleKind) async {
         isSubmitting = true
         error = nil
@@ -651,52 +736,97 @@ struct QueryInsightsSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    LabeledContent("Loaded sample", value: insights.total.formatted())
-                    LabeledContent("Allowed", value: insights.allowed.formatted())
-                    LabeledContent("Blocked", value: insights.blocked.formatted())
-                    if insights.other > 0 {
-                        LabeledContent("Other", value: insights.other.formatted())
-                    }
-                    if let rate = insights.blockRate {
-                        LabeledContent("Block rate", value: String(format: "%.1f%%", rate))
-                    }
-                } header: {
-                    Text("Outcome mix")
-                } footer: {
-                    Text("Insights describe only the query rows currently loaded on this device.")
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // The sample size leads, because every number below it is
+                    // only true of the rows currently loaded.
+                    SheetHero(
+                        title: "\(insights.total.formatted()) queries",
+                        subtitle: "Loaded activity",
+                        caption: insights.blockRate.map { String(format: "%.1f%% blocked", $0) })
 
-                insightList("Top domains", items: insights.topDomains)
-                insightList("Top clients", items: insights.topClients)
+                    DetailGroup("Outcome mix") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            OutcomeMixBar(segments: [
+                                .init(
+                                    label: "Allowed", count: insights.allowed, tint: Theme.good),
+                                .init(
+                                    label: "Blocked", count: insights.blocked, tint: Theme.accent),
+                                .init(
+                                    label: "Other", count: insights.other,
+                                    tint: Theme.textTertiary),
+                            ])
+                        }
+                        .padding(14)
+                    }
 
-                if let average = insights.averageProcessingMs {
-                    Section("Performance") {
-                        LabeledContent(
-                            "Average processing", value: String(format: "%.2f ms", average))
-                        if let domain = insights.slowestDomain,
-                           let duration = insights.slowestProcessingMs
-                        {
-                            Button {
-                                choose(domain)
-                            } label: {
-                                LabeledContent(
-                                    "Slowest query", value: String(format: "%.2f ms", duration))
+                    // This disclaimer is load-bearing: these are not AdGuard's
+                    // all-time statistics and must never be read as such.
+                    SettingsHint(
+                        "Insights describe only the query rows currently loaded on this device, not all DNS history."
+                    )
+
+                    rankedGroup("Top domains", items: insights.topDomains, tint: Theme.accent)
+                    rankedGroup("Top clients", items: insights.topClients, tint: Theme.good)
+
+                    if let average = insights.averageProcessingMs {
+                        DetailGroup("Performance") {
+                            DetailValueRow(
+                                label: "Average processing",
+                                value: String(format: "%.2f ms", average), monospaced: true)
+                            if let domain = insights.slowestDomain,
+                                let duration = insights.slowestProcessingMs
+                            {
+                                SettingsDivider()
+                                Button { choose(domain) } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text("Slowest query")
+                                                .font(.system(size: 14))
+                                                .foregroundStyle(Theme.textSecondary)
+                                            Spacer(minLength: 10)
+                                            Text(String(format: "%.2f ms", duration))
+                                                .font(
+                                                    .system(size: 13, design: .monospaced))
+                                                .foregroundStyle(Theme.textPrimary)
+                                        }
+                                        Text(domain)
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .foregroundStyle(Theme.textTertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 11)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Filters DNS activity to this domain")
                             }
-                            Text(domain)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    DetailGroup {
+                        ShareLink(item: insights.shareText) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(width: 22)
+                                Text("Share Activity Summary")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(Theme.accent)
+                                Spacer(minLength: 8)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
                         }
                     }
                 }
-
-                Section {
-                    ShareLink(item: insights.shareText) {
-                        Label("Share activity summary", systemImage: "square.and.arrow.up")
-                    }
-                }
+                .padding(16)
             }
+            .orionisScreen()
             .navigationTitle("DNS insights")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -707,15 +837,21 @@ struct QueryInsightsSheet: View {
         }
     }
 
+    /// A ranked list whose bars are scaled against the largest item, so the
+    /// rows compare with each other rather than implying an absolute ceiling.
     @ViewBuilder
-    private func insightList(_ title: String, items: [NameCount]) -> some View {
+    private func rankedGroup(_ title: String, items: [NameCount], tint: Color) -> some View {
         if !items.isEmpty {
-            Section(title) {
-                ForEach(items) { item in
-                    Button { choose(item.name) } label: {
-                        LabeledContent(item.name, value: item.count.formatted())
-                    }
-                    .accessibilityHint("Filters the query log")
+            let peak = Double(items.map(\.count).max() ?? 1)
+            DetailGroup(title) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { SettingsDivider() }
+                    RankedActivityRow(
+                        name: item.name,
+                        count: item.count,
+                        fraction: peak > 0 ? Double(item.count) / peak : 0,
+                        tint: tint
+                    ) { choose(item.name) }
                 }
             }
         }
