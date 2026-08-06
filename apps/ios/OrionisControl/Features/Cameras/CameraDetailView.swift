@@ -560,7 +560,7 @@ struct CameraDetailView: View {
                 MediaControlButton(
                     systemImage: "arrow.up.left.and.arrow.down.right",
                     label: "Open full screen",
-                    tint: Theme.textPrimary
+                    tint: Theme.textPrimary,
                     isEnabled: !isEnteringFullScreen
                 ) { Task { await enterFullScreen() } }
             }

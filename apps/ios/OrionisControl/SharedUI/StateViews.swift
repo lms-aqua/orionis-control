@@ -220,7 +220,7 @@ struct StaleDataBanner: View {
                 Text(title)
                     .font(.system(size: 13.5, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
-                Text(reason ?? "Last updated \(asOf.formatted(.relative(presentation: .named))).")
+                Text(detailText)
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -258,9 +258,18 @@ struct StaleDataBanner: View {
                 .strokeBorder(Theme.warn.opacity(0.25), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(title). \(reason ?? "Last updated \(asOf.formatted(.relative(presentation: .named)))).")
+        .accessibilityLabel(accessibilityText)
         .accessibilityIdentifier("stale-data-banner")
+    }
+
+    /// Built in steps rather than one nested interpolation: the inline version
+    /// was three levels deep and its quoting could not be read at a glance.
+    private var detailText: String {
+        reason ?? "Last updated \(asOf.formatted(.relative(presentation: .named)))."
+    }
+
+    private var accessibilityText: String {
+        "\(title). \(detailText)"
     }
 }
 
