@@ -103,6 +103,9 @@ final class EventsViewModel {
 }
 
 struct EventsView: View {
+    /// False when pushed from the More hub, which already owns the stack.
+    var embedsNavigationStack: Bool = true
+
     @Environment(AppEnvironment.self) private var environment
     @Environment(DeepLinkRouter.self) private var router
     @State private var model: EventsViewModel?
@@ -110,7 +113,7 @@ struct EventsView: View {
     @State private var navigationError: APIError?
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(isEnabled: embedsNavigationStack) {
             Group {
                 if let model { content(model) } else { LoadingStateView() }
             }

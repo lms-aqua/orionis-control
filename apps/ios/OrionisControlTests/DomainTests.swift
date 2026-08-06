@@ -238,6 +238,57 @@ final class DeepLinkRoutingTests: XCTestCase {
         XCTAssertEqual(router.consume(), .camera("front"))
         XCTAssertNil(router.pendingDestination)
     }
+
+    // MARK: Five-tab navigation
+
+    /// The guard rail for the whole navigation refactor: a compact-width
+    /// `TabView` with six or more tabs makes UIKit generate its own "More"
+    /// list, which this app must never show.
+    func testPrimaryTabsNeverExceedFive() {
+        XCTAssertLessThanOrEqual(RootTab.allCases.count, 5)
+    }
+
+    func testEventsAndSettingsAreNotPrimaryTabs() {
+        let ids = RootTab.allCases.map(\.rawValue)
+        XCTAssertFalse(ids.contains("events"))
+        XCTAssertFalse(ids.contains("settings"))
+        XCTAssertTrue(ids.contains("more"))
+    }
+
+    @MainActor
+    func testSettingsDeepLinkOpensTheMoreHub() {
+        let router = DeepLinkRouter()
+        router.handle(URL(string: "orioniscontrol://settings")!)
+        XCTAssertEqual(router.selectedTab, .more)
+        XCTAssertEqual(router.morePath, [.settings])
+        XCTAssertEqual(router.consume(), .settings)
+    }
+
+    @MainActor
+    func testEventDeepLinkOpensEventsUnderMore() {
+        let router = DeepLinkRouter()
+        router.handle(URL(string: "orioniscontrol://event/evt-1")!)
+        XCTAssertEqual(router.selectedTab, .more)
+        XCTAssertEqual(router.morePath, [.events])
+        XCTAssertEqual(router.consume(), .event("evt-1"))
+    }
+
+    @MainActor
+    func testOperationalDeepLinksClearAStaleMorePath() {
+        let router = DeepLinkRouter()
+        // Leaving More by deep link must not strand the previous More route,
+        // which the iPad sidebar would otherwise read back as its selection.
+        router.handle(URL(string: "orioniscontrol://settings")!)
+        XCTAssertEqual(router.morePath, [.settings])
+
+        router.handle(URL(string: "orioniscontrol://adguard")!)
+        XCTAssertEqual(router.selectedTab, .adGuard)
+        XCTAssertTrue(router.morePath.isEmpty)
+
+        router.handle(URL(string: "orioniscontrol://system")!)
+        XCTAssertEqual(router.selectedTab, .system)
+        XCTAssertTrue(router.morePath.isEmpty)
+    }
 }
 
 final class DnsQueryInsightsTests: XCTestCase {

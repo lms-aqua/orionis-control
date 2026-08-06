@@ -63,16 +63,27 @@ struct MainTabView: View {
     @Environment(DeepLinkRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var sizeClass
 
+    /// Permission-filtered primary tabs. Home and More are always present —
+    /// More holds Settings, which every signed-in user can reach. The count can
+    /// only ever shrink from five, so UIKit's automatic "More" never appears.
     private var visibleTabs: [RootTab] {
         RootTab.allCases.filter { tab in
             switch tab {
             case .adGuard: user.can(.adguardView)
-            case .events: user.can(.eventsView)
             case .cameras: user.can(.camerasView)
             case .system: user.can(.systemView)
-            case .home, .settings: true
+            case .home, .more: true
             }
         }
+    }
+
+    /// On regular width there is no tab-count ceiling, so Events and Settings
+    /// are promoted out of the More hub into the sidebar as siblings.
+    private var sidebarItems: [SidebarDestination] {
+        var items = visibleTabs.filter { $0 != .more }.map(SidebarDestination.tab)
+        if user.can(.eventsView) { items.append(.more(.events)) }
+        items.append(.more(.settings))
+        return items
     }
 
     var body: some View {
@@ -81,17 +92,26 @@ struct MainTabView: View {
         if sizeClass == .regular {
             // iPad and landscape iPhone Max: sidebar + detail.
             NavigationSplitView {
-                List(visibleTabs, selection: Binding(
-                    get: { router.selectedTab },
-                    set: { router.selectedTab = $0 ?? .home }
-                )) { tab in
-                    Label(tab.title, systemImage: tab.symbolName)
-                        .tag(tab)
+                // The `List(data, selection:)` form binds selection to the
+                // element's ID; the explicit ForEach + .tag() form binds it to
+                // the value itself, which is what the router needs.
+                List(selection: sidebarSelection) {
+                    ForEach(sidebarItems) { item in
+                        Label(item.title, systemImage: item.symbolName)
+                            .tag(item)
+                    }
                 }
                 .navigationTitle("Orionis Control")
                 .listStyle(.sidebar)
             } detail: {
-                destination(for: router.selectedTab)
+                switch router.selectedTab {
+                case .more:
+                    // The sidebar selects a concrete More route directly, so the
+                    // detail pane shows that screen rather than the hub itself.
+                    moreDetail(for: router.morePath.first ?? .settings)
+                default:
+                    destination(for: router.selectedTab)
+                }
             }
         } else {
             TabView(selection: $router.selectedTab) {
@@ -105,15 +125,73 @@ struct MainTabView: View {
         }
     }
 
+    /// Bridges the sidebar's flat selection onto the router's tab + path state.
+    private var sidebarSelection: Binding<SidebarDestination?> {
+        Binding(
+            get: {
+                router.selectedTab == .more
+                    ? .more(router.morePath.first ?? .settings)
+                    : .tab(router.selectedTab)
+            },
+            set: { selection in
+                switch selection {
+                case .tab(let tab):
+                    router.selectedTab = tab
+                    router.morePath = []
+                case .more(let route):
+                    router.selectedTab = .more
+                    router.morePath = [route]
+                case nil:
+                    router.selectedTab = .home
+                    router.morePath = []
+                }
+            })
+    }
+
     @ViewBuilder
     private func destination(for tab: RootTab) -> some View {
         switch tab {
         case .home: DashboardView()
         case .cameras: CamerasView()
-        case .events: EventsView()
         case .adGuard: AdGuardView()
         case .system: SystemView()
-        case .settings: SettingsView()
+        case .more: MoreView(user: user)
+        }
+    }
+
+    @ViewBuilder
+    private func moreDetail(for route: MoreRoute) -> some View {
+        switch route {
+        case .events: EventsView()
+        default: SettingsView()
+        }
+    }
+}
+
+/// A single selectable row in the regular-width sidebar: either a primary tab or
+/// a destination promoted out of the More hub.
+enum SidebarDestination: Hashable, Identifiable {
+    case tab(RootTab)
+    case more(MoreRoute)
+
+    var id: String {
+        switch self {
+        case .tab(let tab): "tab.\(tab.rawValue)"
+        case .more(let route): "more.\(route.rawValue)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .tab(let tab): tab.title
+        case .more(let route): route == .events ? "Events" : route.title
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .tab(let tab): tab.symbolName
+        case .more(let route): route.symbolName
         }
     }
 }

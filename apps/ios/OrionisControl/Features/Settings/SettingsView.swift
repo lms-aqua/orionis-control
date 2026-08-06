@@ -7,12 +7,15 @@ import SwiftUI
 /// categories that each open a focused screen. Nothing was removed in the
 /// redesign — every control from the old single `Form` lives in a category.
 struct SettingsView: View {
+    /// False when pushed from the More hub, which already owns the stack.
+    var embedsNavigationStack: Bool = true
+
     @Environment(AppEnvironment.self) private var environment
     @State private var query = ""
     @State private var showSignOutConfirmation = false
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(isEnabled: embedsNavigationStack) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if searchIsActive {
