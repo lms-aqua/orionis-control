@@ -258,6 +258,18 @@ struct EventsView: View {
             )
         } else {
             List {
+                // The list survives a failed refresh; say so rather than
+                // presenting an old feed as current.
+                if let error = model.error {
+                    StaleDataBanner(
+                        asOf: model.lastLoadedAt ?? Date(),
+                        title: "Couldn't refresh events",
+                        reason: error.message,
+                        retry: { await model.load(showSpinner: false) }
+                    )
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                    .listRowSeparator(.hidden)
+                }
                 ForEach(model.visible) { event in
                     Button { selected = event } label: { EventRow(event: event) }
                         .buttonStyle(.plain)

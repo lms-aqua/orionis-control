@@ -194,28 +194,72 @@ struct ErrorStateView: View {
     }
 }
 
-/// Inline banner used when cached content is shown alongside a failure.
+/// The app's single "what you are looking at is not current" banner.
+///
+/// Every screen that keeps its last good data through a failed refresh uses
+/// this one component, so staleness is announced identically everywhere rather
+/// than in four slightly different ways. Preserving usable data is only correct
+/// if the interface admits the data is old — silently showing a stale camera
+/// wall or protection state as if it were live is worse than showing an error.
 struct StaleDataBanner: View {
     let asOf: Date
+    var title: String = "Showing saved information"
     var reason: String?
+    var retry: (() async -> Void)?
+
+    @State private var isRetrying = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 9) {
             Image(systemName: "clock.arrow.circlepath")
-                .foregroundStyle(.orange)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.warn)
+                .padding(.top, 1)
+
             VStack(alignment: .leading, spacing: 2) {
-                Text("Showing saved information")
-                    .font(.footnote.weight(.medium))
+                Text(title)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary)
                 Text(reason ?? "Last updated \(asOf.formatted(.relative(presentation: .named))).")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
+
+            Spacer(minLength: 6)
+
+            if let retry {
+                Button {
+                    Task {
+                        isRetrying = true
+                        await retry()
+                        isRetrying = false
+                    }
+                } label: {
+                    if isRetrying {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Retry")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.warn)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(isRetrying)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .background(
+            Theme.soft(Theme.warn), in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Theme.warn.opacity(0.25), lineWidth: 1)
+        )
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(title). \(reason ?? "Last updated \(asOf.formatted(.relative(presentation: .named)))).")
         .accessibilityIdentifier("stale-data-banner")
     }
 }

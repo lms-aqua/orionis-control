@@ -120,6 +120,17 @@ struct SystemView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     hero(snapshot, attention: attention)
 
+                    // The model keeps the last good snapshot through a failed
+                    // refresh. Showing that as though it were current would
+                    // misreport live infrastructure health, so say it is old.
+                    if let error = model.error {
+                        StaleDataBanner(
+                            asOf: snapshot.checkedAt,
+                            title: "System status may be outdated",
+                            reason: error.message,
+                            retry: { await model.load(showSpinner: false) })
+                    }
+
                     if let result = model.lastResult {
                         // An operation's outcome is a headline event, not a
                         // list row halfway down the screen.

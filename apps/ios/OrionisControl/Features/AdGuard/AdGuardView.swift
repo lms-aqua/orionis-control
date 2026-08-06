@@ -197,7 +197,18 @@ struct AdGuardView: View {
         } else if let status = model.status {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    protectionHero(status)
+                    protectionHero(status, isStale: model.error != nil)
+
+                    // Protection state is the one thing on this screen that must
+                    // never be overstated: if the last refresh failed, the app
+                    // does not currently know whether filtering is on.
+                    if let error = model.error {
+                        StaleDataBanner(
+                            asOf: model.lastLoadedAt ?? Date(),
+                            title: "Couldn't refresh Network",
+                            reason: error.message,
+                            retry: { await model.load(showSpinner: false) })
+                    }
 
                     if let stats = model.stats {
                         analytics(stats, model: model)
@@ -220,7 +231,7 @@ struct AdGuardView: View {
     /// One unambiguous protection state, with the action beside it rather than
     /// buried in a card body.
     @ViewBuilder
-    private func protectionHero(_ status: AdGuardStatus) -> some View {
+    private func protectionHero(_ status: AdGuardStatus, isStale: Bool) -> some View {
         let canPause = environment.auth.state.user?.can(.adguardProtectionPause) == true
         let resumeText = status.override?.resumeAt.map { resumeAt -> String in
             let remaining = resumeAt.timeIntervalSinceNow
@@ -239,9 +250,15 @@ struct AdGuardView: View {
                     ?? "DNS filtering is stopped for every device on this network.",
             systemImage: status.protectionEnabled ? "shield.fill" : "shield.slash.fill",
             // Amber, not red: a deliberate pause is a warning state, not a
-            // failure.
-            tint: status.protectionEnabled ? Theme.good : Theme.warn,
-            caption: status.version.map { "AdGuard Home \($0)" },
+            // failure. A stale reading is not turned red either — the state is
+            // probably still true, it just cannot be confirmed right now.
+            tint: status.protectionEnabled
+                ? (isStale ? Theme.textSecondary : Theme.good) : Theme.warn,
+            // When the reading is stale the caption says when it was last
+            // confirmed, rather than implying it is true this second.
+            caption: isStale
+                ? lastConfirmedCaption
+                : status.version.map { "AdGuard Home \($0)" },
             actionTitle: canPause
                 ? (status.protectionEnabled ? "Pause Protection" : "Resume Now") : nil,
             actionIsDestructive: status.protectionEnabled,
@@ -252,6 +269,12 @@ struct AdGuardView: View {
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
         }
+    }
+
+    /// When the protection reading was last actually confirmed by the gateway.
+    private var lastConfirmedCaption: String {
+        guard let at = model?.lastLoadedAt else { return "Last confirmation unknown" }
+        return "Last confirmed \(at.formatted(.relative(presentation: .named)))"
     }
 
     // MARK: Analytics

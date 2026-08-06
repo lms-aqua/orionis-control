@@ -322,6 +322,16 @@ struct CamerasView: View {
                 filterBar(model)
                 ScrollView {
                     LazyVStack(spacing: 14) {
+                        // A failed background refresh must never replace a
+                        // usable wall with an error screen, but the online and
+                        // recording indicators below are then not current.
+                        if let error = model.error {
+                            StaleDataBanner(
+                                asOf: model.lastLoadedAt ?? Date(),
+                                title: "Camera status may be outdated",
+                                reason: error.message,
+                                retry: { await model.load(showSpinner: false) })
+                        }
                         systemStatusBanner(model.cameras)
                         if let preferenceError = model.preferenceError {
                             preferenceSyncBanner(preferenceError)

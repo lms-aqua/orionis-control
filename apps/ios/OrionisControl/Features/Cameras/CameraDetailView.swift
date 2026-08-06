@@ -17,9 +17,11 @@ final class CameraDetailViewModel {
     private(set) var siblings: [Camera] = []
     private(set) var events: [CameraEvent] = []
     private(set) var loadError: APIError?
-    private(set) var controlMessage: String?
+    private(set) var controlFeedback: CameraControlFeedback?
     private(set) var isInvokingControl = false
     private(set) var snapshot: UIImage?
+    /// Guards the transient-success expiry against a newer operation.
+    private var feedbackGeneration = 0
 
     private let cameraId: String
     private let cameras: any CameraServicing
@@ -85,22 +87,74 @@ final class CameraDetailViewModel {
 
     func invoke(_ request: CameraControlRequest) async {
         isInvokingControl = true
-        controlMessage = nil
+        controlFeedback = nil
+        feedbackGeneration &+= 1
+        let generation = feedbackGeneration
         defer { isInvokingControl = false }
 
         do {
             let result = try await cameras.invokeControl(cameraId: cameraId, request: request)
-            controlMessage =
-                result.message ?? (result.applied ? "Applied." : "The camera did not apply it.")
+            // `applied == false` is not a failure and not a success: the gateway
+            // accepted the request but the camera did not act on it. Saying
+            // "Applied." there would be a lie, and a red error would overstate
+            // it, so it is reported as a warning.
+            controlFeedback =
+                result.applied
+                ? .success(result.message ?? "Applied.")
+                : .warning(result.message ?? "The camera did not apply it.")
             // Reflect any state change the camera reports.
             if let refreshed = try? await cameras.camera(id: cameraId) {
                 camera = refreshed
             }
         } catch let error as APIError {
-            controlMessage = "\(error.title): \(error.message)"
+            controlFeedback = .failure("\(error.title): \(error.message)")
         } catch {
-            controlMessage = "The control could not be sent."
+            controlFeedback = .failure("The control could not be sent.")
         }
+
+        await expireFeedbackIfTransient(generation)
+    }
+
+    /// Successful confirmations are transient; failures and warnings stay until
+    /// the next operation supersedes them, so a problem cannot scroll away
+    /// before it has been read.
+    private func expireFeedbackIfTransient(_ generation: Int) async {
+        guard case .success = controlFeedback else { return }
+        try? await Task.sleep(for: .seconds(6))
+        guard generation == feedbackGeneration else { return }
+        controlFeedback = nil
+    }
+}
+
+/// The outcome of a camera control operation.
+///
+/// Previously every outcome collapsed into one optional string, so the view had
+/// no way to tell a confirmation from an error and rendered a failed operation
+/// with a green checkmark. Keeping the three cases distinct is what makes that
+/// impossible to reintroduce.
+enum CameraControlFeedback: Equatable {
+    case success(String)
+    case warning(String)
+    case failure(String)
+
+    var message: String {
+        switch self {
+        case .success(let text), .warning(let text), .failure(let text): text
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .success: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .failure: "xmark.octagon.fill"
+        }
+    }
+
+    /// Whether this outcome should clear itself after a few seconds.
+    var isTransient: Bool {
+        if case .success = self { return true }
+        return false
     }
 }
 
@@ -229,11 +283,12 @@ struct CameraDetailView: View {
                     if camera.capabilities.hasAnyControl {
                         controlsSection(model, camera: camera)
                     }
-                    if let message = model.controlMessage {
-                        SettingsNoteRow(
-                            text: message, systemImage: "checkmark.circle.fill", tint: Theme.good
-                        )
-                        .orionisCard()
+                    if let feedback = model.controlFeedback {
+                        WarningBanner(
+                            title: feedback.message,
+                            systemImage: feedback.symbolName,
+                            tint: Self.tint(for: feedback))
+                        .transition(.opacity)
                     }
                     eventsSection(model)
                     informationRow(camera)
@@ -505,6 +560,15 @@ struct CameraDetailView: View {
             .accessibilityLabel("More controls")
         }
         .sensoryFeedback(OrionisHaptic.controlSucceeded.feedback, trigger: isMuted)
+    }
+
+    /// A failed control operation must never be drawn in the success colour.
+    static func tint(for feedback: CameraControlFeedback) -> Color {
+        switch feedback {
+        case .success: Theme.good
+        case .warning: Theme.warn
+        case .failure: Theme.critical
+        }
     }
 
     // MARK: Status
