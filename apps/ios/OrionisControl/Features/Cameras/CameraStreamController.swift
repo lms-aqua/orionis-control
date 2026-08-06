@@ -74,16 +74,16 @@ final class CameraStreamController {
     /// Touched from the nonisolated `deinit` purely to cancel and deregister.
     /// `Task.cancel()` and `NotificationCenter.removeObserver` are both safe from
     /// any isolation domain.
-    private nonisolated(unsafe) var connectTask: Task<Void, Never>?
-    private nonisolated(unsafe) var recoveryTask: Task<Void, Never>?
-    private nonisolated(unsafe) var renewalTask: Task<Void, Never>?
-    private nonisolated(unsafe) var webRTCWatchdog: Task<Void, Never>?
-    private nonisolated(unsafe) var webRTCFrameWatchdog: Task<Void, Never>?
-    private nonisolated(unsafe) var webRTCHealthTask: Task<Void, Never>?
-    private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
-    private nonisolated(unsafe) var audioTokens: [NSObjectProtocol] = []
+    private var connectTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Never>?
+    private var renewalTask: Task<Void, Never>?
+    private var webRTCWatchdog: Task<Void, Never>?
+    private var webRTCFrameWatchdog: Task<Void, Never>?
+    private var webRTCHealthTask: Task<Void, Never>?
+    private var itemTokens: [NSObjectProtocol] = []
+    private var audioTokens: [NSObjectProtocol] = []
 
-    private nonisolated(unsafe) var timeObserver: Any?
+    private var timeObserver: Any?
 
     init(
         cameraId: String,

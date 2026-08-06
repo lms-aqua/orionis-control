@@ -197,13 +197,10 @@ struct InfrastructureView: View {
     /// Counts come only from what the gateway actually reported — a missing
     /// figure is omitted rather than defaulted to zero, which would read as a
     /// confident "nothing is online".
-    @ViewBuilder
-    private func hero(_ status: InfraStatus) -> some View {
-        let caddyDown = status.caddy.offline ?? 0
-        let autheliaDown = status.authelia.running == false
-        let unreadable = status.caddy.error != nil || status.authelia.error != nil
-        let healthy = caddyDown == 0 && !autheliaDown && !unreadable
-
+    ///
+    /// Assembled outside the view builder: a `@ViewBuilder` body cannot contain
+    /// statements like `append`, whose `()` result is not a `View`.
+    private func heroDetail(_ status: InfraStatus) -> [String] {
         var detail: [String] = []
         if let online = status.caddy.online, let total = status.caddy.total {
             detail.append("\(online) of \(total) Caddy servers online")
@@ -211,6 +208,16 @@ struct InfrastructureView: View {
         if let autheliaStatus = status.authelia.status {
             detail.append("Authelia \(autheliaStatus.lowercased())")
         }
+        return detail
+    }
+
+    @ViewBuilder
+    private func hero(_ status: InfraStatus) -> some View {
+        let caddyDown = status.caddy.offline ?? 0
+        let autheliaDown = status.authelia.running == false
+        let unreadable = status.caddy.error != nil || status.authelia.error != nil
+        let healthy = caddyDown == 0 && !autheliaDown && !unreadable
+        let detail = heroDetail(status)
 
         OperationalStatusHero(
             title: healthy

@@ -229,8 +229,10 @@ struct RecordingStorageView: View {
 
     /// Secondary figures in one strip rather than four separate cards. Every
     /// entry is omitted when the gateway did not supply it.
-    @ViewBuilder
-    private func metrics(_ storage: StorageStatus) -> some View {
+    ///
+    /// Assembled outside the view builder: a `@ViewBuilder` body cannot contain
+    /// statements like `append`, whose `()` result is not a `View`.
+    private func metricEntries(_ storage: StorageStatus) -> [MetricStrip.Metric] {
         var entries: [MetricStrip.Metric] = []
         if let daily = storage.dailyBytes, daily > 0 {
             entries.append(.init(value: daily.formattedBytes, label: "Per day"))
@@ -244,6 +246,12 @@ struct RecordingStorageView: View {
                     value: oldest.formatted(date: .abbreviated, time: .omitted),
                     label: "Oldest footage"))
         }
+        return entries
+    }
+
+    @ViewBuilder
+    private func metrics(_ storage: StorageStatus) -> some View {
+        let entries = metricEntries(storage)
         if !entries.isEmpty {
             MetricStrip(metrics: entries)
                 .padding(15)
