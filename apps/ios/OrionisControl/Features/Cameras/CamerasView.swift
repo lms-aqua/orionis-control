@@ -343,7 +343,7 @@ struct CamerasView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
             }
-            .background(Color(.systemGroupedBackground))
+            .orionisScreen()
             .searchable(text: $model.searchText, prompt: "Search cameras")
             .refreshable { await model.load(showSpinner: false) }
             // Snapshots refresh only while the grid is on screen, and only for
@@ -413,20 +413,21 @@ struct CamerasView: View {
     }
 
     private func preferenceSyncBanner(_ error: APIError) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 11) {
             Image(systemName: "icloud.slash.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.warn)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Account changes weren't saved")
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.textPrimary)
                 Text(error.message)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
             }
             Spacer()
         }
-        .padding(12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .orionisCard()
         .accessibilityElement(children: .combine)
     }
 
@@ -436,20 +437,20 @@ struct CamerasView: View {
         let down = cameras.filter { $0.health.status == .offline }
         let degraded = cameras.filter { $0.health.status == .degraded }
         if !down.isEmpty || !degraded.isEmpty {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+            HStack(spacing: 12) {
+                StatusDot(color: down.isEmpty ? Theme.warn : Theme.critical)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(bannerTitle(down: down.count, degraded: degraded.count))
-                        .font(.subheadline.weight(.medium))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
                     Text("\(cameras.count - down.count) of \(cameras.count) cameras are online.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                 }
                 Spacer()
             }
-            .padding(12)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+            .padding(15)
+            .orionisCard()
         }
     }
 
@@ -489,7 +490,7 @@ struct CamerasView: View {
             }
             .padding(14)
         }
-        .background(Color(.systemGroupedBackground))
+        .orionisScreen()
         .allowsHitTesting(false)
     }
 
@@ -539,8 +540,23 @@ struct CameraCard: View {
                     endPoint: .bottom)
 
                 VStack {
-                    HStack(alignment: .top) {
+                    HStack(alignment: .top, spacing: 6) {
                         CameraStatusPill(status: camera.health.status, compact: compact)
+                        if camera.health.recording == true {
+                            HStack(spacing: 3) {
+                                StatusDot(color: Theme.critical, pulsing: true)
+                                    .scaleEffect(0.7)
+                                if !compact {
+                                    Text("REC")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .tracking(0.5)
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                            .padding(.horizontal, compact ? 5 : 7)
+                            .padding(.vertical, compact ? 5 : 3)
+                            .background(.black.opacity(0.5), in: Capsule())
+                        }
                         Spacer()
                         if isFavourite {
                             Image(systemName: "star.fill")
@@ -572,12 +588,13 @@ struct CameraCard: View {
             .aspectRatio(16 / 9, contentMode: .fill)
             .clipped()
         }
-        .background(Color(.secondarySystemGroupedBackground))
+        .background(Theme.inset)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
         )
+        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 6)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityAddTraits(.isButton)
@@ -673,10 +690,10 @@ struct CameraStatusPill: View {
 
     private var tint: Color {
         switch status {
-        case .online: .green
-        case .offline: .red
-        case .degraded: .orange
-        case .unknown: .gray
+        case .online: Theme.good
+        case .offline: Theme.critical
+        case .degraded: Theme.warn
+        case .unknown: Theme.textTertiary
         }
     }
 }
