@@ -16,13 +16,40 @@ struct QueryLogView: View {
     @State private var selected: DnsQuery?
     @State private var message: String?
     @State private var showInsights = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// Measured, not assumed: Stage Manager and Slide Over change this without
+    /// changing the device.
+    @State private var availableWidth: CGFloat = 0
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            feed
+        // Regular width gets a real master/detail: inspecting a query should not
+        // cover the feed you are reading it against.
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                header
+                feed
+            }
+            .frame(maxWidth: isSplit ? masterWidth : .infinity)
+
+            if isSplit {
+                Rectangle().fill(Theme.hairline).frame(width: 1)
+                detailPane
+            }
         }
-        .background { AppBackground() }
+        .background {
+            // GeometryReader rather than onGeometryChange: the latter is iOS 18
+            // and this app deploys to 17.
+            AppBackground()
+                .overlay {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .preference(key: ActivityWidthKey.self, value: geometry.size.width)
+                    }
+                }
+        }
+        .onPreferenceChange(ActivityWidthKey.self) { width in
+            availableWidth = width
+        }
         .navigationTitle("Query log")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $model.querySearch, prompt: "Search domains or clients")
@@ -54,33 +81,105 @@ struct QueryLogView: View {
             guard !Task.isCancelled else { return }
             await model.loadQueries()
         }
-        .sheet(item: $selected) { query in
+        // Only the compact presentation uses a sheet; at regular width the same
+        // content is already on screen in the detail pane.
+        .sheet(item: sheetSelection) { query in
             QueryDetailSheet(
                 query: query,
-                isWatched: Binding(
-                    get: { WatchedDomainStore.contains(query.domain, in: watchedDomains) },
-                    set: { desiredValue in
-                        if desiredValue
-                            != WatchedDomainStore.contains(query.domain, in: watchedDomains)
-                        {
-                            toggleWatched(query.domain)
-                        }
-                    })
-            ) { domain, kind in
-                let result = await model.addRule(domain, kind: kind)
-                switch result {
-                case .success(let rule):
-                    message = "Added \(rule)."
-                    return nil
-                case .failure(let error):
-                    return error
-                }
-            }
+                isWatched: watchedBinding(for: query),
+                addRule: applyRule)
         }
         .sheet(isPresented: $showInsights) {
             QueryInsightsSheet(queries: model.queries) { search in
                 model.querySearch = search
             }
+        }
+    }
+
+    // MARK: Split layout
+
+    /// Split only when there is genuinely room for both columns. Driven by the
+    /// measured width rather than the device, so Stage Manager and Slide Over
+    /// collapse back to the compact feed correctly.
+    private var isSplit: Bool { sizeClass == .regular && availableWidth >= 760 }
+
+    /// Wide enough for a domain and its outcome, narrow enough to leave the
+    /// detail the majority of the display.
+    private var masterWidth: CGFloat { min(440, max(340, availableWidth * 0.36)) }
+
+    /// The sheet is compact-only; binding to nil at regular width stops it
+    /// presenting on top of the pane that already shows the same thing.
+    private var sheetSelection: Binding<DnsQuery?> {
+        Binding(
+            get: { isSplit ? nil : selected },
+            set: { newValue in if !isSplit { selected = newValue } })
+    }
+
+    @ViewBuilder
+    private var detailPane: some View {
+        Group {
+            if let query = resolvedSelection {
+                ScrollView {
+                    QueryDetailContent(
+                        query: query,
+                        isWatched: watchedBinding(for: query),
+                        addRule: applyRule)
+                        .padding(16)
+                }
+            } else {
+                // A deliberate resting state rather than auto-selecting a row
+                // the user did not choose.
+                VStack(spacing: 10) {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 30))
+                        .foregroundStyle(Theme.textTertiary)
+                    Text("Select a query")
+                        .font(.headline)
+                        .foregroundStyle(Theme.textSecondary)
+                    Text(
+                        "Choose an entry to inspect its request, client, response and filtering details."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(Theme.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// The selected query re-read from the current page.
+    ///
+    /// A refresh replaces the array, so holding the original value would show a
+    /// detail for a row that is no longer in the feed. Re-resolving by id keeps
+    /// the pane and the list describing the same thing, and yields nil — the
+    /// empty state — once the query falls out of the loaded window.
+    private var resolvedSelection: DnsQuery? {
+        guard let selected else { return nil }
+        return model.queries.first { $0.id == selected.id }
+    }
+
+    private func watchedBinding(for query: DnsQuery) -> Binding<Bool> {
+        Binding(
+            get: { WatchedDomainStore.contains(query.domain, in: watchedDomains) },
+            set: { desiredValue in
+                if desiredValue != WatchedDomainStore.contains(query.domain, in: watchedDomains) {
+                    toggleWatched(query.domain)
+                }
+            })
+    }
+
+    /// Shared by both presentations so a rule added from the pane behaves
+    /// exactly as one added from the sheet.
+    private func applyRule(_ domain: String, _ kind: RuleKind) async -> APIError? {
+        switch await model.addRule(domain, kind: kind) {
+        case .success(let rule):
+            message = "Added \(rule)."
+            return nil
+        case .failure(let error):
+            return error
         }
     }
 
@@ -222,6 +321,7 @@ struct QueryLogView: View {
                     }
 
                     ForEach(model.queries) { query in
+                        let isSelected = isSplit && selected?.id == query.id
                         Button { selected = query } label: {
                             QueryRow(
                                 query: query,
@@ -229,6 +329,18 @@ struct QueryLogView: View {
                                     query.domain, in: watchedDomains))
                         }
                         .buttonStyle(.plain)
+                        // An inset wash plus a leading accent rule, rather than
+                        // inverting the row, so the outcome pill keeps its
+                        // meaning while selected.
+                        .background(alignment: .leading) {
+                            if isSelected {
+                                ZStack(alignment: .leading) {
+                                    Theme.soft(Theme.accent)
+                                    Rectangle().fill(Theme.accent).frame(width: 3)
+                                }
+                            }
+                        }
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                         SettingsDivider(inset: 46)
                     }
 
@@ -325,6 +437,15 @@ struct QueryLogView: View {
     private func toggleWatched(_ domain: String) {
         watchedDomainsRaw = WatchedDomainStore.encode(
             WatchedDomainStore.toggling(domain, in: watchedDomains))
+    }
+}
+
+/// Carries the feed's measured width up so the split decision reacts to Stage
+/// Manager and Slide Over, not just to the device idiom.
+private struct ActivityWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
