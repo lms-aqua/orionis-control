@@ -1,0 +1,55 @@
+# Codemagic CI configuration.
+#
+# The iOS app lives in a monorepo subfolder (apps/ios) and its .xcodeproj is
+# generated from project.yml via XcodeGen rather than committed, so every
+# workflow runs `xcodegen generate` before building. This first workflow builds
+# for the simulator and runs the unit/UI tests without code signing, so it
+# succeeds on a runner with no certificates (matches the Debug config, which
+# sets CODE_SIGNING_ALLOWED=NO).
+workflows:
+  ios-build-test:
+    name: iOS build & test
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: 16.0
+      vars:
+        XCODE_PROJECT: "OrionisControl.xcodeproj"
+        XCODE_SCHEME: "OrionisControl"
+        IOS_DIR: "apps/ios"
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+        - pattern: "feat/*"
+          include: true
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd "$IOS_DIR"
+          xcodegen generate
+      - name: Resolve Swift Package dependencies
+        script: |
+          cd "$IOS_DIR"
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME"
+      - name: Build & run tests (no signing)
+        script: |
+          cd "$IOS_DIR"
+          xcodebuild \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.5' \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build test | xcpretty
+    artifacts:
+      - $IOS_DIR/build/**/*.app
+      - /tmp/xcodebuild_logs/*.log
