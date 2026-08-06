@@ -36,20 +36,27 @@ workflows:
           xcodegen generate
       - name: Resolve Swift Package dependencies
         script: |
+          set -euo pipefail
           cd "$IOS_DIR"
           xcodebuild -resolvePackageDependencies \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME"
       - name: Build & run tests (no signing)
         script: |
+          # pipefail so a failed xcodebuild isn't masked by xcpretty's exit code.
+          set -euo pipefail
           cd "$IOS_DIR"
+          # -derivedDataPath keeps build output inside apps/ios/build so the
+          # artifact glob below can find it. OS is left unpinned so the runner
+          # picks whatever iPhone 15 simulator runtime is installed.
           xcodebuild \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.5' \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             clean build test | xcpretty
     artifacts:
-      - $IOS_DIR/build/**/*.app
+      - $IOS_DIR/build/Build/Products/**/*.app
       - /tmp/xcodebuild_logs/*.log
