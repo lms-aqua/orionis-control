@@ -168,6 +168,10 @@ struct SkeletonBlock: View {
 ///
 /// Sized to the 44pt minimum touch target even though the visible glyph is
 /// smaller, and legible over arbitrary video via a material backing.
+/// Liquid Glass carries this: a control floating over live video is exactly
+/// what the material is for, and it adapts to the footage underneath as the
+/// scene changes. `glassEffect` honours Reduce Transparency and Increase
+/// Contrast itself, so no manual fallback is needed here.
 struct MediaControlButton: View {
     let systemImage: String
     var label: String
@@ -176,25 +180,21 @@ struct MediaControlButton: View {
     var isEnabled: Bool = true
     let action: () -> Void
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(isActive ? Theme.accent : tint)
                 .frame(width: 44, height: 44)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(.black.opacity(0.65))
-                    } else {
-                        Circle().fill(.ultraThinMaterial)
-                    }
-                }
-                .overlay(Circle().strokeBorder(.white.opacity(0.14), lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        // `.interactive()` gives the glass its press response; the active
+        // control is tinted so selection survives at a glance.
+        .glassEffect(
+            isActive ? .regular.tint(Theme.accent.opacity(0.28)).interactive()
+                : .regular.interactive(),
+            in: Circle())
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.4)
         .accessibilityLabel(label)

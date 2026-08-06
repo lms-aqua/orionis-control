@@ -26,7 +26,7 @@ jobs:
   package:
     name: Package unsigned IPA and publish source
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     defaults:
       run:
@@ -170,7 +170,7 @@ jobs:
               # Must track IPHONEOS_DEPLOYMENT_TARGET in apps/ios/project.yml.
               # If this advertises a lower floor than the binary supports,
               # AltStore offers the build to devices that cannot run it.
-              "minOSVersion": "18.0",
+              "minOSVersion": "26.0",
           }
 
           source = {

@@ -122,6 +122,11 @@ struct MainTabView: View {
                 }
             }
             .tint(Theme.accent)
+            // The camera wall and the DNS feed are both long scrolls where the
+            // tab bar is not what the user is looking at. Minimising it on the
+            // way down returns that space to the content and brings it back the
+            // moment they scroll up.
+            .tabBarMinimizeBehavior(.onScrollDown)
         }
     }
 

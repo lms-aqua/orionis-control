@@ -365,15 +365,9 @@ struct CameraLiveViewer: View {
                 .font(.body.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(.black.opacity(0.8))
-                    } else {
-                        Circle().fill(.black.opacity(0.45))
-                    }
-                }
                 .contentShape(Circle())
         }
+        .glassEffect(.regular.interactive(), in: Circle())
         .accessibilityLabel("More controls")
         // Chrome must not auto-hide out from under an open menu.
         .onTapGesture { isMenuOpen = true }
@@ -389,71 +383,71 @@ struct CameraLiveViewer: View {
             if cameras.count > 1 { switcher }
             if showsPlaybackStats { playbackStats(stream) }
 
-            HStack(spacing: 14) {
-                if !stream.state.isTerminal {
+            // Glass cannot sample glass, so the whole control cluster shares one
+            // container: the shapes read as a single piece of material and morph
+            // together as controls appear and disappear.
+            GlassEffectContainer(spacing: 14) {
+                HStack(spacing: 14) {
+                    if !stream.state.isTerminal {
+                        circleButton(
+                            stream.state == .paused ? "play.fill" : "pause.fill",
+                            label: stream.state == .paused ? "Resume" : "Pause"
+                        ) {
+                            if stream.state == .paused { stream.resume() } else { stream.pause() }
+                            scheduleControlsHide()
+                        }
+                    }
+
+                    // Only offered when the camera says it carries audio.
+                    if camera.capabilities.audio == true {
+                        circleButton(
+                            isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                            label: isMuted ? "Unmute" : "Mute",
+                            isActive: !isMuted
+                        ) {
+                            isMuted.toggle()
+                            stream.setAudioMuted(isMuted)
+                            scheduleControlsHide()
+                        }
+                    }
+
                     circleButton(
-                        stream.state == .paused ? "play.fill" : "pause.fill",
-                        label: stream.state == .paused ? "Resume" : "Pause"
-                    ) {
-                        if stream.state == .paused { stream.resume() } else { stream.pause() }
-                        scheduleControlsHide()
+                        fillsScreen
+                            ? "arrow.down.right.and.arrow.up.left"
+                            : "arrow.up.left.and.arrow.down.right",
+                        label: fillsScreen ? "Fit to screen" : "Fill screen",
+                        isActive: fillsScreen
+                    ) { toggleFillMode() }
+
+                    if isZoomed {
+                        circleButton("1.magnifyingglass", label: "Reset zoom") {
+                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                                resetZoom()
+                            }
+                        }
                     }
-                }
 
-                // Only offered when the camera says it carries audio.
-                if camera.capabilities.audio == true {
-                    circleButton(
-                        isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                        label: isMuted ? "Unmute" : "Mute"
-                    ) {
-                        isMuted.toggle()
-                        stream.setAudioMuted(isMuted)
-                        scheduleControlsHide()
+                    if stream.state.isTerminal, stream.state != .idle {
+                        circleButton("arrow.clockwise", label: "Try again") {
+                            stream.retryNow()
+                            scheduleControlsHide()
+                        }
                     }
+
+                    Spacer()
                 }
-
-                circleButton(
-                    fillsScreen
-                        ? "arrow.down.right.and.arrow.up.left"
-                        : "arrow.up.left.and.arrow.down.right",
-                    label: fillsScreen ? "Fit to screen" : "Fill screen"
-                ) { toggleFillMode() }
-
-                circleButton(
-                    "waveform.path.ecg",
-                    label: showsPlaybackStats ? "Hide playback stats" : "Show playback stats"
-                ) {
-                    showsPlaybackStats.toggle()
-                    scheduleControlsHide()
-                }
-
-                if isZoomed {
-                    circleButton("1.magnifyingglass", label: "Reset zoom") {
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { resetZoom() }
-                    }
-                }
-
-                if stream.state.isTerminal, stream.state != .idle {
-                    circleButton("arrow.clockwise", label: "Try again") {
-                        stream.retryNow()
-                        scheduleControlsHide()
-                    }
-                }
-
-                Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.bottom, isCompactHeight ? 8 : 16)
         }
+        // The glass controls provide their own legibility, so the scrim is only
+        // a gentle grounding wash rather than the thing holding them up.
         .background {
-            if reduceTransparency {
-                Color.black.opacity(0.85)
-            } else {
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom)
-            }
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
         }
     }
+
 
     /// Horizontal strip for jumping straight to another camera.
     private var switcher: some View {
@@ -522,6 +516,12 @@ struct CameraLiveViewer: View {
     /// 44×44 is the minimum comfortable target and this used to be 42, which is
     /// below it. The backing also has to hold up over arbitrary video, and turn
     /// opaque when the user asks for Reduce Transparency.
+    /// A viewer control on Liquid Glass.
+    ///
+    /// 44×44 is the minimum comfortable target — this was 42, below it. The
+    /// material adapts to whatever the camera is showing underneath, and
+    /// handles Reduce Transparency and Increase Contrast itself, so the old
+    /// hand-rolled opacity fallback is gone.
     private func circleButton(
         _ symbol: String, label: String, isActive: Bool = false,
         action: @escaping () -> Void
@@ -531,16 +531,13 @@ struct CameraLiveViewer: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(isActive ? Color.accentColor : .white)
                 .frame(width: 44, height: 44)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(.black.opacity(0.8))
-                    } else {
-                        Circle().fill(.black.opacity(0.45))
-                    }
-                }
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .glassEffect(
+            isActive ? .regular.tint(Color.accentColor.opacity(0.28)).interactive()
+                : .regular.interactive(),
+            in: Circle())
         .accessibilityLabel(label)
         .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }

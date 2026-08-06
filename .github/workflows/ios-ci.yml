@@ -28,7 +28,7 @@ permissions:
 jobs:
   build-and-test:
     name: Build and test
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     defaults:
       run:
@@ -171,7 +171,7 @@ jobs:
     name: Release build verification
     # Compile the production configuration in parallel with both test suites.
     # AltStore still performs its own archive after the whole workflow passes.
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     defaults:
       run:
@@ -222,7 +222,7 @@ jobs:
     name: UI — ${{ matrix.name }}
     # Each UI test gets its own macOS runner. This keeps every flow visible while
     # avoiding five serial app launches and network waits on one simulator.
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     strategy:
       fail-fast: false
