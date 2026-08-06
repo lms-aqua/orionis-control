@@ -27,9 +27,18 @@ packages:
   WebRTC:
     url: https://github.com/stasel/WebRTC.git
     # Each upstream release is its own major, so `from:` pins to exactly this one
-    # (>=137.0.0, <138.0.0). A prebuilt, ABI-stable XCFramework — loads on the
-    # runner's Xcode 16 with the iOS 17 deployment target.
-    from: "137.0.0"
+    # (>=150.0.0, <151.0.0). M150 is a prebuilt XCFramework whose own floor is
+    # iOS 10, so it imposes nothing on this project's iOS 26 target, and it
+    # exposes ObjC rather than Swift — no module-stability coupling to the
+    # toolchain that built it.
+    #
+    # Moved up from M137 (May 2025) alongside the Xcode 16 -> 26.4 jump: a
+    # binary built for a toolchain ten majors older is the wrong thing to hand
+    # a new linker. The app only touches long-stable ObjC surface —
+    # RTCPeerConnectionFactory, RTCPeerConnection, RTCMTLVideoView,
+    # RTCIceServer, RTCSessionDescription, RTCMediaConstraints, the default
+    # codec factories — none of which changed across these milestones.
+    from: "150.0.0"
 
 settings:
   base:
