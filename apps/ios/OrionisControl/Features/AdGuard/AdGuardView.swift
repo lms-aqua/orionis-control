@@ -217,6 +217,11 @@ struct AdGuardView: View {
                     activityEntry(model)
                 }
                 .padding(16)
+                // Held to a readable measure rather than stretched across a
+                // full iPad width, where ranked rows would separate a domain
+                // from its own count by hundreds of points.
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
             }
             .orionisScreen()
             .navigationDestination(for: ActivityRoute.self) { _ in

@@ -86,6 +86,13 @@ final class CameraDetailViewModel {
     }
 
     func invoke(_ request: CameraControlRequest) async {
+        // Re-entrancy guard at the model, not only in the views. The buttons
+        // disable themselves while a control is in flight, but a confirmation
+        // dialog opened *before* another control started can still fire into
+        // this method — and the second call's `defer` would clear the busy flag
+        // while the first request was still outstanding. Repeated PTZ taps must
+        // also not queue up a runaway burst of commands.
+        guard !isInvokingControl else { return }
         isInvokingControl = true
         controlFeedback = nil
         feedbackGeneration &+= 1
@@ -164,6 +171,7 @@ struct CameraDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var model: CameraDetailViewModel?
     /// Held as view state, not built in `body`: the player must survive
     /// re-evaluation rather than being recreated by it.
@@ -173,6 +181,8 @@ struct CameraDetailView: View {
     @State private var confirmingControl: CameraControlRequest?
     @State private var showDiagnostics = false
     @State private var showFullScreen = false
+    /// Guards the fullscreen handoff so a double-tap cannot start two of them.
+    @State private var isEnteringFullScreen = false
 
     var body: some View {
         Group {
@@ -220,7 +230,8 @@ struct CameraDetailView: View {
             Task { [stream] in await stream?.stop() }
         }
         .fullScreenCover(isPresented: $showFullScreen) {
-            // Inline playback is released first: only one stream should be open.
+            // By the time this presents, `enterFullScreen()` has already awaited
+            // the inline stop, so the viewer's session is the only one open.
             let wall = model?.siblings.isEmpty == false
                 ? model!.siblings
                 : [model?.camera].compactMap { $0 }
@@ -229,9 +240,10 @@ struct CameraDetailView: View {
                 startAt: wall.firstIndex(where: { $0.id == cameraId }) ?? 0)
         }
         .onChange(of: showFullScreen) { _, presented in
-            if presented {
-                Task { await stream?.stop() }
-            } else if environment.preferences.autoplayLiveView {
+            // Only the dismissal side is handled here. Presentation is driven by
+            // `enterFullScreen()`, which must sequence the stop before the
+            // cover appears.
+            if !presented, environment.preferences.autoplayLiveView {
                 Task { await startStream() }
             }
         }
@@ -275,25 +287,47 @@ struct CameraDetailView: View {
             // Hierarchy: the camera first, then what it is doing, then the two
             // things people actually came for -- footage and controls. Device
             // metadata and diagnostics sit at the bottom, behind a push.
+            //
+            // On regular width the same pieces reflow into two panes so the
+            // video can be large while status and controls stay visible beside
+            // it, rather than the iPhone column stretched across an iPad.
             ScrollView {
-                VStack(spacing: 16) {
-                    playerSection(model, camera: camera)
-                    statusRow(camera)
-                    recordingsSection(camera)
-                    if camera.capabilities.hasAnyControl {
-                        controlsSection(model, camera: camera)
+                if sizeClass == .regular {
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(spacing: 16) {
+                            playerSection(model, camera: camera)
+                            recordingsSection(camera)
+                            eventsSection(model)
+                        }
+                        .frame(maxWidth: .infinity)
+
+                        VStack(spacing: 16) {
+                            statusRow(camera)
+                            controlFeedbackBanner(model)
+                            if camera.capabilities.hasAnyControl {
+                                controlsSection(model, camera: camera)
+                            }
+                            informationRow(camera)
+                        }
+                        // Held to a readable measure: an inspector column wider
+                        // than this just spreads label/value pairs apart.
+                        .frame(width: 340)
                     }
-                    if let feedback = model.controlFeedback {
-                        WarningBanner(
-                            title: feedback.message,
-                            systemImage: feedback.symbolName,
-                            tint: Self.tint(for: feedback))
-                        .transition(.opacity)
+                    .padding(16)
+                } else {
+                    VStack(spacing: 16) {
+                        playerSection(model, camera: camera)
+                        statusRow(camera)
+                        recordingsSection(camera)
+                        if camera.capabilities.hasAnyControl {
+                            controlsSection(model, camera: camera)
+                        }
+                        controlFeedbackBanner(model)
+                        eventsSection(model)
+                        informationRow(camera)
                     }
-                    eventsSection(model)
-                    informationRow(camera)
+                    .padding(16)
                 }
-                .padding(16)
             }
             .orionisScreen()
             .refreshable {
@@ -527,7 +561,8 @@ struct CameraDetailView: View {
                     systemImage: "arrow.up.left.and.arrow.down.right",
                     label: "Open full screen",
                     tint: Theme.textPrimary
-                ) { showFullScreen = true }
+                    isEnabled: !isEnteringFullScreen
+                ) { Task { await enterFullScreen() } }
             }
 
             Spacer(minLength: 4)
@@ -560,6 +595,35 @@ struct CameraDetailView: View {
             .accessibilityLabel("More controls")
         }
         .sensoryFeedback(OrionisHaptic.controlSucceeded.feedback, trigger: isMuted)
+    }
+
+    /// Shared by both layouts so the feedback rendering cannot drift apart.
+    @ViewBuilder
+    private func controlFeedbackBanner(_ model: CameraDetailViewModel) -> some View {
+        if let feedback = model.controlFeedback {
+            WarningBanner(
+                title: feedback.message,
+                systemImage: feedback.symbolName,
+                tint: Self.tint(for: feedback))
+            .transition(.opacity)
+        }
+    }
+
+    /// Hands playback over to the fullscreen viewer without overlapping sessions.
+    ///
+    /// Presenting the cover and stopping the inline stream used to race: the
+    /// cover appeared immediately while the stop ran in a detached Task, so
+    /// `CameraLiveViewer` opened its gateway session while the inline session
+    /// was still live. That breaks the one-stream-per-viewer invariant, and the
+    /// gateway can reject the new session or leave the old one orphaned with
+    /// audio still running. Awaiting the stop first makes the ordering real
+    /// rather than merely intended.
+    private func enterFullScreen() async {
+        guard !isEnteringFullScreen else { return }
+        isEnteringFullScreen = true
+        defer { isEnteringFullScreen = false }
+        await stream?.stop()
+        showFullScreen = true
     }
 
     /// A failed control operation must never be drawn in the success colour.

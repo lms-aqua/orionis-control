@@ -195,6 +195,10 @@ struct SystemView: View {
                     }
                 }
                 .padding(16)
+                // Service rows are label/value pairs; past this width they just
+                // pull the status away from the name it belongs to.
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
             }
             .orionisScreen()
             .refreshable { await model.load(showSpinner: false) }

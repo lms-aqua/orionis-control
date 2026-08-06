@@ -76,6 +76,10 @@ struct MoreView: View {
                     versionFooter
                 }
                 .padding(16)
+                // Keeps the hub a readable column instead of a few rows
+                // stranded across a full iPad width.
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
             }
             .orionisScreen()
             .navigationTitle("More")

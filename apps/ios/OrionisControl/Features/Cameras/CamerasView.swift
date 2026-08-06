@@ -599,15 +599,34 @@ struct CamerasView: View {
         .allowsHitTesting(false)
     }
 
-    /// iPad and landscape get an extra column; the stored preference still decides
-    /// the base density.
+    /// The stored preference decides density on iPhone.
+    ///
+    /// On regular width the column count is derived from a minimum comfortable
+    /// tile width instead, so a wide iPad shows *larger* previews rather than
+    /// more tiny ones — a surveillance wall is only useful if a face or a plate
+    /// is legible in the tile. `columns` computes the real count from the
+    /// measured width; this value is the fallback and the compact answer.
     private var effectiveColumns: Int {
         let base = max(1, min(3, environment.preferences.gridColumns))
         return sizeClass == .regular ? min(4, base + 1) : base
     }
 
+    /// Minimum tile width per density step, used only at regular width.
+    private var minimumTileWidth: CGFloat {
+        switch max(1, min(3, environment.preferences.gridColumns)) {
+        case 1: 460  // Large: a few big viewports.
+        case 2: 330  // Standard.
+        default: 240  // Dense, but still readable.
+        }
+    }
+
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 14), count: effectiveColumns)
+        if sizeClass == .regular {
+            // Adaptive keeps every tile at or above the readable minimum and
+            // fits as many as the width genuinely allows.
+            return [GridItem(.adaptive(minimum: minimumTileWidth), spacing: 14)]
+        }
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: effectiveColumns)
     }
 }
 
