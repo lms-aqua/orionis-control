@@ -28,6 +28,18 @@ struct CameraLiveViewer: View {
     @State private var committedPan: CGSize = .zero
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var cameraSwitchTask: Task<Void, Never>?
+    /// Viewer-local quality. Seeded from the preference, then overridable for
+    /// this session only — changing it here is not a settings change.
+    @State private var quality: StreamQuality = .auto
+    /// Chrome must not vanish while a menu is open on top of it.
+    @State private var isMenuOpen = false
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Landscape on iPhone: the video has to keep almost the whole display, so
+    /// chrome and the switcher both shrink rather than stacking at portrait size.
+    private var isCompactHeight: Bool { verticalSizeClass == .compact }
 
     private let maxZoom: CGFloat = 5
 
@@ -58,7 +70,7 @@ struct CameraLiveViewer: View {
         }
         .statusBarHidden(!showsControls)
         .persistentSystemOverlays(showsControls ? .automatic : .hidden)
-        .animation(.easeInOut(duration: 0.2), value: showsControls)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showsControls)
         .task {
             if stream == nil, let camera {
                 stream = CameraStreamController(cameraId: camera.id, service: environment.service)
@@ -67,6 +79,8 @@ struct CameraLiveViewer: View {
                 thumbnails = CameraSnapshotStore(service: environment.service)
             }
             isMuted = environment.preferences.startMuted
+            // Seeded before `begin`, which reads it.
+            quality = environment.preferences.defaultStreamQuality
             if let camera { await begin(camera: camera) }
             // One pass for the switcher strip; the wall is not kept refreshing
             // while a live stream is the thing being watched.
@@ -121,6 +135,11 @@ struct CameraLiveViewer: View {
                         .scaleEffect(zoom)
                         .offset(x: pan.width, y: pan.height)
                         .opacity(stream.state.isLive ? 1 : 0.45)
+                } else if let camera, camera.health.status == .offline {
+                    // An offline camera is a normal thing to land on while
+                    // swiping a wall. Say so plainly and leave every way out
+                    // available rather than showing an indefinite spinner.
+                    offlineState(camera)
                 } else {
                     Color.black
                 }
@@ -142,6 +161,51 @@ struct CameraLiveViewer: View {
             .simultaneousGesture(dragGesture(viewport: geometry.size))
             .highPriorityGesture(tapGesture)
         }
+    }
+
+    /// Shown instead of an empty black frame when the selected camera is down.
+    ///
+    /// The last snapshot stays underneath where one exists, desaturated, so the
+    /// scene is still recognisable — but it is unmistakably labelled as history
+    /// rather than presented as a live picture.
+    @ViewBuilder
+    private func offlineState(_ camera: Camera) -> some View {
+        ZStack {
+            Color.black
+            if let frame = thumbnails?.frame(for: camera.id) {
+                Image(uiImage: frame.image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .grayscale(1)
+                    .opacity(0.28)
+            }
+            VStack(spacing: 9) {
+                Image(systemName: "video.slash.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                Text("\(camera.name) is offline")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                if let lastSeen = camera.health.lastSeenAt {
+                    Text("Last seen \(lastSeen.formatted(date: .omitted, time: .shortened))")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                if cameras.count > 1 {
+                    Text("Swipe or pick another camera below.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.55))
+                        .padding(.top, 2)
+                }
+            }
+            .padding(20)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(camera.name) is offline."
+                + (camera.health.lastSeenAt.map {
+                    " Last seen \($0.formatted(date: .omitted, time: .shortened))."
+                } ?? ""))
     }
 
     /// Explicit exclusivity prevents a double tap from also firing the single
@@ -255,14 +319,68 @@ struct CameraLiveViewer: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.7))
             }
+
+            moreMenu(stream, camera: camera)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 24)
-        .background(
-            LinearGradient(
-                colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
-        )
+        .padding(.top, isCompactHeight ? 6 : 12)
+        .padding(.bottom, isCompactHeight ? 12 : 24)
+        .background {
+            // A gradient keeps the video visible under the chrome, but with
+            // Reduce Transparency the label must win over the picture.
+            if reduceTransparency {
+                Color.black.opacity(0.85)
+            } else {
+                LinearGradient(
+                    colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+            }
+        }
+    }
+
+    /// Secondary controls. Quality lives here rather than on the primary row:
+    /// it is changed rarely and would otherwise crowd playback.
+    @ViewBuilder
+    private func moreMenu(_ stream: CameraStreamController, camera: Camera) -> some View {
+        Menu {
+            if camera.capabilities.qualities.count > 1 {
+                Picker("Quality", selection: $quality) {
+                    ForEach(camera.capabilities.qualities) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+            }
+            Toggle(isOn: $showsPlaybackStats) {
+                Label("Playback Statistics", systemImage: "waveform.path.ecg")
+            }
+            if stream.state.isTerminal, stream.state != .idle {
+                Button {
+                    stream.retryNow()
+                    scheduleControlsHide()
+                } label: {
+                    Label("Try Again", systemImage: "arrow.clockwise")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background {
+                    if reduceTransparency {
+                        Circle().fill(.black.opacity(0.8))
+                    } else {
+                        Circle().fill(.black.opacity(0.45))
+                    }
+                }
+                .contentShape(Circle())
+        }
+        .accessibilityLabel("More controls")
+        // Chrome must not auto-hide out from under an open menu.
+        .onTapGesture { isMenuOpen = true }
+        .onChange(of: quality) { _, _ in
+            isMenuOpen = false
+            Task { await applyQualityChange() }
+        }
     }
 
     @ViewBuilder
@@ -311,7 +429,7 @@ struct CameraLiveViewer: View {
 
                 if isZoomed {
                     circleButton("1.magnifyingglass", label: "Reset zoom") {
-                        withAnimation(.easeOut(duration: 0.2)) { resetZoom() }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { resetZoom() }
                     }
                 }
 
@@ -325,12 +443,16 @@ struct CameraLiveViewer: View {
                 Spacer()
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            .padding(.bottom, isCompactHeight ? 8 : 16)
         }
-        .background(
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom)
-        )
+        .background {
+            if reduceTransparency {
+                Color.black.opacity(0.85)
+            } else {
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom)
+            }
+        }
     }
 
     /// Horizontal strip for jumping straight to another camera.
@@ -378,26 +500,49 @@ struct CameraLiveViewer: View {
                 .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4))
                 .padding(4)
         }
-        .frame(width: 108, height: 61)
+        // Landscape shrinks the strip so it cannot eat a third of the display's
+        // height; the video is the point of this screen.
+        .frame(
+            width: isCompactHeight ? 76 : 108,
+            height: isCompactHeight ? 43 : 61)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isCurrent ? Color.accentColor : .white.opacity(0.25), lineWidth: isCurrent ? 2 : 1)
+                .stroke(
+                    isCurrent ? Color.accentColor : .white.opacity(0.25),
+                    lineWidth: isCurrent ? 2.5 : 1)
         )
+        // A ring alone is easy to miss over busy footage, so the current camera
+        // is also the only one at full brightness.
+        .opacity(isCurrent ? 1 : 0.65)
     }
 
+    /// A viewer control.
+    ///
+    /// 44×44 is the minimum comfortable target and this used to be 42, which is
+    /// below it. The backing also has to hold up over arbitrary video, and turn
+    /// opaque when the user asks for Reduce Transparency.
     private func circleButton(
-        _ symbol: String, label: String, action: @escaping () -> Void
+        _ symbol: String, label: String, isActive: Bool = false,
+        action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.body)
-                .frame(width: 42, height: 42)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(isActive ? Color.accentColor : .white)
+                .frame(width: 44, height: 44)
+                .background {
+                    if reduceTransparency {
+                        Circle().fill(.black.opacity(0.8))
+                    } else {
+                        Circle().fill(.black.opacity(0.45))
+                    }
+                }
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        .background(.black.opacity(0.45), in: Circle())
         .accessibilityLabel(label)
+        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
 
     private func playbackStats(_ stream: CameraStreamController) -> some View {
@@ -440,7 +585,7 @@ struct CameraLiveViewer: View {
         stream.setAudioMuted(isMuted)
         stream.start(
             camera: camera,
-            quality: environment.preferences.defaultStreamQuality,
+            quality: quality,
             lowData: lowData)
     }
 
@@ -468,7 +613,7 @@ struct CameraLiveViewer: View {
         stream.setAudioMuted(isMuted)
         await stream.switchTo(
             camera: camera,
-            quality: environment.preferences.defaultStreamQuality,
+            quality: quality,
             lowData: lowData)
         scheduleControlsHide()
     }
@@ -515,7 +660,21 @@ struct CameraLiveViewer: View {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
             guard let state = stream?.state, state.isLive else { return }
+            // Never pull the chrome out from under an open menu.
+            guard !isMenuOpen else { return }
             showsControls = false
         }
+    }
+
+    /// Restarts the stream at a newly chosen quality.
+    ///
+    /// Routed through the same switch path the camera switcher uses, so the
+    /// existing cancellation and session-revocation guarantees apply: the old
+    /// session is revoked before the new one opens, and mute survives.
+    private func applyQualityChange() async {
+        guard cameras.indices.contains(index) else { return }
+        cameraSwitchTask?.cancel()
+        let camera = cameras[index]
+        cameraSwitchTask = Task { await switchCamera(to: camera) }
     }
 }
