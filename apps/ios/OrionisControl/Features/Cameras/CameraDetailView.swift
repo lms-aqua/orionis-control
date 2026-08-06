@@ -236,6 +236,7 @@ struct CameraDetailView: View {
                 }
                 .padding(16)
             }
+            .orionisScreen()
             .refreshable {
                 async let details: Void = model.load()
                 async let snapshot: Void = model.loadSnapshot()
@@ -250,7 +251,7 @@ struct CameraDetailView: View {
     private func playerSection(_ model: CameraDetailViewModel, camera: Camera) -> some View {
         VStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 14).fill(.black)
+                RoundedRectangle(cornerRadius: 16).fill(.black)
 
                 // The scene as a still, shown the instant it loads so opening a
                 // camera never sits on a blank spinner. It sits under the live
@@ -283,7 +284,10 @@ struct CameraDetailView: View {
                 }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Theme.hairline, lineWidth: 1))
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
                 "\(camera.name) live view. \(stream?.state.statusText ?? "Not connected")")
@@ -358,7 +362,7 @@ struct CameraDetailView: View {
         case .offline(let reason):
             statusOverlay(
                 symbol: "video.slash.fill",
-                tint: .orange,
+                tint: Theme.warn,
                 title: "\(camera.name) is offline",
                 detail: reason ?? camera.health.message,
                 lastSeen: camera.health.lastSeenAt,
@@ -367,7 +371,7 @@ struct CameraDetailView: View {
         case .authenticationFailed:
             statusOverlay(
                 symbol: "lock.fill",
-                tint: .orange,
+                tint: Theme.warn,
                 title: "Authentication required",
                 detail: "Sign in again to watch this camera.",
                 lastSeen: nil,
@@ -385,7 +389,7 @@ struct CameraDetailView: View {
         case .failed(let reason):
             statusOverlay(
                 symbol: "exclamationmark.triangle.fill",
-                tint: .orange,
+                tint: Theme.warn,
                 title: "Stream unavailable",
                 detail: reason,
                 lastSeen: camera.health.lastSeenAt,
@@ -541,7 +545,7 @@ struct CameraDetailView: View {
         .font(.caption)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+        .orionisCard(radius: 12)
     }
 
     private func diagnosticRow(_ label: String, _ value: String) -> some View {
@@ -558,8 +562,8 @@ struct CameraDetailView: View {
     private func controlsSection(_ model: CameraDetailViewModel, camera: Camera) -> some View {
         let user = environment.auth.state.user
 
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Controls").font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            CardHeader(title: "Controls", systemImage: "slider.horizontal.3")
 
             if camera.capabilities.ptz {
                 PTZPad(
@@ -611,7 +615,7 @@ struct CameraDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+        .orionisCard()
     }
 
     @ViewBuilder
@@ -672,8 +676,8 @@ struct CameraDetailView: View {
     // MARK: Details and events
 
     private func detailsSection(_ camera: Camera) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Details").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            CardHeader(title: "Details", systemImage: "info.circle")
             CameraStatusBadge(health: camera.health)
             if let location = camera.location { detailRow("Location", location) }
             if let group = camera.group { detailRow("Group", group) }
@@ -688,7 +692,7 @@ struct CameraDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+        .orionisCard()
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {
@@ -708,20 +712,26 @@ struct CameraDetailView: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "clock.arrow.circlepath")
-                    .font(.title3)
-                    .foregroundStyle(.tint)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 34, height: 34)
+                    .background(Theme.soft(Theme.accent), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Recordings").font(.headline)
+                    Text("Recordings")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
                     Text("Scrub recorded footage by day")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                 }
                 Spacer()
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+            .padding(14)
+            .orionisCard()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -729,22 +739,37 @@ struct CameraDetailView: View {
 
     @ViewBuilder
     private func eventsSection(_ model: CameraDetailViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Recent events").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            CardHeader(title: "Recent activity", systemImage: "bell.fill")
             if model.events.isEmpty {
-                Text("No recent events for this camera.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 11) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 30, height: 30)
+                        .background(Theme.inset, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("No detections yet")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.textPrimary)
+                        Text("Person, vehicle and package alerts appear here once detection is enabled for this camera.")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                }
             } else {
                 ForEach(model.events) { event in
                     EventRow(event: event, compact: true)
-                    if event.id != model.events.last?.id { Divider() }
+                    if event.id != model.events.last?.id {
+                        Divider()
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+        .orionisCard()
     }
 
     // MARK: Actions
