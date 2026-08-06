@@ -69,19 +69,7 @@ struct DashboardView: View {
                     LoadingStateView(message: "Preparing…")
                 }
             }
-            .navigationTitle("Home")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    if let lastLoadedAt = model?.lastLoadedAt {
-                        Text(lastLoadedAt.formatted(date: .omitted, time: .shortened))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel(
-                                "Last refreshed \(lastLoadedAt.formatted(date: .omitted, time: .shortened))"
-                            )
-                    }
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
         }
         .task {
             if model == nil {
@@ -107,6 +95,8 @@ struct DashboardView: View {
         case .loaded, .failed:
             ScrollView {
                 LazyVStack(spacing: 16) {
+                    header()
+
                     if case .failed(let error) = model.state, let lastLoadedAt = model.lastLoadedAt {
                         StaleDataBanner(
                             asOf: lastLoadedAt,
@@ -114,6 +104,7 @@ struct DashboardView: View {
                     }
 
                     if let snapshot = model.snapshot {
+                        statusBanner(snapshot: snapshot, updatedAt: model.lastLoadedAt)
                         camerasCard(snapshot)
                         protectionCard(snapshot)
                         eventsCard(snapshot)
@@ -123,8 +114,93 @@ struct DashboardView: View {
                 }
                 .padding(16)
             }
+            .orionisScreen()
             .refreshable { await model.load(showSpinner: false) }
         }
+    }
+
+    // MARK: Header + status
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12: return "Good morning"
+        case 12..<17: return "Good afternoon"
+        case 17..<22: return "Good evening"
+        default: return "Good night"
+        }
+    }
+
+    @ViewBuilder
+    private func header() -> some View {
+        let name = environment.auth.state.user?.name.split(separator: " ").first.map(String.init)
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(greeting)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                Text(name ?? "Welcome")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+            }
+            Spacer()
+            if let name {
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        LinearGradient(
+                            colors: [Theme.accent, Color(lightHex: 0x8A6CFF, darkHex: 0x6A4CFF)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            }
+        }
+        .padding(.top, 4)
+        .padding(.horizontal, 2)
+    }
+
+    /// One line that answers "is everything okay?" before any detail.
+    private func statusBanner(snapshot: DashboardSnapshot, updatedAt: Date?) -> some View {
+        let services = snapshot.services.data
+        let cameras = snapshot.cameras.data
+        let failing = services?.failing ?? 0
+        let offline = cameras?.offline ?? 0
+        let protectionOn = snapshot.adguard.status.data?.protectionEnabled ?? true
+
+        let color: Color = failing > 0 ? Theme.critical : (offline > 0 || !protectionOn) ? Theme.warn : Theme.good
+        let title: String = failing > 0
+            ? "\(failing) service\(failing == 1 ? "" : "s") need attention"
+            : (offline > 0 ? "\(offline) camera\(offline == 1 ? "" : "s") offline" : "All systems nominal")
+
+        var parts: [String] = []
+        if let cameras { parts.append("\(cameras.online)/\(cameras.total) cameras online") }
+        parts.append(protectionOn ? "filtering on" : "filtering paused")
+        if let services { parts.append("\(services.healthy) services healthy") }
+        let subtitle = parts.joined(separator: " · ")
+
+        return HStack(spacing: 13) {
+            StatusDot(color: color, pulsing: color == Theme.good)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            if let updatedAt {
+                Text(updatedAt.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .padding(15)
+        .orionisCard()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(subtitle)")
     }
 
     // MARK: Cards
@@ -147,7 +223,8 @@ struct DashboardView: View {
                         systemImage: "record.circle", tint: .red)
                 }
                 Button("View all cameras") { router.selectedTab = .cameras }
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.accent)
                     .padding(.top, 4)
             } else {
                 SectionUnavailable(section: snapshot.cameras.apiError, feature: "Cameras")
@@ -183,7 +260,8 @@ struct DashboardView: View {
                         section: snapshot.adguard.stats.apiError, feature: "Statistics")
                 }
                 Button("Open network") { router.selectedTab = .adGuard }
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.accent)
                     .padding(.top, 4)
             } else {
                 SectionUnavailable(
@@ -208,7 +286,7 @@ struct DashboardView: View {
                             systemImage: "exclamationmark.circle.fill"
                         )
                         .font(.footnote.weight(.medium))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.warn)
                     }
                     VStack(spacing: 0) {
                         ForEach(events.items.prefix(4)) { event in
@@ -233,7 +311,7 @@ struct DashboardView: View {
                 if let fraction = storage.usedFraction {
                     VStack(alignment: .leading, spacing: 10) {
                         ProgressView(value: fraction)
-                            .tint(fraction > 0.9 ? .red : fraction > 0.75 ? .orange : .accentColor)
+                            .tint(fraction > 0.9 ? Theme.critical : fraction > 0.75 ? Theme.warn : Theme.accent)
 
                         // Recordings against their budget, not the whole disk:
                         // the filesystem is shared with everything else on the
@@ -298,7 +376,7 @@ struct DashboardView: View {
                                 systemImage: "exclamationmark.triangle.fill"
                             )
                             .font(.caption)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Theme.warn)
                         }
                     }
                     .accessibilityElement(children: .combine)
@@ -350,7 +428,8 @@ struct DashboardView: View {
                     }
                 }
                 Button("Open system") { router.selectedTab = .system }
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.accent)
                     .padding(.top, 4)
             } else {
                 SectionUnavailable(section: snapshot.services.apiError, feature: "Service health")
@@ -364,17 +443,18 @@ struct DashboardView: View {
 struct DashboardCard<Content: View>: View {
     let title: String
     let systemImage: String
+    var tint: Color = Theme.accent
+    var tag: String?
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            CardHeader(title: title, systemImage: systemImage, tint: tint, tag: tag)
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+        .orionisCard()
     }
 }
 
@@ -388,7 +468,7 @@ struct SectionUnavailable: View {
         let error = section
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: error?.isNotConfigured == true ? "cable.connector.slash" : "exclamationmark.triangle.fill")
-                .foregroundStyle(error?.isNotConfigured == true ? Color.secondary : Color.orange)
+                .foregroundStyle(error?.isNotConfigured == true ? Theme.textSecondary : Theme.warn)
             VStack(alignment: .leading, spacing: 2) {
                 Text(error?.title ?? "\(feature) unavailable")
                     .font(.subheadline.weight(.medium))
@@ -409,24 +489,31 @@ struct ServiceCountPill: View {
 
     private var tint: Color {
         switch status {
-        case .healthy: .green
-        case .warning: .orange
-        case .critical, .offline: .red
-        case .unknown: .secondary
+        case .healthy: Theme.good
+        case .warning: Theme.warn
+        case .critical, .offline: Theme.critical
+        case .unknown: Theme.textTertiary
         }
     }
 
     var body: some View {
-        VStack(spacing: 4) {
-            Image(systemName: status.symbolName)
-                .foregroundStyle(tint)
+        VStack(spacing: 3) {
             Text("\(count)")
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 19, weight: .bold))
                 .monospacedDigit()
+                .foregroundStyle(tint)
             Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 10.5, weight: .medium))
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(Theme.textSecondary)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .background(Theme.inset, in: RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(count) \(label)")
     }
@@ -439,7 +526,7 @@ struct ProtectionPausedBanner: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("DNS filtering is paused", systemImage: "shield.slash.fill")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
+                .foregroundStyle(Theme.critical)
 
             if let override = status.override {
                 Text(
@@ -465,7 +552,7 @@ struct ProtectionPausedBanner: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .background(Theme.soft(Theme.critical), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }

@@ -9,11 +9,11 @@ struct StatusBadge: View {
 
     private var tint: Color {
         switch status {
-        case .healthy: .green
-        case .warning: .orange
-        case .critical: .red
-        case .offline: .secondary
-        case .unknown: .secondary
+        case .healthy: Theme.good
+        case .warning: Theme.warn
+        case .critical: Theme.critical
+        case .offline: Theme.textTertiary
+        case .unknown: Theme.textTertiary
         }
     }
 
@@ -264,32 +264,37 @@ struct MetricTile: View {
     var tint: Color = .accentColor
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(value)
+                .font(.system(size: 22, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(Theme.textPrimary)
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+            HStack(spacing: 5) {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.caption)
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(tint)
                 }
                 Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
             }
-            Text(value)
-                .font(.title2.weight(.semibold))
-                .monospacedDigit()
-                .minimumScaleFactor(0.7)
-                .lineLimit(1)
             if let caption {
                 Text(caption)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Theme.textTertiary)
                     .lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(13)
+        .background(Theme.inset, in: RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title): \(value)\(caption.map { ". \($0)" } ?? "")")
     }

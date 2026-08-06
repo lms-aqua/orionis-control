@@ -101,6 +101,7 @@ struct MainTabView: View {
                         .tag(tab)
                 }
             }
+            .tint(Theme.accent)
         }
     }
 
