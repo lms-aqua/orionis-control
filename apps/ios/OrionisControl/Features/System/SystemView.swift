@@ -131,7 +131,7 @@ struct SystemView: View {
                                 ? "checkmark.circle.fill" : "xmark.octagon.fill"
                         )
                         .font(.subheadline)
-                        .foregroundStyle(result.ok ? .green : .red)
+                        .foregroundStyle(result.ok ? Theme.good : Theme.critical)
                         Text(result.ranAt.formatted(date: .omitted, time: .standard))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -167,7 +167,7 @@ struct SystemView: View {
                                     } else if action.disruptive {
                                         Image(systemName: "exclamationmark.triangle.fill")
                                             .font(.caption)
-                                            .foregroundStyle(.orange)
+                                            .foregroundStyle(Theme.warn)
                                     }
                                 }
                             }
@@ -239,7 +239,7 @@ struct ServiceRow: View {
             if !service.impacts.isEmpty {
                 Text("Affects: \(service.impacts.formatted(.list(type: .and)))")
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.warn)
             }
             if let version = service.version {
                 Text(version)
@@ -278,7 +278,7 @@ struct AuditLogView: View {
                             Spacer()
                             Text(record.outcome)
                                 .font(.caption2)
-                                .foregroundStyle(record.outcome == "success" ? .green : .orange)
+                                .foregroundStyle(record.outcome == "success" ? Theme.good : Theme.warn)
                         }
                         Text(
                             "\(record.actorName ?? "system") · \(record.occurredAt.formatted(date: .abbreviated, time: .standard))"
