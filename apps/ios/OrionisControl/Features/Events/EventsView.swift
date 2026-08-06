@@ -129,19 +129,21 @@ struct EventsView: View {
             if model == nil { model = EventsViewModel(service: environment.service) }
             await model?.load()
         }
-        .onChange(of: router.pendingDestination) { _, destination in
-            if case .event(let id) = destination {
-                Task {
-                    do {
-                        let event = try await environment.service.event(id: id)
-                        selected = event
-                    } catch let apiError as APIError {
-                        navigationError = apiError
-                    } catch {
-                        navigationError = .unexpectedStatus(0, requestId: nil)
-                    }
-                    _ = router.consume()
-                }
+        // Covers the cold start: a notification tap that launches the app sets
+        // the destination long before this view exists, so observing changes
+        // alone would drop it.
+        .onDeepLink(router) { destination in
+            if case .event = destination { return true }
+            return false
+        } perform: { destination in
+            guard case .event(let id) = destination else { return }
+            do {
+                let event = try await environment.service.event(id: id)
+                selected = event
+            } catch let apiError as APIError {
+                navigationError = apiError
+            } catch {
+                navigationError = .unexpectedStatus(0, requestId: nil)
             }
         }
         .alert(

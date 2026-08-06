@@ -273,6 +273,54 @@ final class DeepLinkRoutingTests: XCTestCase {
         XCTAssertEqual(router.consume(), .event("evt-1"))
     }
 
+    // MARK: Cold-start delivery
+
+    /// The cold-start contract.
+    ///
+    /// On a terminated-app notification tap the URL is handled while auth is
+    /// still restoring, so the owning view does not exist yet. The destination
+    /// must therefore survive an arbitrary delay and any number of reads, and
+    /// disappear only when a view explicitly consumes it. A router that cleared
+    /// it on a timer, or on the next tab change, would drop the event.
+    @MainActor
+    func testPendingDestinationSurvivesUntilTheOwningViewConsumesIt() {
+        let router = DeepLinkRouter()
+        router.handle(URL(string: "orioniscontrol://event/evt-cold")!)
+
+        // Stand-in for the interval where RootView is showing the loading state
+        // and EventsView has not been created: the value must still be there.
+        XCTAssertEqual(router.pendingDestination, .event("evt-cold"))
+        XCTAssertEqual(router.pendingDestination, .event("evt-cold"))
+        XCTAssertEqual(router.selectedTab, .more)
+        XCTAssertEqual(router.morePath, [.events])
+
+        // EventsView finally mounts and claims it.
+        XCTAssertEqual(router.consume(), .event("evt-cold"))
+        XCTAssertNil(router.pendingDestination)
+    }
+
+    /// A second consumer must not receive the same destination, so a mount that
+    /// races an `onChange` cannot present the event twice.
+    @MainActor
+    func testADestinationIsDeliveredOnlyOnce() {
+        let router = DeepLinkRouter()
+        router.handle(URL(string: "orioniscontrol://camera/front")!)
+        XCTAssertEqual(router.consume(), .camera("front"))
+        XCTAssertNil(router.consume())
+    }
+
+    // MARK: More routes
+
+    func testEveryMoreRouteHasATitleAndSymbol() {
+        let routes: [MoreRoute] = [
+            .events, .settings, .account, .diagnostics, .about, .infrastructure,
+        ]
+        for route in routes {
+            XCTAssertFalse(route.title.isEmpty, "\(route) has no title")
+            XCTAssertFalse(route.symbolName.isEmpty, "\(route) has no symbol")
+        }
+    }
+
     @MainActor
     func testOperationalDeepLinksClearAStaleMorePath() {
         let router = DeepLinkRouter()

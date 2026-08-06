@@ -224,11 +224,14 @@ struct CamerasView: View {
                 environment.preferences.favouriteCameraIds = remote
             }
         }
-        .onChange(of: router.pendingDestination) { _, destination in
-            if case .camera(let id) = destination {
-                path.append(id)
-                _ = router.consume()
-            }
+        // Same cold-start guarantee as Events: a camera notification tap that
+        // launches the app must still push the detail screen.
+        .onDeepLink(router) { destination in
+            if case .camera = destination { return true }
+            return false
+        } perform: { destination in
+            guard case .camera(let id) = destination else { return }
+            path.append(id)
         }
         .fullScreenCover(item: $fullScreen) { request in
             CameraLiveViewer(cameras: request.cameras, startAt: request.startIndex)
