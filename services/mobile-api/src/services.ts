@@ -17,6 +17,7 @@ import { HttpAdGuardAdapter, UnconfiguredAdGuardAdapter } from './adapters/adgua
 import type { AdGuardAdapter } from './adapters/adguard/types.ts';
 import { PushService } from './notifications/push.ts';
 import { SecretsCipher } from './lib/secrets.ts';
+import { ProvisioningDirectory } from './lib/provisioning.ts';
 import {
   AggregateOrionisAdapter,
   buildProviderRegistry,
@@ -105,6 +106,8 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
         fetchImpl,
         config.orionis.timeoutMs,
         config.connections.probeTtlMs,
+        new ProvisioningDirectory(config.connections.provisioningDir),
+        config.connections.maxBridges,
       )
     : null;
 

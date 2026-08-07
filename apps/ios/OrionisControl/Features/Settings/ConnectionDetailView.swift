@@ -9,6 +9,8 @@ import SwiftUI
 struct ConnectionDetailView: View {
     let connectionId: String
     let providers: [ProviderDescriptor]
+    /// Whether the gateway has a host-side applier behind it.
+    var canProvision = false
 
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
@@ -17,11 +19,14 @@ struct ConnectionDetailView: View {
     @State private var isLoading = true
     @State private var isProbing = false
     @State private var isSigningIn = false
+    @State private var isProvisioning = false
     @State private var error: APIError?
     @State private var challenge: AuthChallenge?
     @State private var signInNotice: String?
     @State private var isEditing = false
     @State private var confirmingRemoval = false
+    /// Reconciled with the host, so it is fresher than the copy on the record.
+    @State private var provisioning: ConnectionProvisioning?
 
     private var descriptor: ProviderDescriptor? {
         providers.first { $0.id == connection?.provider }
@@ -29,6 +34,12 @@ struct ConnectionDetailView: View {
 
     private var canManage: Bool {
         environment.auth.state.user?.can(.connectionsManage) == true
+    }
+
+    /// Whether offering to build a bridge would do anything.
+    private var canOfferBridge: Bool {
+        canManage && canProvision && descriptor?.bridge != nil
+            && (provisioning == nil || provisioning?.state == .failed)
     }
 
     var body: some View {
@@ -39,6 +50,7 @@ struct ConnectionDetailView: View {
 
             if let connection {
                 healthCard(connection)
+                bridgeCard
                 if let notice = signInNotice {
                     SettingsGroup {
                         SettingsNoteRow(
@@ -59,11 +71,18 @@ struct ConnectionDetailView: View {
                 }
             }
         }
-        .task { await load() }
+        .task {
+            await load()
+            // Picks the poll back up when the screen is opened on a bridge that
+            // was still being built when it was last closed.
+            await followProvisioning()
+        }
         .refreshable { await load() }
         .sheet(isPresented: $isEditing) {
             if let connection {
-                ConnectionEditorView(providers: providers, existing: connection) {
+                ConnectionEditorView(
+                    providers: providers, canProvision: canProvision, existing: connection
+                ) {
                     await load()
                 }
             }
@@ -83,7 +102,9 @@ struct ConnectionDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Its cameras disappear from the app and its stored credentials are deleted. Nothing on the camera system itself is changed."
+                provisioning == nil
+                    ? "Its cameras disappear from the app and its stored credentials are deleted. Nothing on the camera system itself is changed."
+                    : "Its cameras disappear from the app, its stored credentials are deleted, and the bridge Orionis started for it is stopped. Nothing on the camera system itself is changed, and no recorded data is deleted."
             )
         }
     }
@@ -119,6 +140,49 @@ struct ConnectionDetailView: View {
         .padding(15)
         .orionisCard()
         .accessibilityElement(children: .combine)
+    }
+
+    /// The state of the helper service Orionis was asked to run.
+    ///
+    /// Deliberately its own card above capabilities rather than folded into
+    /// health: "still being set up" and "the upstream did not answer" are
+    /// different facts with different actions, and merging them is how a source
+    /// that is working perfectly ends up with a red dot for a minute.
+    @ViewBuilder
+    private var bridgeCard: some View {
+        if let provisioning {
+            HStack(spacing: 13) {
+                if provisioning.isInFlight {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(
+                        systemName: provisioning.state == .failed
+                            ? "exclamationmark.triangle.fill" : "shippingbox.fill"
+                    )
+                    .font(.system(size: 15))
+                    .foregroundStyle(provisioning.state == .failed ? Theme.critical : Theme.good)
+                    .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(provisioning.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    if let message = provisioning.message {
+                        // Verbatim from the host, including the last line the
+                        // container printed. That line is usually the entire
+                        // diagnosis, and paraphrasing it would lose it.
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 6)
+            }
+            .padding(15)
+            .orionisCard()
+            .accessibilityElement(children: .combine)
+        }
     }
 
     @ViewBuilder
@@ -205,6 +269,19 @@ struct ConnectionDetailView: View {
                 Task { await probe() }
             }
 
+            if canOfferBridge, let bridge = descriptor?.bridge {
+                SettingsDivider()
+                SettingsButtonRow(
+                    title: provisioning?.state == .failed
+                        ? "Try setting up the bridge again" : "Set up its bridge",
+                    subtitle: bridge.summary,
+                    systemImage: "shippingbox",
+                    isBusy: isProvisioning
+                ) {
+                    Task { await provisionBridge() }
+                }
+            }
+
             if descriptor?.capabilities.interactiveAuth == true, canManage {
                 SettingsDivider()
                 SettingsButtonRow(
@@ -274,8 +351,52 @@ struct ConnectionDetailView: View {
     private func load() async {
         defer { isLoading = false }
         do {
-            connection = try await environment.service.connection(id: connectionId)
+            let loaded = try await environment.service.connection(id: connectionId)
+            connection = loaded
+            // The record carries the last known state; this asks the gateway to
+            // read whatever the host has said since. Only when there is
+            // something to reconcile — an ordinary source must not pay for a
+            // filesystem read it will never use.
+            provisioning =
+                loaded.provisioning == nil
+                ? nil : try? await environment.service.connectionProvisioning(id: connectionId)
             error = nil
+        } catch let apiError as APIError {
+            error = apiError
+        } catch {
+            self.error = .unexpectedStatus(0, requestId: nil)
+        }
+    }
+
+    /// Polls while a bridge is being built, and stops the moment it settles.
+    ///
+    /// Bounded rather than open-ended: an applier that never answers must not
+    /// leave a phone polling until the screen is closed. Two minutes is longer
+    /// than any of the templates take and short enough to notice.
+    private func followProvisioning() async {
+        var elapsed = 0
+        while provisioning?.isInFlight == true, elapsed < 120, !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3))
+            elapsed += 3
+            guard !Task.isCancelled else { return }
+            guard let next = try? await environment.service.connectionProvisioning(id: connectionId)
+            else { continue }
+            provisioning = next
+            if !next.isInFlight {
+                // The addresses have just been filled in, so the settings shown
+                // on this screen — and the health it reports — are both stale.
+                await load()
+                if next.state == .ready { await probe() }
+            }
+        }
+    }
+
+    private func provisionBridge() async {
+        isProvisioning = true
+        defer { isProvisioning = false }
+        do {
+            provisioning = try await environment.service.provisionConnectionBridge(id: connectionId)
+            await followProvisioning()
         } catch let apiError as APIError {
             error = apiError
         } catch {

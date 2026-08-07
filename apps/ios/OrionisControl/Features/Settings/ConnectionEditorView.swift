@@ -15,6 +15,9 @@ import SwiftUI
 ///      move the cameras this source has already contributed.
 struct ConnectionEditorView: View {
     let providers: [ProviderDescriptor]
+    /// Whether the gateway can start a bridge itself. Decides whether the
+    /// addresses a bridge would supply are asked for at all.
+    let canProvision: Bool
     /// Nil when adding; the existing connection when editing.
     let existing: ConnectionSummary?
     let onSaved: () async -> Void
@@ -29,12 +32,30 @@ struct ConnectionEditorView: View {
     @State private var enabled = true
     @State private var isSaving = false
     @State private var error: APIError?
+    @State private var showingAdvanced = false
 
     private var descriptor: ProviderDescriptor? {
         providers.first { $0.id == selectedProviderId }
     }
 
     private var isEditing: Bool { existing != nil }
+
+    /// Whether this source's bridge will be created for it.
+    ///
+    /// Only on *add*: an existing connection may well have been pointed at a
+    /// bridge by hand, and hiding the addresses it is using would leave someone
+    /// unable to correct them.
+    private var willProvision: Bool {
+        canProvision && !isEditing && descriptor?.bridge != nil
+    }
+
+    /// Everything worth asking for, minus what the bridge will supply.
+    private var askedFields: [ProviderField] {
+        descriptor?.visibleFields(provisioning: willProvision) ?? []
+    }
+
+    private var primaryFields: [ProviderField] { askedFields.filter { !$0.advanced } }
+    private var advancedFields: [ProviderField] { askedFields.filter(\.advanced) }
 
     var body: some View {
         NavigationStack {
@@ -143,9 +164,37 @@ struct ConnectionEditorView: View {
 
             SectionLabel("Settings")
             SettingsGroup {
-                ForEach(Array(descriptor.fields.enumerated()), id: \.element.id) { index, field in
+                ForEach(Array(primaryFields.enumerated()), id: \.element.id) { index, field in
                     if index > 0 { SettingsDivider() }
                     fieldRow(field)
+                }
+            }
+
+            if willProvision, let bridge = descriptor.bridge {
+                // Said before anything is created, not after. Someone adding a
+                // Blink account should know a container is about to start on
+                // their server, and why.
+                SettingsGroup {
+                    SettingsNoteRow(
+                        text: bridge.summary, systemImage: "shippingbox.fill", tint: Theme.accent)
+                }
+            }
+
+            if !advancedFields.isEmpty {
+                // Collapsed rather than removed: these have correct defaults, and
+                // the unusual deployment that needs to change them still can.
+                SettingsGroup {
+                    SettingsToggleRow(
+                        title: "Advanced",
+                        subtitle: showingAdvanced
+                            ? nil : "Addresses and options that are already correct by default.",
+                        isOn: $showingAdvanced)
+                    if showingAdvanced {
+                        ForEach(advancedFields) { field in
+                            SettingsDivider()
+                            fieldRow(field)
+                        }
+                    }
                 }
             }
 
@@ -159,7 +208,9 @@ struct ConnectionEditorView: View {
 
             if descriptor.capabilities.interactiveAuth && !isEditing {
                 SettingsHint(
-                    "After adding this source you will be asked to sign in, and the service will send a verification code."
+                    willProvision
+                        ? "Adding this starts its bridge on the server and then asks you to sign in — the service will send a verification code."
+                        : "After adding this source you will be asked to sign in, and the service will send a verification code."
                 )
             }
         }
@@ -260,7 +311,9 @@ struct ConnectionEditorView: View {
     }
 
     private func applyDefaults(_ provider: ProviderDescriptor) {
-        for field in provider.fields {
+        // Only what is being asked for. Prefilling a field the bridge is about
+        // to supply would send a stale address the applier then overwrites.
+        for field in provider.visibleFields(provisioning: willProvision) {
             guard let value = field.defaultValue else { continue }
             if field.type == .boolean {
                 flags[field.key] = flags[field.key] ?? value.boolValue
@@ -287,10 +340,12 @@ struct ConnectionEditorView: View {
     }
 
     private var canSave: Bool {
-        guard let descriptor, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        guard descriptor != nil, !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return false
+        }
         // A required credential only has to be typed when there is not already
         // one stored.
-        return descriptor.fields.filter(\.required).allSatisfy { field in
+        return askedFields.filter(\.required).allSatisfy { field in
             switch field.type {
             case .boolean: return true
             case .secret:
@@ -310,7 +365,7 @@ struct ConnectionEditorView: View {
 
         var settings: [String: SettingValue] = [:]
         var secrets: [String: String] = [:]
-        for field in descriptor.fields {
+        for field in askedFields {
             switch field.type {
             case .secret:
                 let typed = values[field.key] ?? ""
@@ -339,7 +394,7 @@ struct ConnectionEditorView: View {
                         enabled: enabled
                     ))
             } else {
-                _ = try await environment.service.createConnection(
+                let created = try await environment.service.createConnection(
                     ConnectionCreateRequest(
                         provider: descriptor.id,
                         name: name.trimmingCharacters(in: .whitespaces),
@@ -347,6 +402,13 @@ struct ConnectionEditorView: View {
                         secrets: secrets,
                         enabled: enabled
                     ))
+                if willProvision {
+                    // Asked for immediately, so "Add" really is the whole of it.
+                    // A failure here is deliberately not fatal to the save: the
+                    // connection exists and is correct, and the detail screen
+                    // shows what went wrong and offers to try again.
+                    _ = try? await environment.service.provisionConnectionBridge(id: created.id)
+                }
             }
             await onSaved()
             dismiss()

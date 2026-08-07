@@ -41,6 +41,17 @@ import type {
   ProbeResult,
 } from '../provider.ts';
 
+/**
+ * Where a bridge lives when nobody says otherwise.
+ *
+ * These are the addresses the shipped compose template publishes on, so the
+ * common case — one lostblink beside one gateway — needs no addresses typed at
+ * all. A different deployment overrides them; provisioning overwrites them with
+ * whatever it actually created.
+ */
+const DEFAULT_MEDIAMTX_API_URL = 'http://mediamtx:9997';
+const DEFAULT_MEDIAMTX_RTSP_URL = 'rtsp://mediamtx:8554';
+
 export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
   id: 'lostblink',
   displayName: 'Blink (lostblink)',
@@ -58,23 +69,11 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
     storageReporting: false,
     interactiveAuth: true,
   },
+  // Order is the order they are asked for, and it matches what the user
+  // actually knows: their Blink account. The bridge addresses come last and
+  // collapsed, because on a provisioned deployment they are filled in by the
+  // applier and nobody should ever see them.
   fields: [
-    {
-      key: 'mediamtxApiUrl',
-      label: 'MediaMTX API URL',
-      type: 'url',
-      required: true,
-      placeholder: 'http://lostblink-mediamtx:9997',
-      help: 'The MediaMTX control API that lostblink publishes to. Used to discover which cameras are live.',
-    },
-    {
-      key: 'rtspBaseUrl',
-      label: 'RTSP base URL',
-      type: 'url',
-      required: true,
-      placeholder: 'rtsp://lostblink-mediamtx:8554',
-      help: 'Where the published streams are read from. Camera paths are appended to this.',
-    },
     {
       key: 'email',
       label: 'Blink email',
@@ -90,16 +89,76 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
       required: true,
       help: 'Stored encrypted. Blink will email or text a code to finish signing in.',
     },
+    {
+      key: 'mediamtxApiUrl',
+      label: 'MediaMTX API URL',
+      type: 'url',
+      // Optional deliberately. Requiring it meant the form refused to save a
+      // perfectly good Blink account until someone typed the address of a
+      // container that, on a fresh install, does not exist yet.
+      required: false,
+      advanced: true,
+      placeholder: DEFAULT_MEDIAMTX_API_URL,
+      default: DEFAULT_MEDIAMTX_API_URL,
+      help: 'The MediaMTX control API that lostblink publishes to. Used to discover which cameras are live. Leave as-is unless you run the bridge somewhere else.',
+    },
+    {
+      key: 'rtspBaseUrl',
+      label: 'RTSP base URL',
+      type: 'url',
+      required: false,
+      advanced: true,
+      placeholder: DEFAULT_MEDIAMTX_RTSP_URL,
+      default: DEFAULT_MEDIAMTX_RTSP_URL,
+      help: 'Where the published streams are read from. Camera paths are appended to this.',
+    },
   ],
+  bridge: {
+    template: 'lostblink',
+    summary:
+      'Blink speaks its own transports, so a lostblink bridge and a MediaMTX have to run alongside the gateway to translate them. Orionis can start both for you.',
+    provides: ['mediamtxApiUrl', 'rtspBaseUrl'],
+    // lostblink holds the Blink session the cameras stream over, so it needs a
+    // signed-in identity of its own. Handing over the *completed* one — token,
+    // account, and the client identity Blink has already verified — is what
+    // stops it asking for a second verification code at a console nobody is
+    // watching. See `seed_lostblink_credentials` in the applier: these keys are
+    // exactly blinkpy's on-disk credential shape, and every one must be present
+    // or blinkpy signs in again from scratch.
+    handsOver: {
+      settings: [
+        'email',
+        'tier',
+        'accountId',
+        'clientId',
+        'userId',
+        'uniqueId',
+        'deviceIdentifier',
+      ],
+      secrets: ['password', 'authToken'],
+    },
+  },
 };
 
 /** Blink's production API. Region is negotiated per account after login. */
 const BLINK_DEFAULT_TIER = 'rest-prod';
 
+/**
+ * How this gateway names itself to Blink.
+ *
+ * Blink binds a verification code to a *client identity*, not to an account, so
+ * this string and the per-connection `unique_id` are together what "this device
+ * is trusted" means. They are persisted with the rest of the sign-in and handed
+ * to the bridge, so the bridge presents the identity Blink has already
+ * verified rather than introducing itself as a stranger and being mailed a code.
+ */
+const BLINK_DEVICE_IDENTIFIER = 'Orionis Control';
+
 interface BlinkLoginResponse {
   account?: {
     account_id?: number;
     client_id?: number;
+    user_id?: number;
     tier?: string;
     client_verification_required?: boolean;
     account_verification_required?: boolean;
@@ -131,13 +190,27 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   }
 
   get #apiUrl(): string {
-    const raw = String(this.#ctx.settings.mediamtxApiUrl ?? '').replace(/\/+$/, '');
-    if (!raw) throw new AppError('SERVICE_NOT_CONFIGURED', 'No MediaMTX API URL is set.');
-    return raw;
+    return (
+      String(this.#ctx.settings.mediamtxApiUrl ?? '').replace(/\/+$/, '') ||
+      DEFAULT_MEDIAMTX_API_URL
+    );
   }
 
   get #rtspBase(): string {
-    return String(this.#ctx.settings.rtspBaseUrl ?? '').replace(/\/+$/, '');
+    return (
+      String(this.#ctx.settings.rtspBaseUrl ?? '').replace(/\/+$/, '') || DEFAULT_MEDIAMTX_RTSP_URL
+    );
+  }
+
+  /**
+   * Whether sign-in has got far enough for lostblink to have anything to do.
+   *
+   * Read from settings, not secrets: the account id is written by a *completed*
+   * verification, so its presence is the one durable signal that the PIN step
+   * succeeded.
+   */
+  get #signedIn(): boolean {
+    return Boolean(this.#ctx.settings.accountId);
   }
 
   async #paths(): Promise<MediaMtxPath[]> {
@@ -166,9 +239,17 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
         latencyMs: Date.now() - started,
       };
     } catch (error) {
+      // An unreachable bridge is a normal state on a connection that has just
+      // been created, and it is not a reason to call the whole thing broken:
+      // the Blink account may be signed in perfectly well. Say which half is
+      // missing, because "MediaMTX could not be reached" tells someone who has
+      // never heard of MediaMTX nothing they can act on.
+      const reason = error instanceof Error ? error.message : 'the bridge did not answer';
       return {
         ok: false,
-        message: error instanceof Error ? error.message : 'MediaMTX could not be reached.',
+        message: this.#signedIn
+          ? `Signed in to Blink, but no lostblink bridge is answering at ${this.#apiUrl}, so live view is unavailable. Set one up, or point this connection at an existing one.`
+          : `No lostblink bridge is answering at ${this.#apiUrl} (${reason}). Blink cameras need one to translate their streams.`,
         cameraCount: null,
         latencyMs: Date.now() - started,
       };
@@ -247,9 +328,9 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     quality: StreamQuality;
     ttlSeconds: number;
   }): Promise<StreamSession> {
-    if (!this.#rtspBase) {
-      throw new AppError('SERVICE_NOT_CONFIGURED', 'No RTSP base URL is set.');
-    }
+    // No emptiness check: the base falls back to the address the shipped
+    // bridge template publishes on, so there is always something to build a
+    // URL from. Whether anything is listening there is what `probe` reports.
     return {
       id: `${this.#ctx.connectionId}:${input.cameraId}:${Date.now()}`,
       cameraId: input.cameraId,
@@ -311,7 +392,12 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   // the same object serves both calls, and nothing half-authenticated is
   // persisted.
 
-  #pending: { accountId: number; clientId: number; tier: string } | null = null;
+  #pending: {
+    accountId: number;
+    clientId: number;
+    tier: string;
+    userId: number | null;
+  } | null = null;
   /** Credentials proper: encrypted at rest, never returned by the API. */
   #obtainedSecrets: Record<string, string> = {};
   /** Account id, client id, region tier — identifiers, not credentials. */
@@ -342,7 +428,7 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
             // means re-signing in does not trigger a fresh verification every
             // time, which would be a new email to the user on every restart.
             unique_id: this.#ctx.connectionId,
-            device_identifier: 'Orionis Control',
+            device_identifier: BLINK_DEVICE_IDENTIFIER,
             reauth: true,
           }),
           signal: AbortSignal.timeout(this.#ctx.timeoutMs),
@@ -372,6 +458,10 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       };
     }
     const tier = account?.tier ?? BLINK_DEFAULT_TIER;
+    // Absent on some accounts. Recorded when present because a bridge handed a
+    // credential set with a hole in it signs in again from scratch rather than
+    // using the session it was given.
+    const userId = account?.user_id ?? null;
 
     const needsVerification =
       account?.client_verification_required === true ||
@@ -380,11 +470,11 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     if (!needsVerification && body.auth?.token) {
       // A trusted client skips the PIN entirely.
       this.#obtainedSecrets = { authToken: body.auth.token };
-      this.#obtainedSettings = { tier, accountId, clientId };
+      this.#obtainedSettings = this.#identity(tier, accountId, clientId, userId);
       return { status: 'complete', message: 'Signed in to Blink.' };
     }
 
-    this.#pending = { accountId, clientId, tier };
+    this.#pending = { accountId, clientId, tier, userId };
     // Held on this instance only. The store pins it for the duration of the
     // challenge and persists nothing until verification succeeds, so an
     // abandoned sign-in leaves no half-authenticated row behind.
@@ -410,7 +500,17 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       // ID carries enough to continue rather than making the user start over.
       (() => {
         const [a, c] = challengeId.split(':');
-        return a && c ? { accountId: Number(a), clientId: Number(c), tier: this.#tier } : null;
+        return a && c
+          ? {
+              accountId: Number(a),
+              clientId: Number(c),
+              tier: this.#tier,
+              // Recovered from a previous sign-in if there was one. Not worth
+              // failing the verification over: an absent user id costs the
+              // bridge one extra login, not the session.
+              userId: numberOrNull(this.#ctx.settings.userId),
+            }
+          : null;
       })();
     if (!pending) {
       return { status: 'failed', message: 'That verification has expired. Sign in again.' };
@@ -447,12 +547,37 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
 
     this.#obtainedSettings = {
       ...this.#obtainedSettings,
-      tier: pending.tier,
-      accountId: pending.accountId,
-      clientId: pending.clientId,
+      ...this.#identity(pending.tier, pending.accountId, pending.clientId, pending.userId),
     };
     this.#pending = null;
     return { status: 'complete', message: 'Blink verified this device.' };
+  }
+
+  /**
+   * Everything a *different* process needs to reuse this sign-in.
+   *
+   * Written as one object rather than assembled at each call site because it is
+   * consumed as a set: a bridge handed six of these seven values signs in again
+   * from scratch, which is the failure this exists to prevent. None of it is a
+   * credential — the token is a secret and travels separately.
+   */
+  #identity(
+    tier: string,
+    accountId: number,
+    clientId: number,
+    userId: number | null,
+  ): Record<string, unknown> {
+    return {
+      tier,
+      accountId,
+      clientId,
+      ...(userId === null ? {} : { userId }),
+      // The client identity Blink verified. Stored rather than derived so that
+      // what was actually presented stays recoverable even if the derivation
+      // ever changes.
+      uniqueId: this.#ctx.connectionId,
+      deviceIdentifier: BLINK_DEVICE_IDENTIFIER,
+    };
   }
 
   /**
@@ -479,6 +604,12 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     this.#obtainedSettings = {};
     return out;
   }
+}
+
+/** A stored identifier as a number, or null when it is absent or nonsense. */
+function numberOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n !== 0 ? n : null;
 }
 
 /** "pat@gmail.com" -> "p•••@gmail.com". Enough to recognise, not to harvest. */

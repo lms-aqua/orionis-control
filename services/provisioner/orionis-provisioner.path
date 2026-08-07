@@ -1,0 +1,13 @@
+[Unit]
+# Watches for a request appearing, so "Set up automatically" acts in about a
+# second rather than waiting out the timer. Not sufficient on its own — path
+# units miss events across restarts — which is why the timer exists too.
+Description=Watch for Orionis bridge provisioning requests
+After=docker.service
+
+[Path]
+PathExistsGlob=/var/lib/orionis/provisioning/requests/*.json
+Unit=orionis-provisioner.service
+
+[Install]
+WantedBy=paths.target

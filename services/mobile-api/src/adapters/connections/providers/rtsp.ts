@@ -80,6 +80,17 @@ export const RTSP_DESCRIPTOR: ProviderDescriptor = {
       help: 'One name=url pair per line. Used when discovery is manual.',
     },
   ],
+  // Unlike Blink and Wyze, this bridge is a convenience rather than a
+  // necessity: manual mode reads cameras straight off their RTSP URLs and
+  // needs nothing running. It is offered for the go2rtc discovery mode, where
+  // otherwise you have to stand up go2rtc yourself before this provider does
+  // anything at all.
+  bridge: {
+    template: 'go2rtc',
+    summary:
+      'go2rtc enumerates several RTSP cameras as one source. Orionis can start one for you — or leave discovery on manual and list the URLs yourself, which needs nothing extra.',
+    provides: ['baseUrl'],
+  },
 };
 
 interface Go2rtcStream {

@@ -26,6 +26,8 @@ struct ProviderField: Codable, Sendable, Equatable, Identifiable {
     let required: Bool
     let placeholder: String?
     let help: String?
+    /// Correct by default; collapsed behind a disclosure rather than shown.
+    let advanced: Bool
 
     var id: String { key }
 
@@ -33,7 +35,7 @@ struct ProviderField: Codable, Sendable, Equatable, Identifiable {
     let defaultValue: SettingValue?
 
     private enum CodingKeys: String, CodingKey {
-        case key, label, type, required, placeholder, help
+        case key, label, type, required, placeholder, help, advanced
         case defaultValue = "default"
     }
 
@@ -48,8 +50,30 @@ struct ProviderField: Codable, Sendable, Equatable, Identifiable {
         required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? false
         placeholder = try container.decodeIfPresent(String.self, forKey: .placeholder)
         help = try container.decodeIfPresent(String.self, forKey: .help)
+        advanced = try container.decodeIfPresent(Bool.self, forKey: .advanced) ?? false
         defaultValue = try container.decodeIfPresent(SettingValue.self, forKey: .defaultValue)
     }
+}
+
+/// A helper service a provider needs somebody to be running.
+///
+/// Blink needs a lostblink bridge; Wyze needs docker-wyze-bridge. When the
+/// gateway has an applier behind it, the app offers to start one instead of
+/// asking for an address that does not exist yet.
+struct ProviderBridge: Codable, Sendable, Equatable {
+    let template: String
+    let summary: String
+    /// Settings the bridge fills in. Hidden in the editor when it will.
+    let provides: [String]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        template = try container.decode(String.self, forKey: .template)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        provides = try container.decodeIfPresent([String].self, forKey: .provides) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey { case template, summary, provides }
 }
 
 struct ProviderCapabilities: Codable, Sendable, Equatable {
@@ -79,6 +103,19 @@ struct ProviderDescriptor: Codable, Sendable, Equatable, Identifiable {
     let summary: String
     let capabilities: ProviderCapabilities
     let fields: [ProviderField]
+    /// Present only when this provider needs a helper service to work at all.
+    let bridge: ProviderBridge?
+
+    /// Fields worth showing before anything is collapsed.
+    ///
+    /// A field the bridge will fill in is not merely advanced, it is *wrong* to
+    /// ask for — the container it addresses does not exist yet. So when a bridge
+    /// is going to be provisioned those keys are dropped entirely rather than
+    /// tucked away where someone can still type into them.
+    func visibleFields(provisioning: Bool) -> [ProviderField] {
+        guard provisioning, let bridge else { return fields }
+        return fields.filter { !bridge.provides.contains($0.key) }
+    }
 
     /// SF Symbol per known provider; anything unrecognised still gets an icon.
     var symbolName: String {
@@ -118,6 +155,58 @@ struct ConnectionHealth: Codable, Sendable, Equatable {
     }
 }
 
+/// The state of a bridge the gateway asked the host to run.
+///
+/// Distinct from health on purpose: health says whether an upstream answered,
+/// this says whether the thing that answers it exists yet. A source that is
+/// still being set up is not broken, and showing it as unreachable for the
+/// ninety seconds an image takes to pull would be a lie with a red dot on it.
+struct ConnectionProvisioning: Codable, Sendable, Equatable {
+    enum State: String, Codable, Sendable {
+        case pending, provisioning, ready, failed, removing, removed
+    }
+
+    let requestId: String
+    let template: String
+    let instance: String
+    let state: State
+    let message: String?
+    let requestedAt: Date?
+    let updatedAt: Date?
+
+    /// Whether the app should keep polling. Settled states never change alone.
+    var isInFlight: Bool {
+        switch state {
+        case .pending, .provisioning, .removing: return true
+        case .ready, .failed, .removed: return false
+        }
+    }
+
+    var title: String {
+        switch state {
+        case .pending: return "Waiting for the server"
+        case .provisioning: return "Setting up…"
+        case .ready: return "Bridge running"
+        case .failed: return "Setup failed"
+        case .removing: return "Stopping the bridge…"
+        case .removed: return "Bridge stopped"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requestId = try container.decodeIfPresent(String.self, forKey: .requestId) ?? ""
+        template = try container.decodeIfPresent(String.self, forKey: .template) ?? ""
+        instance = try container.decodeIfPresent(String.self, forKey: .instance) ?? ""
+        // An unknown state from a newer gateway reads as "still working" rather
+        // than failing the screen: it will settle into something known.
+        state = (try? container.decode(State.self, forKey: .state)) ?? .provisioning
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        requestedAt = try container.decodeIfPresent(Date.self, forKey: .requestedAt)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
+    }
+}
+
 struct ConnectionSummary: Codable, Sendable, Equatable, Identifiable {
     let id: String
     let provider: String
@@ -132,8 +221,18 @@ struct ConnectionSummary: Codable, Sendable, Equatable, Identifiable {
     let createdAt: Date?
     let updatedAt: Date?
     let health: ConnectionHealth?
+    /// Present only when Orionis was asked to run a bridge for this source.
+    let provisioning: ConnectionProvisioning?
 
     func hasSecret(_ key: String) -> Bool { secretsSet[key] == true }
+}
+
+/// What can be added, and whether this gateway can start bridges at all.
+struct ProviderCatalogue: Sendable, Equatable {
+    let providers: [ProviderDescriptor]
+    /// False when no applier is configured. The app then never offers to set a
+    /// bridge up, because the button could only ever fail.
+    let provisioningAvailable: Bool
 }
 
 // MARK: - Interactive sign-in

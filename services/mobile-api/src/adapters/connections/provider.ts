@@ -41,6 +41,60 @@ export interface ProviderField {
   /** Shown under the field. Explain consequences, not syntax. */
   help?: string;
   default?: string | number | boolean;
+  /**
+   * Correct by default, and only worth changing on an unusual deployment.
+   *
+   * The app collapses these behind a disclosure so the common case is two
+   * boxes rather than six. A field that is genuinely required must never be
+   * advanced: hiding something the user has to fill in is how a form ends up
+   * refusing to save with no visible reason.
+   */
+  advanced?: boolean;
+}
+
+/**
+ * A helper service this provider needs somebody to be running.
+ *
+ * Some upstreams are not systems you point at — they are protocols that need a
+ * translator on this side of the wire. Blink needs lostblink and a MediaMTX to
+ * republish into; Wyze needs docker-wyze-bridge. Declaring that here lets the
+ * gateway offer to stand one up (see `lib/provisioning.ts`) instead of leaving
+ * an operator to work out which container to run and what to call it.
+ *
+ * The gateway never starts anything itself. `template` names a vetted compose
+ * file a host-side applier owns; this is a request for one of N known things,
+ * not a description of what to run.
+ */
+export interface ProviderBridge {
+  /** Template name the applier must recognise. Not a path, not an image. */
+  template: string;
+  /** One line, shown in the app before anything is created. */
+  summary: string;
+  /**
+   * Settings keys the applier fills in once the instance is up.
+   *
+   * The app hides these fields entirely when provisioning is available, because
+   * asking someone to type an address for a container that does not exist yet
+   * is the original complaint this whole flow exists to fix.
+   */
+  provides: string[];
+  /**
+   * Connection values the instance needs for itself.
+   *
+   * lostblink signs in to Blink on its own behalf, so it needs the same email
+   * and password the connection holds. Naming the keys here — rather than
+   * letting the applier read whatever it likes out of the database — is what
+   * keeps the hand-over to exactly what the template was vetted to receive.
+   */
+  handsOver?: { settings?: string[]; secrets?: string[] };
+  /**
+   * Secrets the *gateway* mints and shares with the instance.
+   *
+   * docker-wyze-bridge wants an API key; generating it here and passing it down
+   * means credentials only ever travel gateway → applier. Nothing secret comes
+   * back the other way, which is a much easier rule to audit than "sometimes".
+   */
+  mints?: string[];
 }
 
 /**
@@ -75,6 +129,8 @@ export interface ProviderDescriptor {
   readonly summary: string;
   readonly capabilities: ProviderCapabilities;
   readonly fields: ProviderField[];
+  /** Present only when this provider needs a helper service to work at all. */
+  readonly bridge?: ProviderBridge;
 }
 
 /** Resolved configuration handed to a provider instance. */

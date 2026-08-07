@@ -1,0 +1,34 @@
+# go2rtc, for the RTSP provider's discovery mode.
+#
+# The only optional template: the RTSP provider works with nothing running at
+# all if you list stream URLs yourself. This exists so "several cameras, one
+# source, enumerated automatically" does not require standing up go2rtc by hand
+# first.
+#
+# Deliberately started with an empty stream list. go2rtc's API accepts streams
+# at runtime, and baking a list into the template would mean the gateway
+# choosing what this container connects to — which is exactly the capability
+# this whole design withholds.
+
+services:
+  go2rtc:
+    image: ${ORIONIS_GO2RTC_IMAGE:-alexxit/go2rtc:1.9.9}
+    container_name: orionis-${ORIONIS_INSTANCE}-go2rtc
+    restart: unless-stopped
+    environment:
+      # Bound to the project network only; no ports are published.
+      GO2RTC_CONFIG: |
+        api:
+          listen: ":1984"
+        rtsp:
+          listen: ":8554"
+        log:
+          level: info
+        streams: {}
+    volumes:
+      - config:/config
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  config:

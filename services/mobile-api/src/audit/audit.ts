@@ -50,6 +50,12 @@ export const AUDIT_ACTIONS = [
   'connection.probed',
   'connection.auth.started',
   'connection.auth.completed',
+  // Both sides of provisioning are recorded: the gateway writing the request,
+  // and — in the applier's own log on the host — the action taken. Neither is
+  // sufficient alone, because the interesting failure is a request that was
+  // written and acted on differently.
+  'connection.bridge.requested',
+  'connection.bridge.teardown_requested',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
