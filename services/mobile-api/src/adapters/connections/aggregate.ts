@@ -436,7 +436,10 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
     });
   }
 
-  async runServiceAction(serviceId: string, action: string): Promise<{ ok: boolean; message: string }> {
+  async runServiceAction(
+    serviceId: string,
+    action: string,
+  ): Promise<{ ok: boolean; message: string }> {
     const delegate = this.#delegate;
     if (delegate) return delegate.runServiceAction(serviceId, action);
     throw new AppError(

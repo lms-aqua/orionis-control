@@ -134,7 +134,11 @@ export class FakeProvider implements CameraProvider {
 
   async getSnapshot(): Promise<{ bytes: Buffer; contentType: string; capturedAt: string }> {
     this.#guard();
-    return { bytes: Buffer.from('jpeg'), contentType: 'image/jpeg', capturedAt: '2026-08-06T00:00:00.000Z' };
+    return {
+      bytes: Buffer.from('jpeg'),
+      contentType: 'image/jpeg',
+      capturedAt: '2026-08-06T00:00:00.000Z',
+    };
   }
 
   async createStreamSession(input: { cameraId: string; ttlSeconds: number }) {

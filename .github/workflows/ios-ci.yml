@@ -105,25 +105,36 @@ jobs:
       - name: Pick a simulator
         id: sim
         run: |
-          DEVICE=$(xcrun simctl list devices available --json \
-            | python3 -c "
-          import json,sys
+          # Selects by UDID, not by name. `-destination "...,name=X"` implies
+          # OS:latest, so it fails whenever the newest installed runtime has no
+          # device of that name — which is exactly what the runner image looks
+          # like now (an iPhone 16e on iOS 26.2 beside iPhone 17s on 26.5).
+          # A UDID names one concrete device on one concrete runtime.
+          SELECTED=$(xcrun simctl list devices available --json | python3 -c "
+          import json, re, sys
           data = json.load(sys.stdin)['devices']
+          def version(runtime):
+              found = re.search(r'iOS-([0-9]+(?:-[0-9]+)*)', runtime)
+              return tuple(int(part) for part in found.group(1).split('-')) if found else ()
           best = None
           for runtime, devices in data.items():
               if 'iOS' not in runtime:
                   continue
-              for d in devices:
-                  if d.get('isAvailable') and 'iPhone' in d['name']:
-                      best = d['name']
-          print(best or '')
+              for device in devices:
+                  if not device.get('isAvailable') or 'iPhone' not in device['name']:
+                      continue
+                  key = (version(runtime), device['name'])
+                  if best is None or key > best[0]:
+                      best = (key, device['udid'], device['name'])
+          if best:
+              print(best[1], best[2], '.'.join(str(part) for part in best[0][0]))
           ")
-          if [ -z "$DEVICE" ]; then
+          if [ -z "$SELECTED" ]; then
             echo "::error::No available iPhone simulator on the runner"
             exit 1
           fi
-          echo "Using simulator: $DEVICE"
-          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $SELECTED"
+          echo "udid=$(echo "$SELECTED" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Build and run unit tests
         run: |
@@ -132,7 +143,7 @@ jobs:
             -project OrionisControl.xcodeproj \
             -scheme OrionisControl \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
             -only-testing:OrionisControlTests \
             -resultBundlePath TestResults-unit.xcresult \
             CODE_SIGNING_ALLOWED=NO \
@@ -264,15 +275,36 @@ jobs:
       - name: Pick a simulator
         id: sim
         run: |
-          DEVICE=$(xcrun simctl list devices available --json \
-            | python3 -c "
-          import json,sys
+          # Selects by UDID, not by name. `-destination "...,name=X"` implies
+          # OS:latest, so it fails whenever the newest installed runtime has no
+          # device of that name — which is exactly what the runner image looks
+          # like now (an iPhone 16e on iOS 26.2 beside iPhone 17s on 26.5).
+          # A UDID names one concrete device on one concrete runtime.
+          SELECTED=$(xcrun simctl list devices available --json | python3 -c "
+          import json, re, sys
           data = json.load(sys.stdin)['devices']
-          choices = [d['name'] for runtime, devices in data.items() if 'iOS' in runtime for d in devices if d.get('isAvailable') and 'iPhone' in d['name']]
-          print(choices[-1] if choices else '')
+          def version(runtime):
+              found = re.search(r'iOS-([0-9]+(?:-[0-9]+)*)', runtime)
+              return tuple(int(part) for part in found.group(1).split('-')) if found else ()
+          best = None
+          for runtime, devices in data.items():
+              if 'iOS' not in runtime:
+                  continue
+              for device in devices:
+                  if not device.get('isAvailable') or 'iPhone' not in device['name']:
+                      continue
+                  key = (version(runtime), device['name'])
+                  if best is None or key > best[0]:
+                      best = (key, device['udid'], device['name'])
+          if best:
+              print(best[1], best[2], '.'.join(str(part) for part in best[0][0]))
           ")
-          if [ -z "$DEVICE" ]; then echo "::error::No iPhone simulator"; exit 1; fi
-          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          if [ -z "$SELECTED" ]; then
+            echo "::error::No available iPhone simulator on the runner"
+            exit 1
+          fi
+          echo "Using simulator: $SELECTED"
+          echo "udid=$(echo "$SELECTED" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Build and run UI tests
         run: |
@@ -281,7 +313,7 @@ jobs:
             -project OrionisControl.xcodeproj \
             -scheme OrionisControl \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
             -only-testing:${{ matrix.test }} \
             -retry-tests-on-failure \
             -test-iterations 2 \

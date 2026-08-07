@@ -22,7 +22,9 @@ import { buildProviderRegistry, ConnectionStore } from '../adapters/connections/
 const { config } = loadConfig();
 
 if (!config.connections.enabled) {
-  console.error('CONNECTIONS_SECRET_KEY is not set (or is under 32 characters). Nothing to rewrap.');
+  console.error(
+    'CONNECTIONS_SECRET_KEY is not set (or is under 32 characters). Nothing to rewrap.',
+  );
   process.exit(1);
 }
 
@@ -45,6 +47,8 @@ if (failed.length > 0) {
   console.error(
     `Could not decrypt ${failed.length} connection(s) with any configured key: ${failed.join(', ')}.`,
   );
-  console.error('Re-enter their credentials in the app, or restore the key they were written with.');
+  console.error(
+    'Re-enter their credentials in the app, or restore the key they were written with.',
+  );
   process.exit(2);
 }

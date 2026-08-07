@@ -25,10 +25,19 @@ function buildStore(cipher = new SecretsCipher(KEY)): { store: ConnectionStore; 
   migrate(db);
 
   const registry = new ProviderRegistry();
-  registry.register(fakeDescriptor({ id: 'fake' }), (ctx) => new FakeProvider(ctx, { cameras: ['a'] }));
-  registry.register(fakeDescriptor({ id: 'failing' }), (ctx) => new FakeProvider(ctx, { failing: true }));
   registry.register(
-    { ...fakeDescriptor({ id: 'interactive' }), capabilities: { ...fakeDescriptor().capabilities, interactiveAuth: true } },
+    fakeDescriptor({ id: 'fake' }),
+    (ctx) => new FakeProvider(ctx, { cameras: ['a'] }),
+  );
+  registry.register(
+    fakeDescriptor({ id: 'failing' }),
+    (ctx) => new FakeProvider(ctx, { failing: true }),
+  );
+  registry.register(
+    {
+      ...fakeDescriptor({ id: 'interactive' }),
+      capabilities: { ...fakeDescriptor().capabilities, interactiveAuth: true },
+    },
     (ctx) => new FakeInteractiveProvider(ctx),
   );
 
@@ -130,7 +139,11 @@ describe('ConnectionStore', () => {
 
     it('refuses a non-HTTP scheme', () => {
       expect(() =>
-        store.create({ provider: 'fake', name: 'Local file', settings: { baseUrl: 'file:///etc/hosts' } }),
+        store.create({
+          provider: 'fake',
+          name: 'Local file',
+          settings: { baseUrl: 'file:///etc/hosts' },
+        }),
       ).toThrow(AppError);
     });
 
@@ -247,7 +260,11 @@ describe('ConnectionStore', () => {
 
       // Written under the old key...
       const before = new ConnectionStore(db, registry, new SecretsCipher(OLD_KEY), noFetch);
-      const created = before.create({ provider: 'fake', name: 'Frigate', secrets: { apiKey: 'v' } });
+      const created = before.create({
+        provider: 'fake',
+        name: 'Frigate',
+        secrets: { apiKey: 'v' },
+      });
 
       // ...then the key is rotated, with the old one kept for decryption.
       const after = new ConnectionStore(db, registry, new SecretsCipher(KEY, [OLD_KEY]), noFetch);
@@ -267,7 +284,11 @@ describe('ConnectionStore', () => {
       registry.register(fakeDescriptor({ id: 'fake' }), (ctx) => new FakeProvider(ctx));
 
       const before = new ConnectionStore(db, registry, new SecretsCipher(OLD_KEY), noFetch);
-      const created = before.create({ provider: 'fake', name: 'Frigate', secrets: { apiKey: 'v' } });
+      const created = before.create({
+        provider: 'fake',
+        name: 'Frigate',
+        secrets: { apiKey: 'v' },
+      });
 
       // The old key was not carried over — the honest outcome is "these need
       // re-entering", not silence.

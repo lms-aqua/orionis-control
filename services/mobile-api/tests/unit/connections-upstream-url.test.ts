@@ -10,7 +10,9 @@ import { describe, expect, it } from 'vitest';
 import { assertSafeSettings, assertSafeUpstreamUrl } from '../../src/lib/upstream-url.ts';
 import { AppError } from '../../src/lib/errors.ts';
 
-const field = (over: Partial<{ key: string; label: string; type: string; required: boolean }> = {}) => ({
+const field = (
+  over: Partial<{ key: string; label: string; type: string; required: boolean }> = {},
+) => ({
   key: 'baseUrl',
   label: 'Frigate URL',
   type: 'url',
@@ -35,8 +37,9 @@ describe('assertSafeUpstreamUrl', () => {
   });
 
   it('refuses cloud metadata by address', () => {
-    expect(() => assertSafeUpstreamUrl('http://169.254.169.254/latest/meta-data/', 'Frigate URL'))
-      .toThrow(AppError);
+    expect(() =>
+      assertSafeUpstreamUrl('http://169.254.169.254/latest/meta-data/', 'Frigate URL'),
+    ).toThrow(AppError);
   });
 
   it('refuses cloud metadata by hostname', () => {
@@ -46,7 +49,9 @@ describe('assertSafeUpstreamUrl', () => {
   });
 
   it('refuses link-local addresses generally, not just the metadata one', () => {
-    expect(() => assertSafeUpstreamUrl('http://169.254.10.9:8080', 'Frigate URL')).toThrow(AppError);
+    expect(() => assertSafeUpstreamUrl('http://169.254.10.9:8080', 'Frigate URL')).toThrow(
+      AppError,
+    );
     expect(() => assertSafeUpstreamUrl('http://[fe80::1]:8080', 'Frigate URL')).toThrow(AppError);
   });
 
@@ -87,9 +92,9 @@ describe('assertSafeUpstreamUrl', () => {
 
 describe('assertSafeSettings', () => {
   it('checks every URL field a provider declares', () => {
-    expect(() =>
-      assertSafeSettings([field()], { baseUrl: 'http://169.254.169.254' }),
-    ).toThrow(AppError);
+    expect(() => assertSafeSettings([field()], { baseUrl: 'http://169.254.169.254' })).toThrow(
+      AppError,
+    );
   });
 
   it('ignores fields that are not URLs', () => {

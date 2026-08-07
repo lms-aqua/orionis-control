@@ -178,7 +178,9 @@ export interface CameraProvider {
 
   listCameras(): Promise<Camera[]>;
   getCamera(cameraId: string): Promise<Camera>;
-  getSnapshot(cameraId: string): Promise<{ bytes: Buffer; contentType: string; capturedAt: string }>;
+  getSnapshot(
+    cameraId: string,
+  ): Promise<{ bytes: Buffer; contentType: string; capturedAt: string }>;
   createStreamSession(input: {
     cameraId: string;
     preferredProtocols: StreamProtocol[];
@@ -203,7 +205,10 @@ export type ProviderFactory = (ctx: ProviderContext) => CameraProvider;
  * needs a list of them, so adding one is a single file plus one registration.
  */
 export class ProviderRegistry {
-  readonly #factories = new Map<string, { descriptor: ProviderDescriptor; create: ProviderFactory }>();
+  readonly #factories = new Map<
+    string,
+    { descriptor: ProviderDescriptor; create: ProviderFactory }
+  >();
 
   register(descriptor: ProviderDescriptor, create: ProviderFactory): void {
     if (this.#factories.has(descriptor.id)) {

@@ -430,7 +430,11 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
 
     const section = async <T>(load: () => Promise<T>) => {
       try {
-        return { available: true as const, data: await withDeadline(load(), SECTION_DEADLINE_MS), error: null };
+        return {
+          available: true as const,
+          data: await withDeadline(load(), SECTION_DEADLINE_MS),
+          error: null,
+        };
       } catch (err) {
         const e = err instanceof AppError ? err : new AppError('INTERNAL_ERROR', 'Unavailable.');
         return {

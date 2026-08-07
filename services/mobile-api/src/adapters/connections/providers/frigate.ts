@@ -290,7 +290,10 @@ export class FrigateProvider implements CameraProvider {
       { headers, signal: AbortSignal.timeout(this.#ctx.timeoutMs) },
     );
     if (!response.ok) {
-      throw new AppError('CAMERA_OFFLINE', `Frigate could not return a frame (HTTP ${response.status}).`);
+      throw new AppError(
+        'CAMERA_OFFLINE',
+        `Frigate could not return a frame (HTTP ${response.status}).`,
+      );
     }
     return {
       bytes: Buffer.from(await response.arrayBuffer()),
@@ -351,8 +354,7 @@ export class FrigateProvider implements CameraProvider {
     // Frigate filters by a single camera only; a multi-camera request is
     // narrowed here rather than silently returning everything.
     const wanted = new Set(query.cameraIds ?? []);
-    const filtered =
-      wanted.size > 1 ? events.filter((e) => wanted.has(e.camera)) : events;
+    const filtered = wanted.size > 1 ? events.filter((e) => wanted.has(e.camera)) : events;
     return { items: filtered.map((e) => this.#event(e)), total: null };
   }
 
@@ -450,7 +452,8 @@ export class FrigateProvider implements CameraProvider {
       Object.values(storage)[0];
     if (!entry) return UNKNOWN_STORAGE;
 
-    const mb = (v: number | undefined) => (typeof v === 'number' ? Math.round(v * 1024 * 1024) : null);
+    const mb = (v: number | undefined) =>
+      typeof v === 'number' ? Math.round(v * 1024 * 1024) : null;
     return {
       ...UNKNOWN_STORAGE,
       totalBytes: mb(entry.total),

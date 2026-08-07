@@ -6,6 +6,7 @@
  * the app can render an honest state. Only values that would make the gateway
  * unsafe (session key, OIDC identity) are hard requirements outside tests.
  */
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type { TurnConfig } from '../lib/turn.ts';
 
@@ -320,7 +321,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
         message: 'Not set — an ephemeral development key is in use. All sessions drop on restart.',
       });
     }
-    signingKey = signingKey || `dev-only-ephemeral-${Date.now()}-${Math.random()}`;
+    // Real entropy even for the throwaway development key. Production refuses
+    // to boot without a configured key, so this never signs a real session —
+    // but `Math.random()` reaching a signing key at all is indistinguishable
+    // from the mistake that matters, both to a reader and to a scanner.
+    signingKey = signingKey || `dev-only-ephemeral-${randomBytes(32).toString('base64url')}`;
   } else if (Buffer.from(signingKey, 'utf8').length < 32) {
     findings.push({
       level: isProduction ? 'error' : 'warn',

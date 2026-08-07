@@ -249,7 +249,9 @@ export class UnifiProvider implements CameraProvider {
   #bestChannel(camera: UnifiCamera): UnifiChannel | null {
     const usable = (camera.channels ?? []).filter((c) => c.isRtspEnabled && c.rtspAlias);
     if (usable.length === 0) return null;
-    return usable.sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))[0]!;
+    return usable.sort(
+      (a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0),
+    )[0]!;
   }
 
   async getSnapshot(
@@ -278,9 +280,7 @@ export class UnifiProvider implements CameraProvider {
     quality: StreamQuality;
     ttlSeconds: number;
   }): Promise<StreamSession> {
-    const camera = await this.#get<UnifiCamera>(
-      `/cameras/${encodeURIComponent(input.cameraId)}`,
-    );
+    const camera = await this.#get<UnifiCamera>(`/cameras/${encodeURIComponent(input.cameraId)}`);
     const channel = this.#bestChannel(camera);
     if (!channel?.rtspAlias) {
       throw new AppError(

@@ -65,7 +65,7 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
       type: 'url',
       required: true,
       placeholder: 'http://lostblink-mediamtx:9997',
-      help: "The MediaMTX control API that lostblink publishes to. Used to discover which cameras are live.",
+      help: 'The MediaMTX control API that lostblink publishes to. Used to discover which cameras are live.',
     },
     {
       key: 'rtspBaseUrl',
@@ -270,7 +270,10 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   }
 
   async invokeControl(_cameraId: string, _req: CameraControlRequest): Promise<CameraControlResult> {
-    throw new AppError('CAPABILITY_UNSUPPORTED', 'Blink cameras expose no controls through lostblink.');
+    throw new AppError(
+      'CAPABILITY_UNSUPPORTED',
+      'Blink cameras expose no controls through lostblink.',
+    );
   }
 
   async listEvents(_query: EventQuery): Promise<Page<CameraEvent>> {
@@ -363,7 +366,10 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     const accountId = account?.account_id;
     const clientId = account?.client_id;
     if (!accountId || !clientId) {
-      return { status: 'failed', message: body.message ?? 'Blink returned an unexpected response.' };
+      return {
+        status: 'failed',
+        message: body.message ?? 'Blink returned an unexpected response.',
+      };
     }
     const tier = account?.tier ?? BLINK_DEFAULT_TIER;
 

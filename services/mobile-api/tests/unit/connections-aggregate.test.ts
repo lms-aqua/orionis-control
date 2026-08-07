@@ -10,7 +10,11 @@ import {
   AggregateOrionisAdapter,
   type ActiveConnection,
 } from '../../src/adapters/connections/aggregate.ts';
-import { namespaceId, parseNamespacedId, slugify } from '../../src/adapters/connections/provider.ts';
+import {
+  namespaceId,
+  parseNamespacedId,
+  slugify,
+} from '../../src/adapters/connections/provider.ts';
 import { UnconfiguredOrionisAdapter } from '../../src/adapters/orionis/unconfigured.ts';
 import { UNKNOWN_STORAGE } from '../../src/adapters/orionis/types.ts';
 import { AppError } from '../../src/lib/errors.ts';
@@ -94,7 +98,9 @@ describe('AggregateOrionisAdapter', () => {
   });
 
   it('labels each camera with the source it came from', async () => {
-    const adapter = new AggregateOrionisAdapter(() => [connection('nvr', { cameras: ['driveway'] })]);
+    const adapter = new AggregateOrionisAdapter(() => [
+      connection('nvr', { cameras: ['driveway'] }),
+    ]);
     expect((await adapter.listCameras())[0]!.group).toBe('nvr');
   });
 
@@ -127,13 +133,17 @@ describe('AggregateOrionisAdapter', () => {
   });
 
   it('404s an ID whose connection is gone, rather than guessing', async () => {
-    const adapter = new AggregateOrionisAdapter(() => [connection('nvr', { cameras: ['driveway'] })]);
+    const adapter = new AggregateOrionisAdapter(() => [
+      connection('nvr', { cameras: ['driveway'] }),
+    ]);
     await expect(adapter.getCamera('removed:driveway')).rejects.toThrow(AppError);
     await expect(adapter.getCamera('not-namespaced')).rejects.toThrow(AppError);
   });
 
   it('rewrites the camera ID on a stream session back to the namespaced one', async () => {
-    const adapter = new AggregateOrionisAdapter(() => [connection('nvr', { cameras: ['driveway'] })]);
+    const adapter = new AggregateOrionisAdapter(() => [
+      connection('nvr', { cameras: ['driveway'] }),
+    ]);
     const session = await adapter.createStreamSession({
       cameraId: 'nvr:driveway',
       preferredProtocols: ['hls'],
@@ -185,14 +195,23 @@ describe('AggregateOrionisAdapter', () => {
   });
 
   it('says a connection has not been checked rather than inventing a status', async () => {
-    const adapter = new AggregateOrionisAdapter(() => [connection('nvr')], () => {}, async () => null);
+    const adapter = new AggregateOrionisAdapter(
+      () => [connection('nvr')],
+      () => {},
+      async () => null,
+    );
     expect((await adapter.listServiceHealth())[0]!.status).toBe('unknown');
   });
 
   describe('fallback to the environment-configured adapter', () => {
     it('delegates while no connection is enabled', async () => {
       const fallback = new UnconfiguredOrionisAdapter();
-      const adapter = new AggregateOrionisAdapter(() => [], () => {}, null, fallback);
+      const adapter = new AggregateOrionisAdapter(
+        () => [],
+        () => {},
+        null,
+        fallback,
+      );
 
       // Not "no connections are configured" — the honest answer is whatever the
       // environment-built adapter says, which here is that it is not set up.

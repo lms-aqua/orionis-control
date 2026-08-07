@@ -84,39 +84,48 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
   });
 
   // --- POST /connections ----------------------------------------------------
-  app.post('/connections', { preHandler: requirePermission('connections.manage') }, async (req) => {
-    const body = CreateBody.parse(req.body ?? {});
-    const store = storeOf(req.services);
+  app.post(
+    '/connections',
+    {
+      preHandler: requirePermission('connections.manage'),
+      // Each create ends in a probe of a third-party address, so this route can
+      // make the gateway generate outbound traffic. Bounded per principal.
+      config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    },
+    async (req) => {
+      const body = CreateBody.parse(req.body ?? {});
+      const store = storeOf(req.services);
 
-    // Creating stores credentials and then probes an upstream, so it is slow
-    // enough to be retried by an impatient hand. Name uniqueness already turns
-    // a duplicate into a 409 rather than a second source, but an idempotency
-    // key makes the retry return the original result instead of an error.
-    const endpoint = 'POST /connections';
-    const { value } = await withIdempotency(req, endpoint, body, async () => {
-      const record = store.create({ ...body, createdBy: req.principal?.userId ?? null });
+      // Creating stores credentials and then probes an upstream, so it is slow
+      // enough to be retried by an impatient hand. Name uniqueness already turns
+      // a duplicate into a 409 rather than a second source, but an idempotency
+      // key makes the retry return the original result instead of an error.
+      const endpoint = 'POST /connections';
+      const { value } = await withIdempotency(req, endpoint, body, async () => {
+        const record = store.create({ ...body, createdBy: req.principal?.userId ?? null });
 
-      req.services.audit.record({
-        action: 'connection.created',
-        actor: actorOf(req),
-        outcome: 'success',
-        targetType: 'connection',
-        targetId: record.id,
-        requestId: req.id,
-        ip: req.ip,
-        // Provider and name only: settings can carry an address, and secrets are
-        // never eligible for the log at all.
-        metadata: { provider: record.provider, name: record.name, slug: record.slug },
+        req.services.audit.record({
+          action: 'connection.created',
+          actor: actorOf(req),
+          outcome: 'success',
+          targetType: 'connection',
+          targetId: record.id,
+          requestId: req.id,
+          ip: req.ip,
+          // Provider and name only: settings can carry an address, and secrets are
+          // never eligible for the log at all.
+          metadata: { provider: record.provider, name: record.name, slug: record.slug },
+        });
+
+        // Probed immediately so the operator sees whether it works, rather than
+        // saving something broken and finding out at the camera wall.
+        const health = await store.probe(record.id);
+        return { ...present(store, store.get(record.id)), health };
       });
 
-      // Probed immediately so the operator sees whether it works, rather than
-      // saving something broken and finding out at the camera wall.
-      const health = await store.probe(record.id);
-      return { ...present(store, store.get(record.id)), health };
-    });
-
-    return ok(value, req.id);
-  });
+      return ok(value, req.id);
+    },
+  );
 
   // --- GET /connections/:connectionId ---------------------------------------
   app.get<{ Params: { connectionId: string } }>(
@@ -199,7 +208,11 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
   // --- POST /connections/:connectionId/probe --------------------------------
   app.post<{ Params: { connectionId: string } }>(
     '/connections/:connectionId/probe',
-    { preHandler: requirePermission('connections.view') },
+    {
+      preHandler: requirePermission('connections.view'),
+      // On-demand outbound request to a third-party address.
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req) => {
       const store = storeOf(req.services);
       const record = store.get(req.params.connectionId);
@@ -228,7 +241,13 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
   // those two happened.
   app.post<{ Params: { connectionId: string } }>(
     '/connections/:connectionId/auth/begin',
-    { preHandler: requirePermission('connections.manage') },
+    {
+      preHandler: requirePermission('connections.manage'),
+      // A sign-in attempt sends credentials to a third party and can make it
+      // mail or text a code to a real person. Tight, so neither this gateway
+      // nor an upstream can be used to hammer an account or spam an inbox.
+      config: { rateLimit: { max: 5, timeWindow: '5 minutes' } },
+    },
     async (req) => {
       const store = storeOf(req.services);
       const record = store.get(req.params.connectionId);
@@ -252,7 +271,12 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
   // --- POST /connections/:connectionId/auth/complete ------------------------
   app.post<{ Params: { connectionId: string } }>(
     '/connections/:connectionId/auth/complete',
-    { preHandler: requirePermission('connections.manage') },
+    {
+      preHandler: requirePermission('connections.manage'),
+      // Submitting a code is a guess against a short numeric secret; limiting
+      // it is what stops the code space being walked.
+      config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+    },
     async (req) => {
       const body = CompleteAuthBody.parse(req.body ?? {});
       const store = storeOf(req.services);

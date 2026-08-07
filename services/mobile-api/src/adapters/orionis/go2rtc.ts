@@ -104,7 +104,10 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
    * thumbnail a frame a few seconds old is far better than a spinner or an
    * error, so a failed grab falls back to the most recent good frame.
    */
-  private readonly lastSnapshot = new Map<string, { bytes: Buffer; capturedAt: string; at: number }>();
+  private readonly lastSnapshot = new Map<
+    string,
+    { bytes: Buffer; capturedAt: string; at: number }
+  >();
   /** One in-flight frame grab per camera, so a burst of tile requests and the
    *  background refresh collapse onto a single upstream transcode. */
   private readonly snapshotInFlight = new Map<string, Promise<SnapshotResult | null>>();
@@ -143,9 +146,17 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     );
     this.labels = labels;
     this.wyzeBridge = wyzeBridgeUrl
-      ? new UpstreamClient('wyze-bridge', wyzeBridgeUrl, { accept: 'application/json' }, timeoutMs, fetchImpl)
+      ? new UpstreamClient(
+          'wyze-bridge',
+          wyzeBridgeUrl,
+          { accept: 'application/json' },
+          timeoutMs,
+          fetchImpl,
+        )
       : null;
-    this.recordingExclude = new Set(recordingExclude.map((value) => value.trim().toLowerCase()).filter(Boolean));
+    this.recordingExclude = new Set(
+      recordingExclude.map((value) => value.trim().toLowerCase()).filter(Boolean),
+    );
   }
 
   private async metadata(): Promise<Record<string, WyzeCameraMetadata>> {
@@ -182,7 +193,11 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     return visible;
   }
 
-  private toCamera(id: string, stream: Go2rtcStream | undefined, metadata?: WyzeCameraMetadata): Camera {
+  private toCamera(
+    id: string,
+    stream: Go2rtcStream | undefined,
+    metadata?: WyzeCameraMetadata,
+  ): Camera {
     // A configured camera that has dropped out of go2rtc entirely (its source
     // went unreachable, so the sync pruned it) is still a camera the user owns.
     // Rather than have it vanish from the app, it is surfaced as offline with a
@@ -244,7 +259,9 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
 
   async listCameras(): Promise<Camera[]> {
     const [streams, metadata] = await Promise.all([this.streams(), this.metadata()]);
-    return this.roster(Object.keys(streams)).map((id) => this.toCamera(id, streams[id], metadata[id]));
+    return this.roster(Object.keys(streams)).map((id) =>
+      this.toCamera(id, streams[id], metadata[id]),
+    );
   }
 
   async getCamera(cameraId: string): Promise<Camera> {
@@ -398,13 +415,16 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     const streams = await this.streams();
     // Keep labelled cameras in the recording index even while their live source
     // is offline. Historical footage does not disappear when a camera disconnects.
-    return this.roster(Object.keys(streams)).map((id) => ({
-      id,
-      name: (Object.hasOwn(this.labels, id) ? this.labels[id]?.name : null) ?? `Camera ${id}`,
-    })).filter((camera) =>
-      !this.recordingExclude.has(camera.id.toLowerCase()) &&
-      !this.recordingExclude.has((camera.name ?? '').toLowerCase()),
-    );
+    return this.roster(Object.keys(streams))
+      .map((id) => ({
+        id,
+        name: (Object.hasOwn(this.labels, id) ? this.labels[id]?.name : null) ?? `Camera ${id}`,
+      }))
+      .filter(
+        (camera) =>
+          !this.recordingExclude.has(camera.id.toLowerCase()) &&
+          !this.recordingExclude.has((camera.name ?? '').toLowerCase()),
+      );
   }
 
   async listRecordings(query: RecordingQuery): Promise<Page<Recording>> {

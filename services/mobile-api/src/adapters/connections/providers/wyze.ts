@@ -316,11 +316,17 @@ export class WyzeProvider implements CameraProvider {
   }
 
   async listRecordings(_query: RecordingQuery): Promise<Page<Recording>> {
-    throw new AppError('CAPABILITY_UNSUPPORTED', 'The bridge relays live video; it does not record.');
+    throw new AppError(
+      'CAPABILITY_UNSUPPORTED',
+      'The bridge relays live video; it does not record.',
+    );
   }
 
   async getRecording(_recordingId: string): Promise<Recording> {
-    throw new AppError('CAPABILITY_UNSUPPORTED', 'The bridge relays live video; it does not record.');
+    throw new AppError(
+      'CAPABILITY_UNSUPPORTED',
+      'The bridge relays live video; it does not record.',
+    );
   }
 
   async getStorageStatus(): Promise<StorageStatus> {

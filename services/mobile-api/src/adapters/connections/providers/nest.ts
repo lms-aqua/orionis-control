@@ -220,7 +220,10 @@ export class NestProvider implements CameraProvider {
       );
     }
     if (response.status === 429) {
-      return new AppError('UPSTREAM_ERROR', 'Google is rate-limiting this project. Try again shortly.');
+      return new AppError(
+        'UPSTREAM_ERROR',
+        'Google is rate-limiting this project. Try again shortly.',
+      );
     }
     return new AppError('UPSTREAM_ERROR', `Google returned HTTP ${response.status}.`);
   }
@@ -390,7 +393,10 @@ export class NestProvider implements CameraProvider {
   }
 
   async invokeControl(_cameraId: string, _req: CameraControlRequest): Promise<CameraControlResult> {
-    throw new AppError('CAPABILITY_UNSUPPORTED', 'Nest cameras expose no controls through this API.');
+    throw new AppError(
+      'CAPABILITY_UNSUPPORTED',
+      'Nest cameras expose no controls through this API.',
+    );
   }
 
   async listEvents(_query: EventQuery): Promise<Page<CameraEvent>> {

@@ -146,8 +146,7 @@ export class ConnectionStore {
 
   get(id: string): ConnectionRecord {
     const row = this.#db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as unknown as
-      | Row
-      | undefined;
+      Row | undefined;
     if (!row) throw AppError.notFound('Connection');
     return this.#toRecord(row);
   }
@@ -280,7 +279,14 @@ export class ConnectionStore {
            camera_count = excluded.camera_count, latency_ms = excluded.latency_ms,
            checked_at = excluded.checked_at`,
       )
-      .run(id, health.status, health.message, health.cameraCount, health.latencyMs, health.checkedAt);
+      .run(
+        id,
+        health.status,
+        health.message,
+        health.cameraCount,
+        health.latencyMs,
+        health.checkedAt,
+      );
   }
 
   /**
@@ -292,9 +298,10 @@ export class ConnectionStore {
    * made, and bumping it would invalidate live provider instances for nothing.
    */
   rewrapSecrets(): { rewrapped: number; failed: string[] } {
-    const rows = this.#db
-      .prepare('SELECT id, secrets_json FROM connections')
-      .all() as unknown as { id: string; secrets_json: string }[];
+    const rows = this.#db.prepare('SELECT id, secrets_json FROM connections').all() as unknown as {
+      id: string;
+      secrets_json: string;
+    }[];
     let rewrapped = 0;
     const failed: string[] = [];
 
@@ -481,8 +488,15 @@ export class ConnectionStore {
     const mergedSecrets = { ...this.#rawSecrets(id), ...this.#cipher.encryptRecord(secrets) };
     const mergedSettings = { ...record.settings, ...settings };
     this.#db
-      .prepare('UPDATE connections SET secrets_json = ?, settings_json = ?, updated_at = ? WHERE id = ?')
-      .run(JSON.stringify(mergedSecrets), JSON.stringify(mergedSettings), new Date().toISOString(), id);
+      .prepare(
+        'UPDATE connections SET secrets_json = ?, settings_json = ?, updated_at = ? WHERE id = ?',
+      )
+      .run(
+        JSON.stringify(mergedSecrets),
+        JSON.stringify(mergedSettings),
+        new Date().toISOString(),
+        id,
+      );
     this.#instances.delete(id);
   }
 
@@ -509,9 +523,9 @@ export class ConnectionStore {
   }
 
   #rawSecrets(id: string): Record<string, string> {
-    const row = this.#db.prepare('SELECT secrets_json FROM connections WHERE id = ?').get(id) as
-      | unknown as { secrets_json: string }
-      | undefined;
+    const row = this.#db
+      .prepare('SELECT secrets_json FROM connections WHERE id = ?')
+      .get(id) as unknown as { secrets_json: string } | undefined;
     return row ? (JSON.parse(row.secrets_json) as Record<string, string>) : {};
   }
 
