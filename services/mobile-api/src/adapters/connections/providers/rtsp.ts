@@ -52,6 +52,7 @@ export const RTSP_DESCRIPTOR: ProviderDescriptor = {
     recordings: false,
     controls: false,
     storageReporting: false,
+    interactiveAuth: false,
   },
   fields: [
     {

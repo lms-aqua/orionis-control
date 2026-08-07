@@ -59,6 +59,13 @@ export interface ProviderCapabilities {
   recordings: boolean;
   controls: boolean;
   storageReporting: boolean;
+  /**
+   * Whether this provider signs in interactively — credentials, then possibly a
+   * mailed or texted code. Drives whether the app shows a Sign In button and a
+   * verification step, so declaring it falsely strands the user on a screen
+   * whose button does nothing.
+   */
+  interactiveAuth: boolean;
 }
 
 export interface ProviderDescriptor {
@@ -87,6 +94,64 @@ export interface ProbeResult {
   message: string;
   cameraCount: number | null;
   latencyMs: number | null;
+}
+
+/**
+ * A second factor the upstream demands before it will finish signing in.
+ *
+ * Blink and Wyze both work this way: email and password are accepted, the
+ * service then sends a PIN out of band and refuses to issue a token until it
+ * comes back. Modelling this as a first-class step — rather than making the
+ * operator paste a TOTP secret into a settings field — is what lets the app
+ * show the same prompt the vendor's own app shows.
+ */
+export interface AuthChallenge {
+  /** Opaque; the provider stores whatever partial state it needs against it. */
+  challengeId: string;
+  kind: 'emailed_code' | 'sms_code' | 'totp';
+  /** Shown verbatim to the user. Say where the code went, not just "enter code". */
+  prompt: string;
+  /** Redacted destination, e.g. "p•••@gmail.com". Never the full address. */
+  sentTo: string | null;
+  expiresAt: string;
+}
+
+export type AuthResult =
+  | { status: 'complete'; message: string }
+  | { status: 'challenge'; challenge: AuthChallenge }
+  | { status: 'failed'; message: string };
+
+/**
+ * Interactive sign-in, for upstreams that cannot be authenticated by config
+ * alone.
+ *
+ * Optional: a Frigate URL behind a static API key needs none of this, and
+ * implementing it would be pretence. `capabilities.interactiveAuth` declares
+ * whether these exist so the app knows to offer a Sign In button.
+ */
+export interface InteractiveAuth {
+  /**
+   * Attempts a sign-in with the credentials already stored on the connection.
+   * Returns a challenge when the upstream wants a second factor.
+   */
+  beginAuth(): Promise<AuthResult>;
+  /** Submits the code the user received. */
+  completeAuth(challengeId: string, code: string): Promise<AuthResult>;
+  /**
+   * Tokens obtained during sign-in that must be persisted back onto the
+   * connection — returned rather than written, so the provider never needs a
+   * database handle and the store stays the only writer.
+   */
+  pendingSecrets(): Record<string, string>;
+}
+
+export function supportsInteractiveAuth(
+  provider: CameraProvider,
+): provider is CameraProvider & InteractiveAuth {
+  return (
+    typeof (provider as Partial<InteractiveAuth>).beginAuth === 'function' &&
+    typeof (provider as Partial<InteractiveAuth>).completeAuth === 'function'
+  );
 }
 
 /**

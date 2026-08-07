@@ -33,7 +33,9 @@ import type {
 } from '../../orionis/types.ts';
 import { UNKNOWN_STORAGE } from '../../orionis/types.ts';
 import type {
+  AuthResult,
   CameraProvider,
+  InteractiveAuth,
   ProviderContext,
   ProviderDescriptor,
   ProbeResult,
@@ -54,6 +56,7 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
     recordings: false,
     controls: false,
     storageReporting: false,
+    interactiveAuth: true,
   },
   fields: [
     {
@@ -72,8 +75,39 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
       placeholder: 'rtsp://lostblink-mediamtx:8554',
       help: 'Where the published streams are read from. Camera paths are appended to this.',
     },
+    {
+      key: 'email',
+      label: 'Blink email',
+      type: 'text',
+      required: true,
+      placeholder: 'you@example.com',
+      help: 'The account your Blink cameras are registered to.',
+    },
+    {
+      key: 'password',
+      label: 'Blink password',
+      type: 'secret',
+      required: true,
+      help: 'Stored encrypted. Blink will email or text a code to finish signing in.',
+    },
   ],
 };
+
+/** Blink's production API. Region is negotiated per account after login. */
+const BLINK_DEFAULT_TIER = 'rest-prod';
+
+interface BlinkLoginResponse {
+  account?: {
+    account_id?: number;
+    client_id?: number;
+    tier?: string;
+    client_verification_required?: boolean;
+    account_verification_required?: boolean;
+  };
+  auth?: { token?: string };
+  message?: string;
+  code?: number;
+}
 
 /** MediaMTX v3 `/v3/paths/list` shape, narrowed to what is used. */
 interface MediaMtxPath {
@@ -88,7 +122,7 @@ interface MediaMtxPathList {
   items?: MediaMtxPath[];
 }
 
-export class LostblinkProvider implements CameraProvider {
+export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   readonly descriptor = LOSTBLINK_DESCRIPTOR;
   readonly #ctx: ProviderContext;
 
@@ -264,4 +298,164 @@ export class LostblinkProvider implements CameraProvider {
   async getStorageStatus(): Promise<StorageStatus> {
     return UNKNOWN_STORAGE;
   }
+
+  // MARK: Interactive sign-in
+  //
+  // Blink is a two-step login: credentials are accepted, then a PIN is sent out
+  // of band and no token is issued until it comes back. The partial state
+  // between those steps (account id, client id, region tier) is held in memory
+  // on this instance — the store caches provider instances per connection, so
+  // the same object serves both calls, and nothing half-authenticated is
+  // persisted.
+
+  #pending: { accountId: number; clientId: number; tier: string } | null = null;
+  #obtained: Record<string, string> = {};
+
+  get #tier(): string {
+    return String(this.#ctx.secrets.tier || this.#ctx.settings.tier || BLINK_DEFAULT_TIER);
+  }
+
+  async beginAuth(): Promise<AuthResult> {
+    const email = String(this.#ctx.settings.email ?? '').trim();
+    const password = this.#ctx.secrets.password ?? '';
+    if (!email || !password) {
+      return { status: 'failed', message: 'Enter the Blink email and password first.' };
+    }
+
+    let body: BlinkLoginResponse;
+    try {
+      const response = await this.#ctx.fetchImpl(
+        `https://${BLINK_DEFAULT_TIER}.immedia-semi.com/api/v5/account/login`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email,
+            password,
+            // Blink ties a PIN to a client identity. A stable ID per connection
+            // means re-signing in does not trigger a fresh verification every
+            // time, which would be a new email to the user on every restart.
+            unique_id: this.#ctx.connectionId,
+            device_identifier: 'Orionis Control',
+            reauth: true,
+          }),
+          signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+        },
+      );
+      body = (await response.json()) as BlinkLoginResponse;
+      if (!response.ok) {
+        return {
+          status: 'failed',
+          message: body.message ?? `Blink rejected the sign-in (HTTP ${response.status}).`,
+        };
+      }
+    } catch (error) {
+      return {
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Blink could not be reached.',
+      };
+    }
+
+    const account = body.account;
+    const accountId = account?.account_id;
+    const clientId = account?.client_id;
+    if (!accountId || !clientId) {
+      return { status: 'failed', message: body.message ?? 'Blink returned an unexpected response.' };
+    }
+    const tier = account?.tier ?? BLINK_DEFAULT_TIER;
+
+    const needsVerification =
+      account?.client_verification_required === true ||
+      account?.account_verification_required === true;
+
+    if (!needsVerification && body.auth?.token) {
+      // A trusted client skips the PIN entirely.
+      this.#obtained = { authToken: body.auth.token, tier, accountId: String(accountId), clientId: String(clientId) };
+      return { status: 'complete', message: 'Signed in to Blink.' };
+    }
+
+    this.#pending = { accountId, clientId, tier };
+    if (body.auth?.token) this.#obtained.authToken = body.auth.token;
+
+    return {
+      status: 'challenge',
+      challenge: {
+        challengeId: `${accountId}:${clientId}`,
+        kind: 'emailed_code',
+        prompt: 'Blink sent a verification code. Enter it to finish connecting.',
+        sentTo: redactEmail(email),
+        // Blink's PINs are short-lived; ten minutes is the practical window.
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      },
+    };
+  }
+
+  async completeAuth(challengeId: string, code: string): Promise<AuthResult> {
+    const pending =
+      this.#pending ??
+      // The instance may have been rebuilt between the two calls; the challenge
+      // ID carries enough to continue rather than making the user start over.
+      (() => {
+        const [a, c] = challengeId.split(':');
+        return a && c ? { accountId: Number(a), clientId: Number(c), tier: this.#tier } : null;
+      })();
+    if (!pending) {
+      return { status: 'failed', message: 'That verification has expired. Sign in again.' };
+    }
+
+    const pin = code.trim();
+    if (!/^\d{4,8}$/.test(pin)) {
+      return { status: 'failed', message: 'The code should be the digits Blink sent you.' };
+    }
+
+    try {
+      const response = await this.#ctx.fetchImpl(
+        `https://${pending.tier}.immedia-semi.com/api/v4/account/${pending.accountId}/client/${pending.clientId}/pin/verify`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(this.#obtained.authToken ? { 'token-auth': this.#obtained.authToken } : {}),
+          },
+          body: JSON.stringify({ pin }),
+          signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+        },
+      );
+      const body = (await response.json()) as { valid?: boolean; message?: string };
+      if (!response.ok || body.valid === false) {
+        return { status: 'failed', message: body.message ?? 'That code was not accepted.' };
+      }
+    } catch (error) {
+      return {
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Blink could not be reached.',
+      };
+    }
+
+    this.#obtained = {
+      ...this.#obtained,
+      tier: pending.tier,
+      accountId: String(pending.accountId),
+      clientId: String(pending.clientId),
+    };
+    this.#pending = null;
+    return { status: 'complete', message: 'Blink verified this device.' };
+  }
+
+  /**
+   * Returned rather than written: the store is the only writer of secrets, so
+   * a provider never needs a database handle.
+   */
+  pendingSecrets(): Record<string, string> {
+    const out = this.#obtained;
+    this.#obtained = {};
+    return out;
+  }
+}
+
+/** "pat@gmail.com" -> "p•••@gmail.com". Enough to recognise, not to harvest. */
+function redactEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) return '•••';
+  return `${email[0]}•••${email.slice(at)}`;
 }

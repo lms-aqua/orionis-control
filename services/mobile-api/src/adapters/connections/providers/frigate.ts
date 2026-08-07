@@ -46,6 +46,7 @@ export const FRIGATE_DESCRIPTOR: ProviderDescriptor = {
     recordings: true,
     controls: false,
     storageReporting: true,
+    interactiveAuth: false,
   },
   fields: [
     {
