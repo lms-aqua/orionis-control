@@ -100,199 +100,207 @@ function appRedirect(base: string, params: Record<string, string>): string {
 
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   // --- GET /auth/login ------------------------------------------------------
-  app.get('/auth/login', async (req, reply) => {
-    const parsed = LoginQuery.safeParse(req.query);
-    if (!parsed.success) {
-      throw new AppError(
-        'VALIDATION_FAILED',
-        'The sign-in request is missing required parameters.',
-        {
-          fields: parsed.error.issues.map((i) => i.path.join('.')),
-        },
-      );
-    }
-    const q = parsed.data;
-    const { oidc, sessions, audit, config } = req.services;
+  app.get(
+    '/auth/login',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const parsed = LoginQuery.safeParse(req.query);
+      if (!parsed.success) {
+        throw new AppError(
+          'VALIDATION_FAILED',
+          'The sign-in request is missing required parameters.',
+          {
+            fields: parsed.error.issues.map((i) => i.path.join('.')),
+          },
+        );
+      }
+      const q = parsed.data;
+      const { oidc, sessions, audit, config } = req.services;
 
-    assertRedirectAllowed(q.redirect_uri, config.allowedRedirectSchemes);
+      assertRedirectAllowed(q.redirect_uri, config.allowedRedirectSchemes);
 
-    if (!oidc.configured) {
-      throw AppError.notConfigured('Authelia OIDC');
-    }
+      if (!oidc.configured) {
+        throw AppError.notConfigured('Authelia OIDC');
+      }
 
-    sessions.purgeExpired();
+      sessions.purgeExpired();
 
-    const gatewayPkce = createPkcePair();
-    const state = randomToken(24);
-    const nonce = randomToken(24);
-    const now = Date.now();
+      const gatewayPkce = createPkcePair();
+      const state = randomToken(24);
+      const nonce = randomToken(24);
+      const now = Date.now();
 
-    req.services.db
-      .prepare(
-        `INSERT INTO auth_transactions (state, nonce, gateway_verifier, app_challenge, app_state,
+      req.services.db
+        .prepare(
+          `INSERT INTO auth_transactions (state, nonce, gateway_verifier, app_challenge, app_state,
            app_redirect_uri, device_id, created_at, expires_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+        )
+        .run(
+          state,
+          nonce,
+          gatewayPkce.verifier,
+          q.code_challenge,
+          q.state,
+          q.redirect_uri,
+          q.device_id ?? null,
+          new Date(now).toISOString(),
+          new Date(now + TRANSACTION_TTL_MS).toISOString(),
+        );
+
+      const authorizeUrl = await oidc.authorizationUrl({
         state,
         nonce,
-        gatewayPkce.verifier,
-        q.code_challenge,
-        q.state,
-        q.redirect_uri,
-        q.device_id ?? null,
-        new Date(now).toISOString(),
-        new Date(now + TRANSACTION_TTL_MS).toISOString(),
-      );
+        codeChallenge: gatewayPkce.challenge,
+      });
 
-    const authorizeUrl = await oidc.authorizationUrl({
-      state,
-      nonce,
-      codeChallenge: gatewayPkce.challenge,
-    });
+      audit.record({
+        action: 'auth.login.started',
+        actor: { id: null, name: null, role: null, deviceId: q.device_id ?? null },
+        outcome: 'success',
+        requestId: req.id,
+        ip: req.ip,
+      });
 
-    audit.record({
-      action: 'auth.login.started',
-      actor: { id: null, name: null, role: null, deviceId: q.device_id ?? null },
-      outcome: 'success',
-      requestId: req.id,
-      ip: req.ip,
-    });
-
-    return reply.redirect(authorizeUrl, 302);
-  });
+      return reply.redirect(authorizeUrl, 302);
+    },
+  );
 
   // --- GET /auth/callback ---------------------------------------------------
-  app.get('/auth/callback', async (req, reply) => {
-    const q = CallbackQuery.parse(req.query);
-    const { oidc, sessions, audit, config, db } = req.services;
+  app.get(
+    '/auth/callback',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const q = CallbackQuery.parse(req.query);
+      const { oidc, sessions, audit, config, db } = req.services;
 
-    if (!q.state) {
-      throw new AppError('OAUTH_STATE_INVALID', 'The sign-in response has no state parameter.');
-    }
+      if (!q.state) {
+        throw new AppError('OAUTH_STATE_INVALID', 'The sign-in response has no state parameter.');
+      }
 
-    const tx = db.prepare('SELECT * FROM auth_transactions WHERE state = ?').get(q.state) as
-      Record<string, unknown> | undefined;
+      const tx = db.prepare('SELECT * FROM auth_transactions WHERE state = ?').get(q.state) as
+        Record<string, unknown> | undefined;
 
-    if (!tx) {
-      throw new AppError(
-        'OAUTH_STATE_INVALID',
-        'This sign-in attempt is unknown or has already completed. Start again.',
+      if (!tx) {
+        throw new AppError(
+          'OAUTH_STATE_INVALID',
+          'This sign-in attempt is unknown or has already completed. Start again.',
+        );
+      }
+      if (tx.consumed_at) {
+        throw new AppError('OAUTH_STATE_INVALID', 'This sign-in attempt was already used.');
+      }
+      if (new Date(String(tx.expires_at)).getTime() < Date.now()) {
+        db.prepare('DELETE FROM auth_transactions WHERE state = ?').run(q.state);
+        throw new AppError('OAUTH_STATE_INVALID', 'This sign-in attempt expired. Start again.');
+      }
+
+      db.prepare('UPDATE auth_transactions SET consumed_at = ? WHERE state = ?').run(
+        new Date().toISOString(),
+        q.state,
       );
-    }
-    if (tx.consumed_at) {
-      throw new AppError('OAUTH_STATE_INVALID', 'This sign-in attempt was already used.');
-    }
-    if (new Date(String(tx.expires_at)).getTime() < Date.now()) {
-      db.prepare('DELETE FROM auth_transactions WHERE state = ?').run(q.state);
-      throw new AppError('OAUTH_STATE_INVALID', 'This sign-in attempt expired. Start again.');
-    }
 
-    db.prepare('UPDATE auth_transactions SET consumed_at = ? WHERE state = ?').run(
-      new Date().toISOString(),
-      q.state,
-    );
+      const redirectBase = String(tx.app_redirect_uri);
+      const appState = String(tx.app_state);
 
-    const redirectBase = String(tx.app_redirect_uri);
-    const appState = String(tx.app_state);
+      // Authelia reported a problem (cancelled MFA, denied consent, lockout…).
+      if (q.error) {
+        audit.record({
+          action: 'auth.login.failed',
+          actor: { id: null, name: null, role: null, deviceId: (tx.device_id as string) ?? null },
+          outcome: 'failure',
+          reason: q.error,
+          requestId: req.id,
+          ip: req.ip,
+        });
+        const code = q.error === 'access_denied' ? 'ACCESS_DENIED' : 'LOGIN_FAILED';
+        return reply.redirect(appRedirect(redirectBase, { error: code, state: appState }), 302);
+      }
 
-    // Authelia reported a problem (cancelled MFA, denied consent, lockout…).
-    if (q.error) {
-      audit.record({
-        action: 'auth.login.failed',
-        actor: { id: null, name: null, role: null, deviceId: (tx.device_id as string) ?? null },
-        outcome: 'failure',
-        reason: q.error,
-        requestId: req.id,
-        ip: req.ip,
-      });
-      const code = q.error === 'access_denied' ? 'ACCESS_DENIED' : 'LOGIN_FAILED';
-      return reply.redirect(appRedirect(redirectBase, { error: code, state: appState }), 302);
-    }
+      if (!q.code) {
+        return reply.redirect(
+          appRedirect(redirectBase, { error: 'LOGIN_FAILED', state: appState }),
+          302,
+        );
+      }
 
-    if (!q.code) {
-      return reply.redirect(
-        appRedirect(redirectBase, { error: 'LOGIN_FAILED', state: appState }),
-        302,
-      );
-    }
+      let identity;
+      try {
+        const tokens = await oidc.exchangeCode(q.code, String(tx.gateway_verifier));
+        identity = await oidc.verifyIdToken(tokens.idToken, String(tx.nonce));
+      } catch (err) {
+        audit.record({
+          action: 'auth.login.failed',
+          actor: { id: null, name: null, role: null, deviceId: (tx.device_id as string) ?? null },
+          outcome: 'failure',
+          reason: err instanceof AppError ? err.code : 'exchange_error',
+          requestId: req.id,
+          ip: req.ip,
+        });
+        return reply.redirect(
+          appRedirect(redirectBase, { error: 'LOGIN_FAILED', state: appState }),
+          302,
+        );
+      }
 
-    let identity;
-    try {
-      const tokens = await oidc.exchangeCode(q.code, String(tx.gateway_verifier));
-      identity = await oidc.verifyIdToken(tokens.idToken, String(tx.nonce));
-    } catch (err) {
-      audit.record({
-        action: 'auth.login.failed',
-        actor: { id: null, name: null, role: null, deviceId: (tx.device_id as string) ?? null },
-        outcome: 'failure',
-        reason: err instanceof AppError ? err.code : 'exchange_error',
-        requestId: req.id,
-        ip: req.ip,
-      });
-      return reply.redirect(
-        appRedirect(redirectBase, { error: 'LOGIN_FAILED', state: appState }),
-        302,
-      );
-    }
+      const role = roleFromGroups(identity.groups, config.roles);
+      if (!role) {
+        // Authenticated, but not authorised for this product.
+        audit.record({
+          action: 'auth.login.denied_no_role',
+          actor: { id: identity.subject, name: identity.username, role: null, deviceId: null },
+          outcome: 'denied',
+          reason: 'no_mapped_group',
+          requestId: req.id,
+          ip: req.ip,
+          metadata: { groupCount: identity.groups.length },
+        });
+        return reply.redirect(
+          appRedirect(redirectBase, { error: 'NOT_AUTHORIZED', state: appState }),
+          302,
+        );
+      }
 
-    const role = roleFromGroups(identity.groups, config.roles);
-    if (!role) {
-      // Authenticated, but not authorised for this product.
-      audit.record({
-        action: 'auth.login.denied_no_role',
-        actor: { id: identity.subject, name: identity.username, role: null, deviceId: null },
-        outcome: 'denied',
-        reason: 'no_mapped_group',
-        requestId: req.id,
-        ip: req.ip,
-        metadata: { groupCount: identity.groups.length },
-      });
-      return reply.redirect(
-        appRedirect(redirectBase, { error: 'NOT_AUTHORIZED', state: appState }),
-        302,
-      );
-    }
+      const user = {
+        id: identity.subject,
+        username: identity.username,
+        displayName: identity.displayName,
+        email: identity.email,
+        role,
+        groups: identity.groups,
+      };
+      sessions.upsertUser(user);
 
-    const user = {
-      id: identity.subject,
-      username: identity.username,
-      displayName: identity.displayName,
-      email: identity.email,
-      role,
-      groups: identity.groups,
-    };
-    sessions.upsertUser(user);
+      const deviceId = (tx.device_id as string) ?? `unknown-${randomToken(8)}`;
+      const issued = await sessions.createSession(user, { deviceId });
 
-    const deviceId = (tx.device_id as string) ?? `unknown-${randomToken(8)}`;
-    const issued = await sessions.createSession(user, { deviceId });
-
-    // One-time code the app trades for tokens, bound to the app's PKCE leg.
-    const appCode = randomToken(32);
-    db.prepare(
-      `INSERT INTO authorization_codes (code_hash, session_id, app_challenge, created_at, expires_at)
+      // One-time code the app trades for tokens, bound to the app's PKCE leg.
+      const appCode = randomToken(32);
+      db.prepare(
+        `INSERT INTO authorization_codes (code_hash, session_id, app_challenge, created_at, expires_at)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(
-      hashToken(appCode),
-      issued.sessionId,
-      String(tx.app_challenge),
-      new Date().toISOString(),
-      new Date(Date.now() + APP_CODE_TTL_MS).toISOString(),
-    );
+      ).run(
+        hashToken(appCode),
+        issued.sessionId,
+        String(tx.app_challenge),
+        new Date().toISOString(),
+        new Date(Date.now() + APP_CODE_TTL_MS).toISOString(),
+      );
 
-    // The refresh token issued above is discarded here: the app receives its
-    // own pair from /auth/token once it proves possession of the verifier.
-    audit.record({
-      action: 'auth.login.succeeded',
-      actor: { id: user.id, name: user.username, role, deviceId },
-      outcome: 'success',
-      requestId: req.id,
-      ip: req.ip,
-      metadata: { amr: identity.amr, role },
-    });
+      // The refresh token issued above is discarded here: the app receives its
+      // own pair from /auth/token once it proves possession of the verifier.
+      audit.record({
+        action: 'auth.login.succeeded',
+        actor: { id: user.id, name: user.username, role, deviceId },
+        outcome: 'success',
+        requestId: req.id,
+        ip: req.ip,
+        metadata: { amr: identity.amr, role },
+      });
 
-    return reply.redirect(appRedirect(redirectBase, { code: appCode, state: appState }), 302);
-  });
+      return reply.redirect(appRedirect(redirectBase, { code: appCode, state: appState }), 302);
+    },
+  );
 
   // --- POST /auth/token -----------------------------------------------------
   app.post(
@@ -506,20 +514,24 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --- GET /auth/session (lightweight liveness check used at cold start) ----
-  app.get('/auth/session', async (req) => {
-    try {
-      const principal = await authenticate(req);
-      return ok(
-        { authenticated: true, role: principal.role, sessionId: principal.sessionId },
-        req.id,
-      );
-    } catch (err) {
-      if (err instanceof AppError) {
-        return ok({ authenticated: false, reason: err.code }, req.id);
+  app.get(
+    '/auth/session',
+    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    async (req) => {
+      try {
+        const principal = await authenticate(req);
+        return ok(
+          { authenticated: true, role: principal.role, sessionId: principal.sessionId },
+          req.id,
+        );
+      } catch (err) {
+        if (err instanceof AppError) {
+          return ok({ authenticated: false, reason: err.code }, req.id);
+        }
+        throw err;
       }
-      throw err;
-    }
-  });
+    },
+  );
 }
 
 export const __testing = { assertRedirectAllowed, appRedirect, safeEqual };
