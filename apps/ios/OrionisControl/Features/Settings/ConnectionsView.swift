@@ -11,6 +11,9 @@ import SwiftUI
 final class ConnectionsModel {
     private(set) var connections: [ConnectionSummary] = []
     private(set) var providers: [ProviderDescriptor] = []
+    /// Whether this gateway has a host-side applier behind it. Without one the
+    /// app never offers to start a bridge, because the button could only fail.
+    private(set) var canProvision = false
     private(set) var isLoading = false
     private(set) var error: APIError?
     /// The connection currently being probed, so only its row shows a spinner.
@@ -35,7 +38,9 @@ final class ConnectionsModel {
             async let list = service.connections()
             async let catalogue = service.connectionProviders()
             connections = try await list
-            providers = try await catalogue
+            let resolved = try await catalogue
+            providers = resolved.providers
+            canProvision = resolved.provisioningAvailable
             error = nil
         } catch let apiError as APIError {
             error = apiError
@@ -103,7 +108,9 @@ struct ConnectionsView: View {
         .refreshable { await model?.load(showSpinner: false) }
         .sheet(isPresented: $isAdding) {
             if let model {
-                ConnectionEditorView(providers: model.providers, existing: nil) {
+                ConnectionEditorView(
+                    providers: model.providers, canProvision: model.canProvision, existing: nil
+                ) {
                     await model.load(showSpinner: false)
                 }
             }
@@ -177,7 +184,9 @@ struct ConnectionsView: View {
             tint: tint(for: item),
             statusColor: item.enabled ? tint(for: item) : nil
         ) {
-            ConnectionDetailView(connectionId: item.id, providers: model.providers)
+            ConnectionDetailView(
+                connectionId: item.id, providers: model.providers,
+                canProvision: model.canProvision)
         }
     }
 
@@ -185,6 +194,16 @@ struct ConnectionsView: View {
     private func subtitle(for item: ConnectionSummary, descriptor: ProviderDescriptor?) -> String {
         let kind = descriptor?.displayName ?? item.provider
         guard item.enabled else { return "\(kind) · Disabled" }
+
+        // A bridge still being built outranks health: the upstream genuinely is
+        // not reachable yet, and "Not reachable" reads as a fault when it is
+        // just work in progress.
+        if let provisioning = item.provisioning, provisioning.isInFlight {
+            return "\(kind) · \(provisioning.title)"
+        }
+        if item.provisioning?.state == .failed {
+            return "\(kind) · Setup failed"
+        }
 
         guard let health = item.health else { return "\(kind) · Not checked yet" }
         switch health.status {
@@ -201,6 +220,10 @@ struct ConnectionsView: View {
 
     private func tint(for item: ConnectionSummary) -> Color {
         guard item.enabled else { return Theme.textSecondary }
+        if let provisioning = item.provisioning {
+            if provisioning.isInFlight { return Theme.warn }
+            if provisioning.state == .failed { return Theme.critical }
+        }
         switch item.health?.status {
         case .healthy: return Theme.good
         case .degraded: return Theme.warn

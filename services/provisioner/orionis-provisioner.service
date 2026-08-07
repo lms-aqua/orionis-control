@@ -1,0 +1,25 @@
+[Unit]
+# The privileged half of bridge provisioning. Deliberately a systemd unit rather
+# than a container with the Docker socket mounted: this way the socket is never
+# on a Docker network at all, so there is no container an attacker could reach it
+# through — only a process root already controls.
+Description=Orionis Control bridge provisioner
+Documentation=https://github.com/lms-aqua/orionis-control
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/orionis/orionis-provisioner.sh
+# No inbound anything. Its entire input is a directory of small JSON files that
+# the gateway may write and nothing else may.
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+NoNewPrivileges=false
+# It talks to Docker, so it cannot be locked down much further than this without
+# breaking the one thing it exists to do. Everything it will run is fixed in the
+# templates that ship beside it.
+ReadWritePaths=/var/lib/orionis
+# A hung `docker compose pull` must not wedge the timer.
+TimeoutStartSec=600

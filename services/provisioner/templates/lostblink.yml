@@ -1,0 +1,120 @@
+# Blink bridge: lostblink + MediaMTX.
+#
+# One of a fixed set of templates the applier will run. Nothing in this file is
+# supplied by the gateway or the app — the only variable is ${ORIONIS_INSTANCE},
+# which the applier sets from a validated slug, plus the account this bridge
+# signs in with. That is the whole of the trust boundary: an administrator can
+# ask for *this*, unmodified, and cannot ask for anything else.
+#
+# Two deliberate departures from the stock lostblink compose file:
+#
+#   1. **No published ports.** The stock file exposes 8554 on the host. Here the
+#      gateway joins this project's network instead, so the streams are reachable
+#      by exactly one container and by nothing else on the LAN.
+#   2. **The MediaMTX control API is on.** It is off in stock MediaMTX and absent
+#      from lostblink's shipped config, which is why the Blink provider had
+#      nothing to enumerate — it needs /v3/paths/list to know which cameras are
+#      publishing.
+
+services:
+  # Writes the config lostblink requires. A sidecar rather than a bind mount:
+  # a bind mount would mean this template names a host path, and "no template
+  # touches the host filesystem" is a property worth keeping absolute.
+  config:
+    image: busybox:1.36
+    container_name: orionis-${ORIONIS_INSTANCE}-lostblink-config
+    user: "1000:1000"
+    volumes:
+      - config:/config
+    # Credentials are *not* written here — they arrive as environment variables
+    # on the service that needs them, so they never touch a file in a volume.
+    command:
+      - sh
+      - -c
+      - |
+        cat > /config/config.json <<'JSON'
+        {
+          "blink": { "poll_interval": 30, "history_days": 7, "request_timeout": 30 },
+          "live": {
+            "mode": "on_motion",
+            "max_sessions_per_hour": 6,
+            "min_seconds_between_sessions": 60,
+            "daily_seconds_budget": 1800,
+            "require_battery_ok": true,
+            "mains_powered": []
+          },
+          "cameras": { "enabled": [], "disabled": [], "max_failures": 5 },
+          "rtsp": { "address": "mediamtx", "port": 8554, "transport": "tcp" },
+          "ffmpeg": { "hwaccel": "", "loglevel": "error" },
+          "paths": { "work": "/working", "config": "/config" },
+          "log_level": "INFO"
+        }
+        JSON
+    restart: "no"
+
+  lostblink:
+    # Built on this host, once, by hand — see README.md. The template names a
+    # tag rather than a build context because the source repository is private
+    # and this script has no credentials, by design.
+    image: ${ORIONIS_LOSTBLINK_IMAGE:-lostblink:local}
+    container_name: orionis-${ORIONIS_INSTANCE}-lostblink
+    restart: unless-stopped
+    depends_on:
+      config:
+        condition: service_completed_successfully
+      mediamtx:
+        # Upstream starts both at once, so ffmpeg publishes before MediaMTX is
+        # listening, burns lostblink's failure counters, and can disable cameras
+        # on a cold start.
+        condition: service_healthy
+    environment:
+      LOSTBLINK_CONFIG: /config/config.json
+      # Supplied by the applier from the connection's own credentials. Env
+      # rather than the config file so the password is never written to a
+      # volume that outlives the container.
+      LOSTBLINK_USERNAME: ${ORIONIS_EMAIL:-}
+      LOSTBLINK_PASSWORD: ${ORIONIS_PASSWORD:-}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - config:/config
+      - working:/working
+    security_opt:
+      - no-new-privileges:true
+    tty: true
+
+  mediamtx:
+    image: bluenviron/mediamtx:1.9.3
+    container_name: orionis-${ORIONIS_INSTANCE}-mediamtx
+    restart: unless-stopped
+    environment:
+      # Configured entirely through MTX_* overrides so this template needs no
+      # config file and therefore no host path.
+      MTX_LOGLEVEL: info
+      # The control API is what the Blink provider reads to discover which
+      # cameras are live. Bound inside the project network only.
+      MTX_API: "yes"
+      MTX_APIADDRESS: :9997
+      MTX_RTSP: "yes"
+      MTX_RTSPTRANSPORTS: tcp
+      MTX_RTSPADDRESS: :8554
+      MTX_HLS: "no"
+      MTX_WEBRTC: "no"
+      MTX_RTMP: "no"
+      MTX_SRT: "no"
+      # A live handover splices two MPEG-TS sources, so timestamps jump. Give
+      # the muxer room to absorb it.
+      MTX_PATHDEFAULTS_WRITEQUEUESIZE: "1024"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q -O - http://127.0.0.1:9997/v3/config/global/get > /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  # Named, and never removed on teardown: whatever a bridge has recorded is not
+  # the gateway's to destroy.
+  config:
+  working:

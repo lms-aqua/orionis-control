@@ -567,13 +567,19 @@ export function buildOpenApiDocument(): object {
           tags: ['connections'],
           summary: 'Remove a connection and its stored credentials',
           description:
-            'Disruptive: requires the header X-Confirm-Disruptive: true. Deletes the stored credentials and removes the cameras this source contributes.',
+            'Disruptive: requires the header X-Confirm-Disruptive: true. Deletes the stored credentials and removes the cameras this source contributes. If Orionis started a bridge for this connection, a teardown is queued for the host applier as well — pass keepBridge=true to leave it running. Named volumes are never removed.',
           security: authed,
           parameters: [
             {
               name: 'X-Confirm-Disruptive',
               in: 'header',
               required: true,
+              schema: { type: 'string', enum: ['true'] },
+            },
+            {
+              name: 'keepBridge',
+              in: 'query',
+              required: false,
               schema: { type: 'string', enum: ['true'] },
             },
           ],
@@ -622,6 +628,33 @@ export function buildOpenApiDocument(): object {
           },
         },
       },
+      // Bridge provisioning. Some providers need a helper service running beside
+      // the gateway (lostblink for Blink, docker-wyze-bridge for Wyze). The
+      // gateway holds no Docker access: it writes a request naming one of a
+      // fixed set of vetted templates, and a privileged host-side applier acts.
+      '/connections/{connectionId}/provision': {
+        post: {
+          tags: ['connections'],
+          summary: 'Ask the host to start the bridge this connection needs',
+          description:
+            'Writes a provisioning request naming the template declared by the provider. The gateway chooses the template and instance name from the connection itself, so no part of the request is caller-supplied. Repeating the call returns the request already in flight rather than creating a second instance. Fails with 501 when the provider needs no bridge, and 503 when the deployment has no applier configured.',
+          security: authed,
+          parameters: [
+            { name: 'Idempotency-Key', in: 'header', required: false, schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': jsonResponse('Request recorded', envelope({ type: 'object' })),
+            '404': errorResponse('No such connection'),
+            '501': errorResponse('This connection type needs no bridge'),
+            ...commonErrors,
+          },
+        },
+      },
+      '/connections/{connectionId}/provisioning': get(
+        'State of this connection’s bridge, reconciled with the host applier',
+        'connections',
+        { type: 'object' },
+      ),
       '/diagnostics/incidents': {
         post: {
           tags: ['system'],

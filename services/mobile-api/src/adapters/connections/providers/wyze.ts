@@ -34,6 +34,9 @@ import type {
   ProbeResult,
 } from '../provider.ts';
 
+/** Where the shipped bridge template publishes, and so the sensible default. */
+const DEFAULT_BRIDGE_URL = 'http://wyze-bridge:5000';
+
 export const WYZE_DESCRIPTOR: ProviderDescriptor = {
   id: 'wyze',
   displayName: 'Wyze (docker-wyze-bridge)',
@@ -56,8 +59,13 @@ export const WYZE_DESCRIPTOR: ProviderDescriptor = {
       key: 'baseUrl',
       label: 'Bridge address',
       type: 'url',
-      required: true,
-      placeholder: 'http://wyze-bridge:5000',
+      // Not required: a bridge Orionis provisions does not exist yet when the
+      // connection is created, and the applier writes this key afterwards. The
+      // default covers the ordinary case of one bridge beside the gateway, so
+      // the box is never actually empty.
+      required: false,
+      placeholder: DEFAULT_BRIDGE_URL,
+      default: DEFAULT_BRIDGE_URL,
       help: 'The docker-wyze-bridge web interface, reachable from this gateway.',
     },
     {
@@ -65,6 +73,7 @@ export const WYZE_DESCRIPTOR: ProviderDescriptor = {
       label: 'Stream address',
       type: 'url',
       required: false,
+      advanced: true,
       placeholder: 'http://wyze-bridge:8888',
       help: "The bridge's HLS port, if it differs from the address above.",
     },
@@ -73,9 +82,20 @@ export const WYZE_DESCRIPTOR: ProviderDescriptor = {
       label: 'Bridge API key',
       type: 'secret',
       required: false,
+      advanced: true,
       help: 'Only if the bridge was started with WB_API_KEY. Stored encrypted.',
     },
   ],
+  bridge: {
+    template: 'wyze',
+    summary:
+      'Wyze cameras only reach this gateway through a docker-wyze-bridge. Orionis can start one, generate its API key, and point this connection at it.',
+    provides: ['baseUrl', 'streamBaseUrl'],
+    // The bridge refuses API calls without a key. Minting it here and handing
+    // it down means the gateway already holds the credential it will need,
+    // rather than fishing it back out of a container's logs.
+    mints: ['apiKey'],
+  },
 };
 
 interface WyzeBridgeCamera {
@@ -104,9 +124,7 @@ export class WyzeProvider implements CameraProvider {
   }
 
   get #baseUrl(): string {
-    const raw = String(this.#ctx.settings.baseUrl ?? '').replace(/\/+$/, '');
-    if (!raw) throw new AppError('SERVICE_NOT_CONFIGURED', 'No bridge address is set.');
-    return raw;
+    return String(this.#ctx.settings.baseUrl ?? '').replace(/\/+$/, '') || DEFAULT_BRIDGE_URL;
   }
 
   get #streamBaseUrl(): string {

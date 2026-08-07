@@ -381,6 +381,33 @@ describe('interactive sign-in', () => {
     });
     expect(res.statusCode).toBe(501);
   });
+
+  it('saves a Blink source from an account alone, with no bridge in sight', async () => {
+    // The original complaint: the form demanded the addresses of two containers
+    // — one of them named after a container that did not exist on the host —
+    // before it would accept a perfectly good Blink account. A source with no
+    // reachable bridge is a source that cannot show live view yet, not a source
+    // that must be refused.
+    const { h, token } = await signedInAs('orionis-admins');
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/connections`,
+      headers: h.auth(token),
+      payload: {
+        provider: 'lostblink',
+        name: 'Blink',
+        settings: { email: 'pat@example.invalid' },
+        secrets: { password: 'not-a-real-password' },
+      },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    // And the probe explains which half is missing, in words that mean something
+    // to someone who has never heard of MediaMTX.
+    const health = res.json().data.health;
+    expect(health.status).toBe('unreachable');
+    expect(health.message).toContain('bridge');
+  });
 });
 
 describe('audit', () => {

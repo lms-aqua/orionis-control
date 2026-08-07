@@ -155,6 +155,15 @@ const RawSchema = z.object({
   CONNECTIONS_SECRET_KEY_PREVIOUS: z.string().default(''),
   // How long a recorded probe is trusted before a connection is checked again.
   CONNECTIONS_PROBE_TTL_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
+  // Directory shared with the host-side bridge applier. The gateway writes a
+  // request naming one of the applier's vetted templates and reads back what it
+  // did; it never gets the Docker socket (ADR 0003/0005). Empty means this
+  // deployment cannot stand bridges up, and the routes say so instead of
+  // pretending to try.
+  CONNECTIONS_PROVISIONING_DIR: z.string().default(''),
+  // Ceiling on bridge instances. The applier enforces its own; this one exists
+  // so the refusal reaches the person who asked, with a reason.
+  CONNECTIONS_MAX_BRIDGES: z.coerce.number().int().min(1).max(64).default(8),
 
   DATABASE_URL: z.string().default('./data/orionis-control.db'),
 
@@ -222,6 +231,9 @@ export interface ConnectionsConfig {
   secretKey: string;
   previousSecretKeys: string[];
   probeTtlMs: number;
+  /** Shared directory for bridge requests; empty disables provisioning. */
+  provisioningDir: string;
+  maxBridges: number;
 }
 
 export interface AdGuardConfig {
@@ -533,6 +545,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
         ? [e.CONNECTIONS_SECRET_KEY_PREVIOUS]
         : [],
       probeTtlMs: e.CONNECTIONS_PROBE_TTL_SECONDS * 1000,
+      provisioningDir: e.CONNECTIONS_PROVISIONING_DIR,
+      maxBridges: e.CONNECTIONS_MAX_BRIDGES,
     },
     apns: {
       configured: apnsConfigured,

@@ -58,6 +58,95 @@ final class ConnectionModelTests: XCTestCase {
         XCTAssertEqual(flag.defaultValue?.boolValue, true)
     }
 
+    func testFieldIsOrdinaryUnlessItSaysOtherwise() throws {
+        // Every gateway that predates the flag describes ordinary fields, and
+        // defaulting to advanced would collapse the whole form out of sight.
+        let plain = try decode(
+            ProviderField.self,
+            #"{"key":"email","label":"Blink email","type":"text","required":true}"#)
+        XCTAssertFalse(plain.advanced)
+
+        let tucked = try decode(
+            ProviderField.self,
+            #"{"key":"rtspBaseUrl","label":"RTSP base URL","type":"url","required":false,"advanced":true}"#)
+        XCTAssertTrue(tucked.advanced)
+    }
+
+    func testProvisionedFieldsAreHiddenRatherThanMerelyCollapsed() throws {
+        // Asking for the address of a container that does not exist yet is the
+        // complaint this whole flow exists to fix, so those fields come out of
+        // the form entirely — not into a disclosure someone can still type in.
+        let descriptor = try decode(
+            ProviderDescriptor.self,
+            """
+            {"id":"lostblink","displayName":"Blink (lostblink)","summary":"Blink cameras.",
+             "capabilities":{"snapshots":false,"liveStream":true,"events":false,
+                             "eventDetection":false,"recordings":false,"controls":false,
+                             "storageReporting":false,"interactiveAuth":true},
+             "fields":[{"key":"email","label":"Blink email","type":"text","required":true},
+                       {"key":"password","label":"Blink password","type":"secret","required":true},
+                       {"key":"mediamtxApiUrl","label":"MediaMTX API URL","type":"url",
+                        "required":false,"advanced":true}],
+             "bridge":{"template":"lostblink","summary":"Orionis can start one.",
+                       "provides":["mediamtxApiUrl","rtspBaseUrl"]}}
+            """)
+
+        XCTAssertEqual(descriptor.bridge?.template, "lostblink")
+        XCTAssertEqual(descriptor.visibleFields(provisioning: false).count, 3)
+        XCTAssertEqual(
+            descriptor.visibleFields(provisioning: true).map(\.key), ["email", "password"])
+    }
+
+    func testProviderWithoutABridgeDecodesAndHidesNothing() throws {
+        let descriptor = try decode(
+            ProviderDescriptor.self,
+            """
+            {"id":"frigate","displayName":"Frigate","summary":"Frigate NVR.",
+             "capabilities":{"snapshots":true,"liveStream":true,"events":true,
+                             "eventDetection":true,"recordings":true,"controls":false,
+                             "storageReporting":true,"interactiveAuth":false},
+             "fields":[{"key":"baseUrl","label":"Frigate URL","type":"url","required":true}]}
+            """)
+        XCTAssertNil(descriptor.bridge)
+        XCTAssertEqual(descriptor.visibleFields(provisioning: true).count, 1)
+    }
+
+    // MARK: Bridge provisioning
+
+    func testProvisioningStatesSayWhetherToKeepWatching() throws {
+        let building = try decode(
+            ConnectionProvisioning.self,
+            """
+            {"connectionId":"conn_1","requestId":"prov_1","template":"lostblink",
+             "instance":"blink-front","state":"provisioning","message":"Starting the bridge…",
+             "requestedAt":"2026-08-07T19:00:00Z","updatedAt":"2026-08-07T19:00:04Z"}
+            """)
+        XCTAssertTrue(building.isInFlight)
+        XCTAssertEqual(building.title, "Setting up…")
+
+        let failed = try decode(
+            ConnectionProvisioning.self,
+            """
+            {"connectionId":"conn_1","requestId":"prov_1","template":"lostblink",
+             "instance":"blink-front","state":"failed",
+             "message":"orionis-blink-front-lostblink stopped (exit 1). two-factor authentication required.",
+             "requestedAt":"2026-08-07T19:00:00Z","updatedAt":"2026-08-07T19:00:12Z"}
+            """)
+        XCTAssertFalse(failed.isInFlight)
+        // Verbatim, because that last line is usually the whole diagnosis.
+        XCTAssertTrue(failed.message?.contains("two-factor") == true)
+    }
+
+    func testUnknownProvisioningStateReadsAsStillWorking() throws {
+        // A newer gateway may report a state this build has never heard of.
+        // Treating it as settled would stop the app polling and strand the
+        // screen on whatever it last showed.
+        let unknown = try decode(
+            ConnectionProvisioning.self,
+            #"{"connectionId":"c","requestId":"p","template":"wyze","instance":"w","state":"reticulating"}"#)
+        XCTAssertTrue(unknown.isInFlight)
+    }
+
     func testCapabilitySummaryListsOnlyWhatTheSourceProvides() throws {
         let liveOnly = try decode(
             ProviderCapabilities.self,

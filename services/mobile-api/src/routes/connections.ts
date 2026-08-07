@@ -58,9 +58,21 @@ function storeOf(services: { connections: ConnectionStore | null }): ConnectionS
   return services.connections;
 }
 
-/** The shape the app sees: the record plus its last observed health. */
+/**
+ * The shape the app sees: the record, its last observed health, and — when one
+ * exists — the state of the bridge the gateway asked the host to run.
+ *
+ * `provisioning` is read from the row rather than reconciled here: a list of
+ * ten connections must not become ten filesystem reads. The dedicated
+ * provisioning route reconciles, and that is the one the app polls while a
+ * bridge is being created.
+ */
 function present(store: ConnectionStore, record: ConnectionRecord): object {
-  return { ...record, health: store.health(record.id) };
+  return {
+    ...record,
+    health: store.health(record.id),
+    provisioning: store.provisioning(record.id),
+  };
 }
 
 export async function registerConnectionRoutes(app: FastifyInstance): Promise<void> {
@@ -73,7 +85,16 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
     { preHandler: requirePermission('connections.view') },
     async (req) => {
       const store = storeOf(req.services);
-      return ok({ providers: store.providers() }, req.id);
+      return ok(
+        {
+          providers: store.providers(),
+          // Whether this deployment can stand a bridge up at all. Without it the
+          // app would offer "Set up automatically" on a gateway that has no
+          // applier behind it, and the button would only ever fail.
+          provisioningAvailable: store.provisioningAvailable,
+        },
+        req.id,
+      );
     },
   );
 
@@ -168,12 +189,19 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
   );
 
   // --- DELETE /connections/:connectionId ------------------------------------
-  app.delete<{ Params: { connectionId: string } }>(
+  app.delete<{ Params: { connectionId: string }; Querystring: { keepBridge?: string } }>(
     '/connections/:connectionId',
     { preHandler: requirePermission('connections.manage') },
     async (req) => {
       const store = storeOf(req.services);
       const record = store.get(req.params.connectionId);
+      const bridge = store.provisioning(record.id);
+      // A bridge Orionis started exists only to serve this connection, so
+      // leaving it running after the connection is gone leaves a container
+      // nobody can see holding a session against someone's camera account.
+      // Stopping it is the default; `?keepBridge=true` is for the case where it
+      // is being re-pointed rather than retired.
+      const keepBridge = req.query.keepBridge === 'true';
 
       // Removal deletes stored credentials and takes this source's cameras off
       // the wall. Nothing on the camera system itself changes, but the local
@@ -183,9 +211,39 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
       if (req.headers['x-confirm-disruptive'] !== 'true') {
         throw new AppError(
           'VALIDATION_FAILED',
-          `Removing "${record.name}" deletes its stored credentials and removes its cameras from the app. Confirm to proceed.`,
+          bridge && !keepBridge
+            ? `Removing "${record.name}" deletes its stored credentials, removes its cameras from the app, and stops the bridge Orionis started for it. Confirm to proceed.`
+            : `Removing "${record.name}" deletes its stored credentials and removes its cameras from the app. Confirm to proceed.`,
           { requiresHeader: 'X-Confirm-Disruptive: true' },
         );
+      }
+
+      // Queued before the row goes: the request needs the template and instance
+      // name that only the provisioning record holds, and deleting the
+      // connection cascades that away.
+      const teardown =
+        bridge && !keepBridge
+          ? await store.requestTeardown(record.id, req.principal?.userId ?? null)
+          : null;
+
+      if (teardown) {
+        // Recorded separately from the removal because it is a separate act
+        // with a separate outcome: the connection is gone the moment this
+        // returns, while the container stops whenever the applier next runs.
+        req.services.audit.record({
+          action: 'connection.bridge.teardown_requested',
+          actor: actorOf(req),
+          outcome: 'success',
+          targetType: 'connection',
+          targetId: record.id,
+          requestId: req.id,
+          ip: req.ip,
+          metadata: {
+            template: teardown.template,
+            instance: teardown.instance,
+            requestId: teardown.requestId,
+          },
+        });
       }
 
       store.remove(record.id);
@@ -198,10 +256,17 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
         targetId: record.id,
         requestId: req.id,
         ip: req.ip,
-        metadata: { provider: record.provider, name: record.name },
+        metadata: {
+          provider: record.provider,
+          name: record.name,
+          bridgeTeardownRequested: teardown !== null,
+        },
       });
 
-      return ok({ removed: true, id: record.id }, req.id);
+      return ok(
+        { removed: true, id: record.id, bridgeTeardownRequested: teardown !== null },
+        req.id,
+      );
     },
   );
 
@@ -251,7 +316,7 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
     async (req) => {
       const store = storeOf(req.services);
       const record = store.get(req.params.connectionId);
-      const result = await store.beginAuth(record.id);
+      const result = await store.beginAuth(record.id, req.principal?.userId ?? null);
 
       req.services.audit.record({
         action: 'connection.auth.started',
@@ -281,7 +346,12 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
       const body = CompleteAuthBody.parse(req.body ?? {});
       const store = storeOf(req.services);
       const record = store.get(req.params.connectionId);
-      const result = await store.completeAuth(record.id, body.challengeId, body.code);
+      const result = await store.completeAuth(
+        record.id,
+        body.challengeId,
+        body.code,
+        req.principal?.userId ?? null,
+      );
 
       req.services.audit.record({
         action: 'connection.auth.completed',
@@ -302,6 +372,79 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
         await store.probe(record.id);
       }
       return ok(result, req.id);
+    },
+  );
+
+  // --- POST /connections/:connectionId/provision ----------------------------
+  // Asks the host to stand up the helper service this provider needs.
+  //
+  // The gateway holds no Docker access and this route grants none: it writes a
+  // file naming one of the applier's vetted templates, and the applier decides
+  // whether it recognises it. The entire privilege being exercised here is
+  // "start one of N known things for a connection that already exists", which is
+  // why an administrator may do it and an operator may not.
+  app.post<{ Params: { connectionId: string } }>(
+    '/connections/:connectionId/provision',
+    {
+      preHandler: requirePermission('connections.manage'),
+      // Creating containers is the most expensive thing this API can cause. The
+      // store enforces a hard ceiling; this stops anyone reaching it quickly.
+      config: { rateLimit: { max: 5, timeWindow: '5 minutes' } },
+    },
+    async (req) => {
+      const store = storeOf(req.services);
+      const record = store.get(req.params.connectionId);
+
+      const endpoint = 'POST /connections/:connectionId/provision';
+      const { value } = await withIdempotency(req, endpoint, { id: record.id }, async () => {
+        const provisioning = await store.requestProvisioning(
+          record.id,
+          req.principal?.userId ?? null,
+        );
+
+        req.services.audit.record({
+          action: 'connection.bridge.requested',
+          actor: actorOf(req),
+          outcome: 'success',
+          targetType: 'connection',
+          targetId: record.id,
+          requestId: req.id,
+          ip: req.ip,
+          // Which template, and under what instance name — the two facts needed
+          // to find the container this request produced. The hand-over values
+          // are credentials and never enter the log.
+          metadata: {
+            provider: record.provider,
+            template: provisioning.template,
+            instance: provisioning.instance,
+            requestId: provisioning.requestId,
+          },
+        });
+
+        return { provisioning };
+      });
+
+      return ok(value, req.id);
+    },
+  );
+
+  // --- GET /connections/:connectionId/provisioning --------------------------
+  // The state of that request, after reading whatever the applier has since
+  // written back. This is the one the app polls while a bridge is being built,
+  // so it reconciles where the list route deliberately does not.
+  app.get<{ Params: { connectionId: string } }>(
+    '/connections/:connectionId/provisioning',
+    {
+      preHandler: requirePermission('connections.view'),
+      // Polled every few seconds by an open screen, so it is bounded — but far
+      // more loosely than anything that causes work.
+      config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+    },
+    async (req) => {
+      const store = storeOf(req.services);
+      const record = store.get(req.params.connectionId);
+      const provisioning = await store.provisioningState(record.id);
+      return ok({ provisioning, available: store.provisioningAvailable }, req.id);
     },
   );
 }

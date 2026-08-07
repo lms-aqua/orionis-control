@@ -1,0 +1,42 @@
+# Wyze bridge: docker-wyze-bridge.
+#
+# Wyze has no supported local API, so this container is what makes the cameras
+# usable at all. As with every template here, nothing is caller-supplied except
+# ${ORIONIS_INSTANCE} and the credentials the bridge signs in with.
+#
+# No published ports: the gateway joins this project's network. The stock
+# docker-wyze-bridge compose publishes 5000/8888/8554 on the host, which puts an
+# unauthenticated camera wall on the LAN — this does not.
+
+services:
+  wyze-bridge:
+    image: ${ORIONIS_WYZE_IMAGE:-mrlt8/wyze-bridge:latest}
+    container_name: orionis-${ORIONIS_INSTANCE}-wyze-bridge
+    restart: unless-stopped
+    environment:
+      # Minted by the gateway and handed down, so the credential travels in one
+      # direction only and the gateway already holds what it will need.
+      WB_API_KEY: ${ORIONIS_APIKEY:-}
+      # The bridge's own web UI is not reachable from outside this network, but
+      # leaving it unauthenticated would still mean any container that joined
+      # could watch every camera.
+      WB_AUTH: "true"
+      WB_IP: orionis-${ORIONIS_INSTANCE}-wyze-bridge
+      # Wyze account. Supplied only if the connection holds one; the bridge
+      # reports its own error if they are missing, which is clearer than this
+      # template refusing to start.
+      WYZE_EMAIL: ${ORIONIS_EMAIL:-}
+      WYZE_PASSWORD: ${ORIONIS_PASSWORD:-}
+      API_ID: ${ORIONIS_APIID:-}
+      API_KEY: ${ORIONIS_WYZEAPIKEY:-}
+      QUALITY: hd
+      LOG_LEVEL: info
+    volumes:
+      - tokens:/tokens
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  # Holds the bridge's Wyze session. Never removed on teardown — losing it means
+  # signing in again, and that is not a side effect a source removal should have.
+  tokens:

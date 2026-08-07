@@ -1,0 +1,19 @@
+[Unit]
+# The safety net. The .path unit is what makes provisioning feel immediate; this
+# is what makes it *happen* when the path unit missed an event, or when the host
+# rebooted with a request already sitting in the directory.
+#
+# It also does the network re-attach pass, which matters on its own: the
+# gateway's own `compose up` drops any network it did not declare, so without a
+# periodic re-join a routine redeploy would silently disconnect every bridge.
+Description=Run the Orionis bridge provisioner periodically
+Requires=orionis-provisioner.service
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=orionis-provisioner.service
+
+[Install]
+WantedBy=timers.target

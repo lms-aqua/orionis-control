@@ -107,7 +107,7 @@ protocol DeviceServicing: Sendable {
 
 /// Camera sources configured at runtime. Administrator-only on the gateway.
 protocol ConnectionServicing: Sendable {
-    func connectionProviders() async throws -> [ProviderDescriptor]
+    func connectionProviders() async throws -> ProviderCatalogue
     func connections() async throws -> [ConnectionSummary]
     func connection(id: String) async throws -> ConnectionSummary
     func createConnection(_ request: ConnectionCreateRequest) async throws -> ConnectionSummary
@@ -118,6 +118,10 @@ protocol ConnectionServicing: Sendable {
     func beginConnectionAuth(id: String) async throws -> ConnectionAuthResult
     func completeConnectionAuth(id: String, challengeId: String, code: String) async throws
         -> ConnectionAuthResult
+    /// Asks the gateway to have the host start this source's bridge.
+    func provisionConnectionBridge(id: String) async throws -> ConnectionProvisioning?
+    /// The state of that request, reconciled with the host. Polled while in flight.
+    func connectionProvisioning(id: String) async throws -> ConnectionProvisioning?
 }
 
 typealias OrionisServicing = MetaServicing & CameraServicing & EventServicing & AdGuardServicing
@@ -845,6 +849,13 @@ struct OrionisService: OrionisServicing {
 
     private struct ProvidersResponse: Decodable, Sendable {
         let providers: [ProviderDescriptor]
+        /// Absent on a gateway that predates provisioning, which is the same
+        /// thing as "cannot provision" as far as this app is concerned.
+        let provisioningAvailable: Bool?
+    }
+
+    private struct ProvisioningResponse: Decodable, Sendable {
+        let provisioning: ConnectionProvisioning?
     }
 
     private struct ConnectionsResponse: Decodable, Sendable {
@@ -855,10 +866,12 @@ struct OrionisService: OrionisServicing {
         let health: ConnectionHealth
     }
 
-    func connectionProviders() async throws -> [ProviderDescriptor] {
-        try await api.request(
-            Endpoint(path: "/connections/providers", isRetryable: true), as: ProvidersResponse.self
-        ).providers
+    func connectionProviders() async throws -> ProviderCatalogue {
+        let response = try await api.request(
+            Endpoint(path: "/connections/providers", isRetryable: true), as: ProvidersResponse.self)
+        return ProviderCatalogue(
+            providers: response.providers,
+            provisioningAvailable: response.provisioningAvailable ?? false)
     }
 
     func connections() async throws -> [ConnectionSummary] {
@@ -935,6 +948,29 @@ struct OrionisService: OrionisServicing {
                 timeout: 30
             ),
             as: ConnectionAuthResult.self)
+    }
+
+    func provisionConnectionBridge(id: String) async throws -> ConnectionProvisioning? {
+        // Pulling images can take a while, and the gateway answers as soon as
+        // the request is *recorded* rather than waiting for it — but the write
+        // still crosses a shared volume. The key makes an impatient second tap
+        // return the request already in flight instead of a second bridge.
+        try await api.request(
+            Endpoint(
+                method: .post,
+                path: "/connections/\(escaped(id))/provision",
+                idempotencyKey: UUID().uuidString,
+                timeout: 30
+            ),
+            as: ProvisioningResponse.self
+        ).provisioning
+    }
+
+    func connectionProvisioning(id: String) async throws -> ConnectionProvisioning? {
+        try await api.request(
+            Endpoint(path: "/connections/\(escaped(id))/provisioning", isRetryable: true),
+            as: ProvisioningResponse.self
+        ).provisioning
     }
 
     private func escaped(_ component: String) -> String {

@@ -298,4 +298,32 @@ export const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX idx_connections_slug ON connections(slug);
     `,
   },
+  {
+    id: '0010_connection_provisioning',
+    sql: `
+      -- Bridges the gateway has asked a host-side applier to stand up.
+      --
+      -- This table is the gateway's memory of the conversation, not the truth
+      -- about what is running: the applier owns that, and reports it in a
+      -- status file. Keeping the request id here is what lets a stale answer —
+      -- one left behind by a previous instance for the same connection — be
+      -- recognised and ignored rather than believed.
+      --
+      -- One row per connection. A connection has at most one bridge; two
+      -- Orionis connections to one Blink account fighting over a single
+      -- allowed session is a real failure mode, and the cure is one instance
+      -- per connection with the account visible on both.
+      CREATE TABLE connection_provisioning (
+        connection_id  TEXT PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE,
+        request_id     TEXT NOT NULL,
+        template       TEXT NOT NULL,
+        instance       TEXT NOT NULL,
+        state          TEXT NOT NULL,
+        message        TEXT,
+        requested_at   TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        requested_by   TEXT
+      );
+    `,
+  },
 ];
