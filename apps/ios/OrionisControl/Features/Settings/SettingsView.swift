@@ -109,6 +109,17 @@ struct SettingsView: View {
                 statusColor: environment.meta == nil ? Theme.warn : Theme.good
             ) { ServerConnectionView() }
 
+            if environment.auth.state.user?.can(.connectionsView) == true {
+                SettingsDivider(inset: 56)
+                SettingsNavRow(
+                    title: "Connections",
+                    subtitle: "Camera sources — Frigate, UniFi, Tapo, Wyze, Nest, RTSP",
+                    systemImage: "camera.metering.center.weighted",
+                    tint: Theme.accent,
+                    chip: "Admin"
+                ) { ConnectionsView() }
+            }
+
             if environment.auth.state.user?.role == .administrator {
                 SettingsDivider(inset: 56)
                 SettingsNavRow(
@@ -247,6 +258,7 @@ struct SettingsView: View {
         case .notifications: NotificationSettingsView()
         case .appearance: AppearanceSettingsView()
         case .connection: ServerConnectionView()
+        case .connections: ConnectionsView()
         case .infrastructure: InfrastructureView()
         case .about: AboutSettingsView()
         }
@@ -257,7 +269,8 @@ struct SettingsView: View {
 
 /// The categories a setting can live in, and how each is presented.
 enum SettingsCategory: String, CaseIterable {
-    case account, security, cameras, notifications, appearance, connection, infrastructure, about
+    case account, security, cameras, notifications, appearance, connection, connections,
+        infrastructure, about
 
     var title: String {
         switch self {
@@ -267,6 +280,7 @@ enum SettingsCategory: String, CaseIterable {
         case .notifications: return "Notifications"
         case .appearance: return "Appearance"
         case .connection: return "Server & Connection"
+        case .connections: return "Connections"
         case .infrastructure: return "Infrastructure"
         case .about: return "About & Diagnostics"
         }
@@ -280,6 +294,7 @@ enum SettingsCategory: String, CaseIterable {
         case .notifications: return "bell.fill"
         case .appearance: return "circle.lefthalf.filled"
         case .connection: return "wifi"
+        case .connections: return "camera.metering.center.weighted"
         case .infrastructure: return "server.rack"
         case .about: return "info.circle.fill"
         }
@@ -293,13 +308,14 @@ enum SettingsCategory: String, CaseIterable {
         case .notifications: return Theme.warn
         case .appearance: return Color(lightHex: 0x8A6CFF, darkHex: 0x8A6CFF)
         case .connection: return Theme.accent
+        case .connections: return Theme.accent
         case .infrastructure: return Theme.warn
         case .about: return Theme.textSecondary
         }
     }
 
     /// Only administrators see infrastructure, matching what the gateway enforces.
-    var isAdministratorOnly: Bool { self == .infrastructure }
+    var isAdministratorOnly: Bool { self == .infrastructure || self == .connections }
 }
 
 /// A flat, searchable list of every control in Settings.
@@ -345,6 +361,11 @@ struct SettingsIndex {
         .init(title: "Gateway address", category: .connection, keywords: "server url host https"),
         .init(title: "Test connection", category: .connection, keywords: "check reachability ping"),
         .init(title: "Server and API version", category: .connection, keywords: "build environment"),
+
+        .init(title: "Camera sources", category: .connections, keywords: "connections add frigate unifi protect tapo wyze nest google blink rtsp go2rtc source"),
+        .init(title: "Add a camera source", category: .connections, keywords: "new connection nvr camera system"),
+        .init(title: "Check a source is reachable", category: .connections, keywords: "probe health test connection offline"),
+        .init(title: "Sign in to a camera account", category: .connections, keywords: "blink nest verification code two factor"),
 
         .init(title: "Caddy and Authelia", category: .infrastructure, keywords: "proxy sso sites routes"),
 

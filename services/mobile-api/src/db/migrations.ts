@@ -273,4 +273,29 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: '0009_connection_slug',
+    sql: `
+      -- The slug prefixes every camera, event and recording ID a connection
+      -- contributes ("frigate-main:driveway"), and the app stores favourites
+      -- and camera order *by ID*. Deriving it from the name at read time meant
+      -- renaming a connection silently re-identified all of its cameras and
+      -- orphaned every saved reference. It is stored once and never changes;
+      -- the name stays free to edit.
+      ALTER TABLE connections ADD COLUMN slug TEXT NOT NULL DEFAULT '';
+
+      -- Backfill matches the old derivation, so IDs handed out before this
+      -- migration keep resolving.
+      UPDATE connections
+         SET slug = lower(
+               trim(
+                 replace(replace(replace(replace(name, ' ', '-'), '_', '-'), '.', '-'), '/', '-'),
+                 '-'
+               )
+             )
+       WHERE slug = '';
+
+      CREATE UNIQUE INDEX idx_connections_slug ON connections(slug);
+    `,
+  },
 ];

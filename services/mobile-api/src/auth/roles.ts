@@ -37,6 +37,8 @@ export const PERMISSIONS = [
   'infra.view',
   'infra.manage',
   'devices.manage',
+  'connections.view',
+  'connections.manage',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -76,6 +78,11 @@ const ADMINISTRATOR: Permission[] = [
   // administrator-only and never granted to an operator.
   'infra.view',
   'infra.manage',
+  // A connection holds credentials for someone else's system and decides what
+  // the gateway will fetch. Both reading the list and changing it stay
+  // administrator-only; an operator has no need to see which sources exist.
+  'connections.view',
+  'connections.manage',
 ];
 
 const MATRIX: Record<Role, ReadonlySet<Permission>> = {

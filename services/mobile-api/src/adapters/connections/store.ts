@@ -16,15 +16,22 @@ import type { Db } from '../../db/index.ts';
 import { AppError } from '../../lib/errors.ts';
 import { randomId } from '../../lib/crypto.ts';
 import type { SecretsCipher } from '../../lib/secrets.ts';
-import { SecretsCipherError } from '../../lib/secrets.ts';
+import { redactSecrets, SecretsCipherError } from '../../lib/secrets.ts';
+import { assertSafeSettings } from '../../lib/upstream-url.ts';
 import type { ActiveConnection } from './aggregate.ts';
-import type { CameraProvider, ProviderRegistry } from './provider.ts';
-import { slugify } from './provider.ts';
+import type {
+  AuthResult,
+  CameraProvider,
+  ProviderDescriptor,
+  ProviderRegistry,
+} from './provider.ts';
+import { slugify, supportsInteractiveAuth } from './provider.ts';
 
 export interface ConnectionRecord {
   id: string;
   provider: string;
   name: string;
+  /** Stable ID prefix, assigned at creation and never changed. */
   slug: string;
   enabled: boolean;
   settings: Record<string, unknown>;
@@ -67,6 +74,7 @@ interface Row {
   id: string;
   provider: string;
   name: string;
+  slug: string;
   enabled: number;
   settings_json: string;
   secrets_json: string;
@@ -76,14 +84,29 @@ interface Row {
   created_by: string | null;
 }
 
+/** How long a pinned sign-in instance survives without progress. */
+const CHALLENGE_TTL_MS = 10 * 60_000;
+
 export class ConnectionStore {
   readonly #db: Db;
   readonly #registry: ProviderRegistry;
   readonly #cipher: SecretsCipher;
   readonly #fetchImpl: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #probeTtlMs: number;
   /** Keyed by connection id + updatedAt, so an edit invalidates naturally. */
   readonly #instances = new Map<string, { key: string; provider: CameraProvider }>();
+  /**
+   * Instances pinned for the duration of an interactive sign-in.
+   *
+   * A two-step login holds partial state (Blink: account id, client id, region,
+   * the pre-verification token) on the provider object. The normal cache is
+   * keyed by `updatedAt`, so *any* write between the two steps would discard
+   * that state and the second step would fail with no way for the user to tell
+   * why. Pinning here keeps the same object alive across both calls regardless
+   * of edits, and it is dropped as soon as the flow ends or the window lapses.
+   */
+  readonly #challenges = new Map<string, { provider: CameraProvider; expiresAt: number }>();
 
   constructor(
     db: Db,
@@ -91,15 +114,28 @@ export class ConnectionStore {
     cipher: SecretsCipher,
     fetchImpl: typeof fetch,
     timeoutMs = 10_000,
+    probeTtlMs = 60_000,
   ) {
     this.#db = db;
     this.#registry = registry;
     this.#cipher = cipher;
     this.#fetchImpl = fetchImpl;
     this.#timeoutMs = timeoutMs;
+    this.#probeTtlMs = probeTtlMs;
   }
 
   // MARK: Reads
+
+  /**
+   * What can be added, and what each kind needs to be told.
+   *
+   * The app builds its "add connection" form from this rather than shipping a
+   * hard-coded form per provider, so a provider added here appears in the app
+   * without an app release.
+   */
+  providers(): ProviderDescriptor[] {
+    return this.#registry.descriptors();
+  }
 
   list(): ConnectionRecord[] {
     const rows = this.#db
@@ -109,8 +145,8 @@ export class ConnectionStore {
   }
 
   get(id: string): ConnectionRecord {
-    const row = this.#db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as
-      | unknown as Row
+    const row = this.#db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as unknown as
+      | Row
       | undefined;
     if (!row) throw AppError.notFound('Connection');
     return this.#toRecord(row);
@@ -148,29 +184,34 @@ export class ConnectionStore {
     if (!name) throw new AppError('VALIDATION_FAILED', 'A connection needs a name.');
     // The slug namespaces every camera ID this connection contributes, so a
     // name that slugifies to nothing would produce unroutable IDs.
-    if (!slugify(name)) {
+    const slug = slugify(name);
+    if (!slug) {
       throw new AppError(
         'VALIDATION_FAILED',
         'The name must contain at least one letter or number.',
       );
     }
     this.#assertNameFree(name, null);
-    this.#validateRequiredFields(input.provider, input.settings ?? {}, input.secrets ?? {});
+    this.#assertSlugFree(slug);
+    const settings = input.settings ?? {};
+    this.#validateRequiredFields(input.provider, settings, input.secrets ?? {});
+    this.#validateUpstreamUrls(input.provider, settings);
 
     const now = new Date().toISOString();
     const id = randomId('conn');
     this.#db
       .prepare(
         `INSERT INTO connections
-           (id, provider, name, enabled, settings_json, secrets_json, sort_order, created_at, updated_at, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, provider, name, slug, enabled, settings_json, secrets_json, sort_order, created_at, updated_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         input.provider,
         name,
+        slug,
         input.enabled === false ? 0 : 1,
-        JSON.stringify(input.settings ?? {}),
+        JSON.stringify(settings),
         JSON.stringify(this.#cipher.encryptRecord(input.secrets ?? {})),
         input.sortOrder ?? 100,
         now,
@@ -185,9 +226,12 @@ export class ConnectionStore {
     const name = input.name?.trim() ?? existing.name;
     if (!name) throw new AppError('VALIDATION_FAILED', 'A connection needs a name.');
     if (name !== existing.name) this.#assertNameFree(name, id);
+    // The slug is deliberately *not* recomputed. It is baked into every camera
+    // ID this connection has already handed out, and into whatever the app
+    // saved as a favourite; renaming must stay a cosmetic change.
 
     // Secrets merge rather than replace: the API never returns stored values,
-    // so a client editing a URL cannot round-trip the password back and would
+    // so a client editing a URL cannot round-trip the credential back and would
     // otherwise blank it.
     const storedSecrets = this.#rawSecrets(id);
     const mergedSecrets = { ...storedSecrets };
@@ -198,6 +242,7 @@ export class ConnectionStore {
 
     const settings = input.settings ?? existing.settings;
     this.#validateRequiredFields(existing.provider, settings, mergedSecrets);
+    this.#validateUpstreamUrls(existing.provider, settings);
 
     this.#db
       .prepare(
@@ -222,6 +267,7 @@ export class ConnectionStore {
     this.get(id); // 404 rather than a silent no-op.
     this.#db.prepare('DELETE FROM connections WHERE id = ?').run(id);
     this.#instances.delete(id);
+    this.#challenges.delete(id);
   }
 
   recordHealth(id: string, health: ConnectionHealthRecord): void {
@@ -237,6 +283,42 @@ export class ConnectionStore {
       .run(id, health.status, health.message, health.cameraCount, health.latencyMs, health.checkedAt);
   }
 
+  /**
+   * Re-encrypts every stored credential under the current primary key.
+   *
+   * Run after rotating `CONNECTIONS_SECRET_KEY` (with the old value still set as
+   * `CONNECTIONS_SECRET_KEY_PREVIOUS`). Returns how many connections changed.
+   * `updated_at` is left alone: this is a storage detail, not an edit anyone
+   * made, and bumping it would invalidate live provider instances for nothing.
+   */
+  rewrapSecrets(): { rewrapped: number; failed: string[] } {
+    const rows = this.#db
+      .prepare('SELECT id, secrets_json FROM connections')
+      .all() as unknown as { id: string; secrets_json: string }[];
+    let rewrapped = 0;
+    const failed: string[] = [];
+
+    for (const row of rows) {
+      const stored = JSON.parse(row.secrets_json) as Record<string, string>;
+      const entries = Object.entries(stored);
+      if (entries.length === 0) continue;
+      try {
+        if (!entries.some(([, v]) => this.#cipher.needsRewrap(v))) continue;
+        const next = Object.fromEntries(entries.map(([k, v]) => [k, this.#cipher.rewrap(v)]));
+        this.#db
+          .prepare('UPDATE connections SET secrets_json = ? WHERE id = ?')
+          .run(JSON.stringify(next), row.id);
+        this.#instances.delete(row.id);
+        rewrapped += 1;
+      } catch {
+        // Unreadable under every configured key. Naming it is the useful
+        // outcome; guessing at recovery is not.
+        failed.push(row.id);
+      }
+    }
+    return { rewrapped, failed };
+  }
+
   // MARK: Provider instances
 
   /** Enabled connections, instantiated. Feeds the aggregator's thunk. */
@@ -249,6 +331,7 @@ export class ConnectionStore {
           id: record.id,
           slug: record.slug,
           name: record.name,
+          sortOrder: record.sortOrder,
           provider: this.instance(record.id),
         });
       } catch (error) {
@@ -314,6 +397,95 @@ export class ConnectionStore {
     return health;
   }
 
+  /**
+   * The stored health, re-probing only when it has gone stale.
+   *
+   * Health is read on every system-health poll and on every Connections screen
+   * refresh; probing live each time would put one upstream round trip per
+   * source behind an operation that is meant to be cheap.
+   */
+  async healthCached(id: string): Promise<ConnectionHealthRecord> {
+    const stored = this.health(id);
+    if (stored && Date.now() - Date.parse(stored.checkedAt) < this.#probeTtlMs) {
+      return stored;
+    }
+    return this.probe(id);
+  }
+
+  // MARK: Interactive sign-in
+
+  /**
+   * Starts a sign-in for a provider that needs one.
+   *
+   * Credentials are persisted only once the upstream says the flow is complete,
+   * so an abandoned or failed attempt leaves nothing half-written.
+   */
+  async beginAuth(id: string): Promise<AuthResult> {
+    const provider = this.#pinnedInstance(id);
+    if (!supportsInteractiveAuth(provider)) {
+      throw new AppError(
+        'CAPABILITY_UNSUPPORTED',
+        'This connection type does not sign in interactively.',
+      );
+    }
+    const result = await provider.beginAuth();
+    if (result.status === 'complete') {
+      this.#persistObtained(id, provider);
+      this.#challenges.delete(id);
+    } else if (result.status === 'failed') {
+      this.#challenges.delete(id);
+    }
+    return result;
+  }
+
+  async completeAuth(id: string, challengeId: string, code: string): Promise<AuthResult> {
+    const provider = this.#pinnedInstance(id);
+    if (!supportsInteractiveAuth(provider)) {
+      throw new AppError(
+        'CAPABILITY_UNSUPPORTED',
+        'This connection type does not sign in interactively.',
+      );
+    }
+    const result = await provider.completeAuth(challengeId, code);
+    if (result.status === 'complete') {
+      this.#persistObtained(id, provider);
+      this.#challenges.delete(id);
+    }
+    return result;
+  }
+
+  /** The instance serving a sign-in, kept alive across both of its steps. */
+  #pinnedInstance(id: string): CameraProvider {
+    const now = Date.now();
+    for (const [key, pinned] of this.#challenges) {
+      if (pinned.expiresAt <= now) this.#challenges.delete(key);
+    }
+    const existing = this.#challenges.get(id);
+    if (existing) {
+      existing.expiresAt = now + CHALLENGE_TTL_MS;
+      return existing.provider;
+    }
+    const provider = this.instance(id);
+    this.#challenges.set(id, { provider, expiresAt: now + CHALLENGE_TTL_MS });
+    return provider;
+  }
+
+  /** Writes what a completed sign-in produced. The store is the only writer. */
+  #persistObtained(id: string, provider: CameraProvider): void {
+    if (!supportsInteractiveAuth(provider)) return;
+    const secrets = provider.pendingSecrets();
+    const settings = provider.pendingSettings();
+    if (Object.keys(secrets).length === 0 && Object.keys(settings).length === 0) return;
+
+    const record = this.get(id);
+    const mergedSecrets = { ...this.#rawSecrets(id), ...this.#cipher.encryptRecord(secrets) };
+    const mergedSettings = { ...record.settings, ...settings };
+    this.#db
+      .prepare('UPDATE connections SET secrets_json = ?, settings_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(mergedSecrets), JSON.stringify(mergedSettings), new Date().toISOString(), id);
+    this.#instances.delete(id);
+  }
+
   // MARK: Internals
 
   #toRecord(row: Row): ConnectionRecord {
@@ -322,10 +494,13 @@ export class ConnectionStore {
       id: row.id,
       provider: row.provider,
       name: row.name,
-      slug: slugify(row.name),
+      // Rows written before the slug column existed were backfilled by the
+      // migration; falling back to the old derivation keeps a hand-edited or
+      // partially migrated row addressable rather than unroutable.
+      slug: row.slug || slugify(row.name),
       enabled: row.enabled === 1,
       settings: JSON.parse(row.settings_json) as Record<string, unknown>,
-      secretsSet: Object.fromEntries(Object.keys(secrets).map((k) => [k, true])),
+      secretsSet: redactSecrets(secrets),
       sortOrder: row.sort_order,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -340,14 +515,22 @@ export class ConnectionStore {
     return row ? (JSON.parse(row.secrets_json) as Record<string, string>) : {};
   }
 
-  /**
-   * Names must stay unique *after* slugification, not just as typed: "Front
-   * Door" and "front-door" both become `front-door` and would silently make one
-   * connection's cameras unreachable.
-   */
   #assertNameFree(name: string, exceptId: string | null): void {
-    const slug = slugify(name);
-    const clash = this.list().find((c) => c.slug === slug && c.id !== exceptId);
+    const clash = this.list().find(
+      (c) => c.name.toLowerCase() === name.toLowerCase() && c.id !== exceptId,
+    );
+    if (clash) {
+      throw new AppError('CONFLICT', `A connection named "${clash.name}" already exists.`);
+    }
+  }
+
+  /**
+   * Slugs must be unique *after* slugification: "Front Door" and "front-door"
+   * both become `front-door`, and two connections sharing an ID prefix would
+   * make one of them silently unreachable.
+   */
+  #assertSlugFree(slug: string): void {
+    const clash = this.list().find((c) => c.slug === slug);
     if (clash) {
       throw new AppError(
         'CONFLICT',
@@ -373,5 +556,16 @@ export class ConnectionStore {
     if (missing.length > 0) {
       throw new AppError('VALIDATION_FAILED', `Missing required settings: ${missing.join(', ')}.`);
     }
+  }
+
+  /**
+   * Every URL the gateway will later fetch is checked before it is stored, so a
+   * dangerous address is refused at the point someone types it rather than
+   * discovered when a probe reaches it.
+   */
+  #validateUpstreamUrls(providerId: string, settings: Record<string, unknown>): void {
+    const descriptor = this.#registry.descriptor(providerId);
+    if (!descriptor) return;
+    assertSafeSettings(descriptor.fields, settings);
   }
 }

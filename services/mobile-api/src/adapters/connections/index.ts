@@ -8,13 +8,21 @@
 import { ProviderRegistry } from './provider.ts';
 import { FRIGATE_DESCRIPTOR, FrigateProvider } from './providers/frigate.ts';
 import { LOSTBLINK_DESCRIPTOR, LostblinkProvider } from './providers/lostblink.ts';
+import { NEST_DESCRIPTOR, NestProvider } from './providers/nest.ts';
 import { RTSP_DESCRIPTOR, RtspProvider } from './providers/rtsp.ts';
+import { TAPO_DESCRIPTOR, TapoProvider } from './providers/tapo.ts';
+import { UNIFI_DESCRIPTOR, UnifiProvider } from './providers/unifi.ts';
+import { WYZE_DESCRIPTOR, WyzeProvider } from './providers/wyze.ts';
 
 export function buildProviderRegistry(): ProviderRegistry {
   const registry = new ProviderRegistry();
   registry.register(FRIGATE_DESCRIPTOR, (ctx) => new FrigateProvider(ctx));
   registry.register(RTSP_DESCRIPTOR, (ctx) => new RtspProvider(ctx));
   registry.register(LOSTBLINK_DESCRIPTOR, (ctx) => new LostblinkProvider(ctx));
+  registry.register(UNIFI_DESCRIPTOR, (ctx) => new UnifiProvider(ctx));
+  registry.register(TAPO_DESCRIPTOR, (ctx) => new TapoProvider(ctx));
+  registry.register(WYZE_DESCRIPTOR, (ctx) => new WyzeProvider(ctx));
+  registry.register(NEST_DESCRIPTOR, (ctx) => new NestProvider(ctx));
   return registry;
 }
 

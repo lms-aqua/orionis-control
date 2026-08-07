@@ -105,8 +105,23 @@ protocol DeviceServicing: Sendable {
     func updateNotificationPreferences(_ prefs: NotificationPreferences) async throws
 }
 
+/// Camera sources configured at runtime. Administrator-only on the gateway.
+protocol ConnectionServicing: Sendable {
+    func connectionProviders() async throws -> [ProviderDescriptor]
+    func connections() async throws -> [ConnectionSummary]
+    func connection(id: String) async throws -> ConnectionSummary
+    func createConnection(_ request: ConnectionCreateRequest) async throws -> ConnectionSummary
+    func updateConnection(id: String, _ request: ConnectionUpdateRequest) async throws
+        -> ConnectionSummary
+    func removeConnection(id: String) async throws
+    func probeConnection(id: String) async throws -> ConnectionHealth
+    func beginConnectionAuth(id: String) async throws -> ConnectionAuthResult
+    func completeConnectionAuth(id: String, challengeId: String, code: String) async throws
+        -> ConnectionAuthResult
+}
+
 typealias OrionisServicing = MetaServicing & CameraServicing & EventServicing & AdGuardServicing
-    & SystemServicing & DeviceServicing & InfraServicing
+    & SystemServicing & DeviceServicing & InfraServicing & ConnectionServicing
 
 // MARK: - Request and response types
 
@@ -824,6 +839,89 @@ struct OrionisService: OrionisServicing {
     func updateNotificationPreferences(_ prefs: NotificationPreferences) async throws {
         try await api.requestVoid(
             Endpoint(method: .put, path: "/notifications/preferences", body: prefs))
+    }
+
+    // MARK: Connections
+
+    private struct ProvidersResponse: Decodable, Sendable {
+        let providers: [ProviderDescriptor]
+    }
+
+    private struct ConnectionsResponse: Decodable, Sendable {
+        let connections: [ConnectionSummary]
+    }
+
+    private struct HealthResponse: Decodable, Sendable {
+        let health: ConnectionHealth
+    }
+
+    func connectionProviders() async throws -> [ProviderDescriptor] {
+        try await api.request(
+            Endpoint(path: "/connections/providers", isRetryable: true), as: ProvidersResponse.self
+        ).providers
+    }
+
+    func connections() async throws -> [ConnectionSummary] {
+        try await api.request(
+            Endpoint(path: "/connections", isRetryable: true), as: ConnectionsResponse.self
+        ).connections
+    }
+
+    func connection(id: String) async throws -> ConnectionSummary {
+        try await api.request(
+            Endpoint(path: "/connections/\(escaped(id))", isRetryable: true),
+            as: ConnectionSummary.self)
+    }
+
+    func createConnection(_ request: ConnectionCreateRequest) async throws -> ConnectionSummary {
+        // The gateway probes what it just stored, so this can take an upstream
+        // round trip on top of the write.
+        try await api.request(
+            Endpoint(method: .post, path: "/connections", body: request, timeout: 30),
+            as: ConnectionSummary.self)
+    }
+
+    func updateConnection(id: String, _ request: ConnectionUpdateRequest) async throws
+        -> ConnectionSummary
+    {
+        try await api.request(
+            Endpoint(method: .patch, path: "/connections/\(escaped(id))", body: request),
+            as: ConnectionSummary.self)
+    }
+
+    func removeConnection(id: String) async throws {
+        try await api.requestVoid(
+            Endpoint(method: .delete, path: "/connections/\(escaped(id))"))
+    }
+
+    func probeConnection(id: String) async throws -> ConnectionHealth {
+        try await api.request(
+            Endpoint(method: .post, path: "/connections/\(escaped(id))/probe", timeout: 30),
+            as: HealthResponse.self
+        ).health
+    }
+
+    func beginConnectionAuth(id: String) async throws -> ConnectionAuthResult {
+        try await api.request(
+            Endpoint(method: .post, path: "/connections/\(escaped(id))/auth/begin", timeout: 30),
+            as: ConnectionAuthResult.self)
+    }
+
+    func completeConnectionAuth(id: String, challengeId: String, code: String) async throws
+        -> ConnectionAuthResult
+    {
+        struct Body: Encodable {
+            let challengeId: String
+            let code: String
+        }
+        return try await api.request(
+            Endpoint(
+                method: .post,
+                path: "/connections/\(escaped(id))/auth/complete",
+                body: Body(challengeId: challengeId, code: code),
+                timeout: 30
+            ),
+            as: ConnectionAuthResult.self)
     }
 
     private func escaped(_ component: String) -> String {

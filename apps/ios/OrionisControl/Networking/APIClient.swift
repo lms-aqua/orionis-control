@@ -41,7 +41,7 @@ struct Paged<T: Decodable & Sendable>: Decodable, Sendable {
 /// A single API call.
 struct Endpoint: Sendable {
     enum Method: String, Sendable {
-        case get = "GET", post = "POST", put = "PUT", delete = "DELETE"
+        case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE"
     }
 
     var method: Method = .get

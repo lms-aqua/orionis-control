@@ -27,7 +27,12 @@ export default [
   },
   {
     // Entry points and CLIs are allowed to talk to the operator directly.
-    files: ['src/index.ts', 'src/db/migrate-cli.ts', 'src/openapi/emit.ts'],
+    files: [
+      'src/index.ts',
+      'src/db/migrate-cli.ts',
+      'src/db/rewrap-cli.ts',
+      'src/openapi/emit.ts',
+    ],
     rules: { 'no-console': 'off' },
   },
   {

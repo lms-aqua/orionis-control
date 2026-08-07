@@ -309,10 +309,13 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   // persisted.
 
   #pending: { accountId: number; clientId: number; tier: string } | null = null;
-  #obtained: Record<string, string> = {};
+  /** Credentials proper: encrypted at rest, never returned by the API. */
+  #obtainedSecrets: Record<string, string> = {};
+  /** Account id, client id, region tier — identifiers, not credentials. */
+  #obtainedSettings: Record<string, unknown> = {};
 
   get #tier(): string {
-    return String(this.#ctx.secrets.tier || this.#ctx.settings.tier || BLINK_DEFAULT_TIER);
+    return String(this.#ctx.settings.tier || BLINK_DEFAULT_TIER);
   }
 
   async beginAuth(): Promise<AuthResult> {
@@ -370,12 +373,16 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
 
     if (!needsVerification && body.auth?.token) {
       // A trusted client skips the PIN entirely.
-      this.#obtained = { authToken: body.auth.token, tier, accountId: String(accountId), clientId: String(clientId) };
+      this.#obtainedSecrets = { authToken: body.auth.token };
+      this.#obtainedSettings = { tier, accountId, clientId };
       return { status: 'complete', message: 'Signed in to Blink.' };
     }
 
     this.#pending = { accountId, clientId, tier };
-    if (body.auth?.token) this.#obtained.authToken = body.auth.token;
+    // Held on this instance only. The store pins it for the duration of the
+    // challenge and persists nothing until verification succeeds, so an
+    // abandoned sign-in leaves no half-authenticated row behind.
+    if (body.auth?.token) this.#obtainedSecrets.authToken = body.auth.token;
 
     return {
       status: 'challenge',
@@ -415,7 +422,7 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            ...(this.#obtained.authToken ? { 'token-auth': this.#obtained.authToken } : {}),
+            ...(this.#authToken ? { 'token-auth': this.#authToken } : {}),
           },
           body: JSON.stringify({ pin }),
           signal: AbortSignal.timeout(this.#ctx.timeoutMs),
@@ -432,14 +439,23 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       };
     }
 
-    this.#obtained = {
-      ...this.#obtained,
+    this.#obtainedSettings = {
+      ...this.#obtainedSettings,
       tier: pending.tier,
-      accountId: String(pending.accountId),
-      clientId: String(pending.clientId),
+      accountId: pending.accountId,
+      clientId: pending.clientId,
     };
     this.#pending = null;
     return { status: 'complete', message: 'Blink verified this device.' };
+  }
+
+  /**
+   * The token from the current sign-in, falling back to one stored by an
+   * earlier one — the PIN step must send it, and losing it strands the user on
+   * a code that will never be accepted.
+   */
+  get #authToken(): string {
+    return this.#obtainedSecrets.authToken ?? this.#ctx.secrets.authToken ?? '';
   }
 
   /**
@@ -447,8 +463,14 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
    * a provider never needs a database handle.
    */
   pendingSecrets(): Record<string, string> {
-    const out = this.#obtained;
-    this.#obtained = {};
+    const out = this.#obtainedSecrets;
+    this.#obtainedSecrets = {};
+    return out;
+  }
+
+  pendingSettings(): Record<string, unknown> {
+    const out = this.#obtainedSettings;
+    this.#obtainedSettings = {};
     return out;
   }
 }

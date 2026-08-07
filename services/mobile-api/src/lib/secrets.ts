@@ -25,11 +25,18 @@ export class SecretsCipherError extends Error {}
 /**
  * Wraps the configured key. Constructed once at the composition root so a
  * missing or malformed key fails at boot rather than on first use.
+ *
+ * A *previous* key may be supplied as well. It is only ever used to decrypt, so
+ * rotating the key is: set the new one as primary, move the old one to
+ * previous, restart, run `npm run secrets:rewrap`, then drop the previous key.
+ * Without that path, rotating the key silently orphans every stored credential
+ * and the only recovery is retyping them all.
  */
 export class SecretsCipher {
   readonly #key: Buffer;
+  readonly #previousKeys: Buffer[];
 
-  constructor(rawKey: string) {
+  constructor(rawKey: string, previousKeys: string[] = []) {
     if (!rawKey || rawKey.trim().length < 32) {
       throw new SecretsCipherError(
         'CONNECTIONS_SECRET_KEY must be at least 32 characters. Generate one with: openssl rand -base64 48',
@@ -38,6 +45,9 @@ export class SecretsCipher {
     // Hashing to exactly 32 bytes lets the operator supply any sufficiently
     // long passphrase without having to produce exactly 256 bits themselves.
     this.#key = createHash('sha256').update(rawKey, 'utf8').digest();
+    this.#previousKeys = previousKeys
+      .filter((k) => k && k.trim().length >= 32)
+      .map((k) => createHash('sha256').update(k, 'utf8').digest());
   }
 
   /** Returns `v1.<iv>.<tag>.<ciphertext>`, all base64url. */
@@ -50,6 +60,23 @@ export class SecretsCipher {
   }
 
   decrypt(encoded: string): string {
+    return this.#open(encoded).plaintext;
+  }
+
+  /**
+   * True when the value still decrypts, but only under a retired key — i.e. it
+   * is readable today and unreadable as soon as that key is removed.
+   */
+  needsRewrap(encoded: string): boolean {
+    return !this.#open(encoded).underPrimary;
+  }
+
+  /** Re-encrypts a value under the primary key. */
+  rewrap(encoded: string): string {
+    return this.encrypt(this.decrypt(encoded));
+  }
+
+  #open(encoded: string): { plaintext: string; underPrimary: boolean } {
     const parts = encoded.split('.');
     if (parts.length !== 4 || parts[0] !== VERSION) {
       throw new SecretsCipherError('Ciphertext is not in the expected v1 format.');
@@ -60,17 +87,25 @@ export class SecretsCipher {
     if (iv.length !== IV_BYTES || tag.length !== TAG_BYTES) {
       throw new SecretsCipherError('Ciphertext IV or authentication tag has the wrong length.');
     }
-    const decipher = createDecipheriv(ALGORITHM, this.#key, iv);
-    decipher.setAuthTag(tag);
-    try {
-      return Buffer.concat([decipher.update(unb64(dataPart!)), decipher.final()]).toString('utf8');
-    } catch {
-      // Either the key changed or the row was tampered with. Both are the same
-      // problem from here: this value cannot be trusted or used.
-      throw new SecretsCipherError(
-        'Could not decrypt stored credential. The encryption key may have changed.',
-      );
+    const data = unb64(dataPart!);
+
+    const keys = [this.#key, ...this.#previousKeys];
+    for (const [index, key] of keys.entries()) {
+      try {
+        const decipher = createDecipheriv(ALGORITHM, key, iv);
+        decipher.setAuthTag(tag);
+        const plaintext = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+        return { plaintext, underPrimary: index === 0 };
+      } catch {
+        // GCM authentication failed under this key. Try the next one; only when
+        // every key fails is the value genuinely unreadable.
+      }
     }
+    // Either no configured key matches or the row was tampered with. Both are
+    // the same problem from here: this value cannot be trusted or used.
+    throw new SecretsCipherError(
+      'Could not decrypt stored credential. The encryption key may have changed — set the old key as CONNECTIONS_SECRET_KEY_PREVIOUS and run the rewrap script.',
+    );
   }
 
   /**

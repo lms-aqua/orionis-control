@@ -1,0 +1,261 @@
+import Foundation
+
+/// Camera sources configured from the app rather than from the server's
+/// environment.
+///
+/// The shapes here mirror the gateway's connections API exactly, with one rule
+/// carried across: a stored credential is never sent to the app. `secretsSet`
+/// reports which credentials exist and nothing else, so the editor can show
+/// "Saved — leave blank to keep" instead of a value it does not have.
+
+// MARK: - Provider descriptions
+
+/// One field an operator fills in when adding a connection.
+///
+/// The app renders its form from these rather than shipping a hard-coded screen
+/// per provider, so a provider added on the server appears here with no app
+/// release.
+struct ProviderField: Codable, Sendable, Equatable, Identifiable {
+    enum Kind: String, Codable, Sendable {
+        case text, url, secret, number, boolean
+    }
+
+    let key: String
+    let label: String
+    let type: Kind
+    let required: Bool
+    let placeholder: String?
+    let help: String?
+
+    var id: String { key }
+
+    /// `default` is a Swift keyword, and the value may be any JSON scalar.
+    let defaultValue: SettingValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case key, label, type, required, placeholder, help
+        case defaultValue = "default"
+    }
+
+    /// Unknown field types are dropped rather than failing the whole provider:
+    /// the gateway is deployed independently and may describe a kind this build
+    /// has never heard of.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        label = try container.decode(String.self, forKey: .label)
+        type = (try? container.decode(Kind.self, forKey: .type)) ?? .text
+        required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? false
+        placeholder = try container.decodeIfPresent(String.self, forKey: .placeholder)
+        help = try container.decodeIfPresent(String.self, forKey: .help)
+        defaultValue = try container.decodeIfPresent(SettingValue.self, forKey: .defaultValue)
+    }
+}
+
+struct ProviderCapabilities: Codable, Sendable, Equatable {
+    let snapshots: Bool
+    let liveStream: Bool
+    let events: Bool
+    let eventDetection: Bool
+    let recordings: Bool
+    let controls: Bool
+    let storageReporting: Bool
+    let interactiveAuth: Bool
+
+    /// What this source can actually do, in the order worth reading.
+    var summaryLine: String {
+        var parts: [String] = []
+        if liveStream { parts.append("Live view") }
+        if snapshots { parts.append("Snapshots") }
+        if events { parts.append("Events") }
+        if recordings { parts.append("Recordings") }
+        return parts.isEmpty ? "No capabilities declared" : parts.joined(separator: " · ")
+    }
+}
+
+struct ProviderDescriptor: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let displayName: String
+    let summary: String
+    let capabilities: ProviderCapabilities
+    let fields: [ProviderField]
+
+    /// SF Symbol per known provider; anything unrecognised still gets an icon.
+    var symbolName: String {
+        switch id {
+        case "frigate": return "square.grid.2x2.fill"
+        case "rtsp": return "dot.radiowaves.left.and.right"
+        case "lostblink": return "bolt.fill"
+        case "unifi": return "shield.lefthalf.filled"
+        case "tapo": return "camera.fill"
+        case "wyze": return "antenna.radiowaves.left.and.right"
+        case "nest": return "house.fill"
+        default: return "camera.metering.center.weighted"
+        }
+    }
+}
+
+// MARK: - Stored connections
+
+struct ConnectionHealth: Codable, Sendable, Equatable {
+    enum Status: String, Codable, Sendable {
+        case healthy, degraded, unreachable, unknown
+    }
+
+    let status: Status
+    let message: String?
+    let cameraCount: Int?
+    let latencyMs: Int?
+    let checkedAt: Date?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = (try? container.decode(Status.self, forKey: .status)) ?? .unknown
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        cameraCount = try container.decodeIfPresent(Int.self, forKey: .cameraCount)
+        latencyMs = try container.decodeIfPresent(Int.self, forKey: .latencyMs)
+        checkedAt = try container.decodeIfPresent(Date.self, forKey: .checkedAt)
+    }
+}
+
+struct ConnectionSummary: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let provider: String
+    let name: String
+    /// The prefix on every camera ID this source contributes. Fixed at creation.
+    let slug: String
+    let enabled: Bool
+    let settings: [String: SettingValue]
+    /// Which credentials are stored. Never the values — the API does not send them.
+    let secretsSet: [String: Bool]
+    let sortOrder: Int
+    let createdAt: Date?
+    let updatedAt: Date?
+    let health: ConnectionHealth?
+
+    func hasSecret(_ key: String) -> Bool { secretsSet[key] == true }
+}
+
+// MARK: - Interactive sign-in
+
+struct AuthChallenge: Codable, Sendable, Equatable {
+    enum Kind: String, Codable, Sendable {
+        case emailedCode = "emailed_code"
+        case smsCode = "sms_code"
+        case totp
+    }
+
+    let challengeId: String
+    let kind: Kind
+    let prompt: String
+    /// Redacted destination, e.g. "p•••@example.com". Never the full address.
+    let sentTo: String?
+    let expiresAt: Date?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        challengeId = try container.decode(String.self, forKey: .challengeId)
+        kind = (try? container.decode(Kind.self, forKey: .kind)) ?? .emailedCode
+        prompt = try container.decode(String.self, forKey: .prompt)
+        sentTo = try container.decodeIfPresent(String.self, forKey: .sentTo)
+        expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+    }
+}
+
+/// The result of one step of an interactive sign-in.
+enum ConnectionAuthResult: Decodable, Sendable, Equatable {
+    case complete(message: String)
+    case challenge(AuthChallenge)
+    case failed(message: String)
+
+    private enum CodingKeys: String, CodingKey { case status, message, challenge }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let status = try container.decode(String.self, forKey: .status)
+        switch status {
+        case "complete":
+            self = .complete(
+                message: try container.decodeIfPresent(String.self, forKey: .message) ?? "Signed in.")
+        case "challenge":
+            self = .challenge(try container.decode(AuthChallenge.self, forKey: .challenge))
+        default:
+            self = .failed(
+                message: try container.decodeIfPresent(String.self, forKey: .message)
+                    ?? "The sign-in did not complete.")
+        }
+    }
+}
+
+// MARK: - Loosely typed setting values
+
+/// One provider setting.
+///
+/// Providers declare their own fields, so the values are whatever JSON scalars
+/// those fields need. This keeps them typed at the edges without the app having
+/// to know any provider's schema.
+enum SettingValue: Codable, Sendable, Equatable {
+    case string(String)
+    case number(Double)
+    case boolean(Bool)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) {
+            self = .boolean(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else {
+            // An object or array from a provider this build does not model.
+            // Rendering it as text is honest; failing the whole screen is not.
+            self = .string("")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .boolean(let value): try container.encode(value)
+        }
+    }
+
+    var stringValue: String {
+        switch self {
+        case .string(let value): return value
+        case .number(let value):
+            return value == value.rounded() ? String(Int(value)) : String(value)
+        case .boolean(let value): return value ? "true" : "false"
+        }
+    }
+
+    var boolValue: Bool {
+        switch self {
+        case .boolean(let value): return value
+        case .string(let value): return value == "true"
+        case .number(let value): return value != 0
+        }
+    }
+}
+
+// MARK: - Requests
+
+struct ConnectionCreateRequest: Encodable, Sendable {
+    let provider: String
+    let name: String
+    let settings: [String: SettingValue]
+    let secrets: [String: String]
+    let enabled: Bool
+}
+
+struct ConnectionUpdateRequest: Encodable, Sendable {
+    var name: String?
+    var settings: [String: SettingValue]?
+    /// Only the keys present are changed; an empty string clears one.
+    var secrets: [String: String]?
+    var enabled: Bool?
+    var sortOrder: Int?
+}

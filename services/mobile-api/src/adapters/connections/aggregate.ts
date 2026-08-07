@@ -38,34 +38,68 @@ export interface ActiveConnection {
   id: string;
   slug: string;
   name: string;
+  /** Operator-chosen position on the merged camera wall. Lower sorts first. */
+  sortOrder: number;
   provider: CameraProvider;
 }
 
 /** Reports a source that failed during a fan-out, for surfacing in health. */
 export type DegradedReporter = (connectionId: string, error: unknown) => void;
 
+/** The last recorded probe for a connection, used instead of probing live. */
+export interface ConnectionHealthSnapshot {
+  status: 'healthy' | 'degraded' | 'unreachable' | 'unknown';
+  message: string | null;
+  latencyMs: number | null;
+  checkedAt: string;
+}
+
+export type HealthLookup = (connectionId: string) => Promise<ConnectionHealthSnapshot | null>;
+
 export class AggregateOrionisAdapter implements OrionisAdapter {
   readonly kind = 'aggregate' as const;
 
   readonly #connections: () => ActiveConnection[];
   readonly #onDegraded: DegradedReporter;
+  readonly #healthLookup: HealthLookup | null;
+  readonly #fallback: OrionisAdapter | null;
 
   /**
    * Connections are supplied by a thunk rather than an array: they are editable
    * at runtime, and a snapshot captured at construction would go stale the
    * moment someone adds a source.
+   *
+   * `fallback` is the adapter built from environment configuration. With no
+   * enabled connection this delegates to it wholesale, so a deployment that
+   * predates this feature keeps working and switches over the moment its first
+   * connection is added — no restart, and no half-merged state where camera IDs
+   * would mean two different things at once.
    */
-  constructor(connections: () => ActiveConnection[], onDegraded: DegradedReporter = () => {}) {
+  constructor(
+    connections: () => ActiveConnection[],
+    onDegraded: DegradedReporter = () => {},
+    healthLookup: HealthLookup | null = null,
+    fallback: OrionisAdapter | null = null,
+  ) {
     this.#connections = connections;
     this.#onDegraded = onDegraded;
+    this.#healthLookup = healthLookup;
+    this.#fallback = fallback;
+  }
+
+  /** The environment-configured adapter, while no connection is enabled. */
+  get #delegate(): OrionisAdapter | null {
+    return this.#connections().length === 0 ? this.#fallback : null;
   }
 
   get configured(): boolean {
-    return this.#connections().length > 0;
+    return this.#connections().length > 0 || (this.#fallback?.configured ?? false);
   }
 
   /** True if *any* source can detect, since one that can is enough to show events. */
   get eventDetection(): boolean {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.eventDetection;
     return this.#connections().some((c) => c.provider.descriptor.capabilities.eventDetection);
   }
 
@@ -80,7 +114,10 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   async #fanOut<T>(fn: (c: ActiveConnection) => Promise<T[]>): Promise<T[]> {
     const connections = this.#connections();
     if (connections.length === 0) {
-      throw new AppError('SERVICE_NOT_CONFIGURED', 'No camera connections are configured.');
+      throw new AppError(
+        'SERVICE_NOT_CONFIGURED',
+        'No camera connections are configured. Add one in Settings → Connections.',
+      );
     }
     const settled = await Promise.allSettled(connections.map((c) => fn(c)));
     const out: T[] = [];
@@ -118,15 +155,25 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   // MARK: Cameras
 
   async listCameras(): Promise<Camera[]> {
-    const cameras = await this.#fanOut(async (c) => {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.listCameras();
+
+    // Position within the wall is carried alongside each camera so the sort can
+    // honour the operator's connection order, which is the whole point of
+    // `sort_order` and was previously stored and ignored.
+    const ranked = await this.#fanOut(async (c) => {
       const list = await c.provider.listCameras();
-      return list.map((cam) => this.#brand(c, cam));
+      return list.map((cam) => ({ rank: c.sortOrder, camera: this.#brand(c, cam) }));
     });
     // A total order the client can rely on: connection order first, then name.
-    return cameras.sort((a, b) => a.name.localeCompare(b.name));
+    return ranked
+      .sort((a, b) => a.rank - b.rank || a.camera.name.localeCompare(b.camera.name))
+      .map((r) => r.camera);
   }
 
   async getCamera(cameraId: string): Promise<Camera> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.getCamera(cameraId);
     const { connection, upstreamId } = this.#route(cameraId);
     return this.#brand(connection, await connection.provider.getCamera(upstreamId));
   }
@@ -143,6 +190,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   }
 
   async getSnapshot(cameraId: string) {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.getSnapshot(cameraId);
     const { connection, upstreamId } = this.#route(cameraId);
     return connection.provider.getSnapshot(upstreamId);
   }
@@ -153,6 +202,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
     quality: StreamQuality;
     ttlSeconds: number;
   }): Promise<StreamSession> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.createStreamSession(input);
     const { connection, upstreamId } = this.#route(input.cameraId);
     const session = await connection.provider.createStreamSession({
       ...input,
@@ -164,18 +215,28 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   }
 
   async revokeStreamSession(streamSessionId: string): Promise<void> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.revokeStreamSession(streamSessionId);
+
     // Stream session IDs are minted by the gateway, not namespaced, so which
     // connection owns one is not derivable. Revoking is idempotent and cheap,
     // so it is offered to every source and succeeds if any accepts it.
     const results = await Promise.allSettled(
       this.#connections().map((c) => c.provider.revokeStreamSession(streamSessionId)),
     );
-    if (results.length > 0 && results.every((r) => r.status === 'rejected')) {
+    if (results.length === 0) {
+      // Nothing to revoke against. Reporting success would tell the caller a
+      // live session was torn down when no source was even asked.
+      throw new AppError('SERVICE_NOT_CONFIGURED', 'No camera connections are configured.');
+    }
+    if (results.every((r) => r.status === 'rejected')) {
       throw new AppError('UPSTREAM_UNAVAILABLE', 'Could not revoke the stream session.');
     }
   }
 
   async invokeControl(cameraId: string, req: CameraControlRequest): Promise<CameraControlResult> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.invokeControl(cameraId, req);
     const { connection, upstreamId } = this.#route(cameraId);
     return connection.provider.invokeControl(upstreamId, req);
   }
@@ -183,6 +244,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   // MARK: Events
 
   async listEvents(query: EventQuery): Promise<Page<CameraEvent>> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.listEvents(query);
     // A camera filter pins the query to one source; without it, every source
     // that can detect is asked.
     if (query.cameraIds && query.cameraIds.length > 0) {
@@ -213,6 +276,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   }
 
   async getEvent(eventId: string): Promise<CameraEvent> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.getEvent(eventId);
     const { connection, upstreamId } = this.#route(eventId);
     return this.#brandEvent(connection, await connection.provider.getEvent(upstreamId));
   }
@@ -225,7 +290,9 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
     };
   }
 
-  async acknowledgeEventUpstream(): Promise<boolean> {
+  async acknowledgeEventUpstream(eventId: string, note: string | null): Promise<boolean> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.acknowledgeEventUpstream(eventId, note);
     // Acknowledgement is recorded in the gateway's own store. No upstream in
     // this set accepts it, and claiming otherwise would be a lie.
     return false;
@@ -234,6 +301,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   // MARK: Recordings
 
   async listRecordings(query: RecordingQuery): Promise<Page<Recording>> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.listRecordings(query);
     // Same routing rule as events: a camera filter narrows the fan-out to the
     // sources that actually own those cameras.
     const requested = query.cameraIds ?? [];
@@ -257,6 +326,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
   }
 
   async getRecording(recordingId: string): Promise<Recording> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.getRecording(recordingId);
     const { connection, upstreamId } = this.#route(recordingId);
     return this.#brandRecording(connection, await connection.provider.getRecording(upstreamId));
   }
@@ -280,6 +351,8 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
    * nothing.
    */
   async getStorageStatus(): Promise<StorageStatus> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.getStorageStatus();
     const connections = this.#connections().filter(
       (c) => c.provider.descriptor.capabilities.storageReporting,
     );
@@ -312,32 +385,60 @@ export class AggregateOrionisAdapter implements OrionisAdapter {
     };
   }
 
+  /**
+   * Reads recorded health rather than probing.
+   *
+   * System health is polled; probing every upstream on each call put one
+   * network round trip per source behind an operation the app treats as cheap.
+   * The store re-probes on its own TTL, so this stays current without the
+   * fan-out.
+   */
   async listServiceHealth(): Promise<OrionisServiceHealth[]> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.listServiceHealth();
+
     const connections = this.#connections();
-    const settled = await Promise.allSettled(connections.map((c) => c.provider.probe()));
+    const snapshots = await Promise.all(
+      connections.map((c) =>
+        this.#healthLookup
+          ? this.#healthLookup(c.id).catch(() => null)
+          : Promise.resolve<ConnectionHealthSnapshot | null>(null),
+      ),
+    );
+
     return connections.map((c, i) => {
-      const result = settled[i];
-      const probe = result?.status === 'fulfilled' ? result.value : null;
+      const health = snapshots[i] ?? null;
       return {
         id: `connection:${c.slug}`,
         name: c.name,
-        status: probe?.ok ? 'healthy' : 'critical',
-        // Latency belongs in the probe record, not here; this shape has no
+        status:
+          health === null
+            ? 'unknown'
+            : health.status === 'healthy'
+              ? 'healthy'
+              : health.status === 'degraded'
+                ? 'warning'
+                : health.status === 'unknown'
+                  ? 'unknown'
+                  : 'critical',
+        // Latency belongs in the health record, not here; this shape has no
         // field for it, so it is carried in the message rather than dropped.
         message:
-          probe === null
-            ? 'The connection could not be probed.'
-            : probe.latencyMs === null
-              ? probe.message
-              : `${probe.message} (${probe.latencyMs} ms)`,
+          health === null
+            ? 'This connection has not been checked yet.'
+            : health.latencyMs === null
+              ? health.message
+              : `${health.message ?? 'Checked.'} (${health.latencyMs} ms)`,
         version: null,
         uptimeSeconds: null,
-        checkedAt: new Date().toISOString(),
+        checkedAt: health?.checkedAt ?? new Date().toISOString(),
       } satisfies OrionisServiceHealth;
     });
   }
 
-  async runServiceAction(): Promise<{ ok: boolean; message: string }> {
+  async runServiceAction(serviceId: string, action: string): Promise<{ ok: boolean; message: string }> {
+    const delegate = this.#delegate;
+    if (delegate) return delegate.runServiceAction(serviceId, action);
     throw new AppError(
       'CAPABILITY_UNSUPPORTED',
       'Camera connections do not expose runnable service actions.',

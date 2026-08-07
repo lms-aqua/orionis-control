@@ -141,8 +141,18 @@ export interface InteractiveAuth {
    * Tokens obtained during sign-in that must be persisted back onto the
    * connection — returned rather than written, so the provider never needs a
    * database handle and the store stays the only writer.
+   *
+   * Only read once the flow reports `complete`: writing mid-challenge would
+   * persist a half-authenticated state.
    */
   pendingSecrets(): Record<string, string>;
+
+  /**
+   * Non-secret facts learned during sign-in — an account id, a region tier.
+   * Kept apart from `pendingSecrets` so they are not encrypted and reported as
+   * credentials when they are neither.
+   */
+  pendingSettings(): Record<string, unknown>;
 }
 
 export function supportsInteractiveAuth(

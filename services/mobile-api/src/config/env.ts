@@ -144,6 +144,17 @@ const RawSchema = z.object({
   ADGUARD_PASSWORD: z.string().default(''),
   ADGUARD_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(8000),
 
+  // Encrypts third-party camera credentials at rest (see lib/secrets.ts).
+  // Empty disables runtime-configurable connections entirely: the routes return
+  // SERVICE_NOT_CONFIGURED rather than storing credentials in the clear.
+  CONNECTIONS_SECRET_KEY: z.string().default(''),
+  // Decrypt-only, so the key can be rotated without orphaning every stored
+  // credential. Set the old value here, restart, run `npm run secrets:rewrap`,
+  // then remove it.
+  CONNECTIONS_SECRET_KEY_PREVIOUS: z.string().default(''),
+  // How long a recorded probe is trusted before a connection is checked again.
+  CONNECTIONS_PROBE_TTL_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
+
   DATABASE_URL: z.string().default('./data/orionis-control.db'),
 
   APNS_ENVIRONMENT: z.enum(['sandbox', 'production']).default('sandbox'),
@@ -204,6 +215,14 @@ export interface OrionisConfig {
   timeoutMs: number;
 }
 
+export interface ConnectionsConfig {
+  /** False when no encryption key is set; the feature is then off, not insecure. */
+  enabled: boolean;
+  secretKey: string;
+  previousSecretKeys: string[];
+  probeTtlMs: number;
+}
+
 export interface AdGuardConfig {
   configured: boolean;
   baseUrl: string;
@@ -245,6 +264,7 @@ export interface Config {
     timeoutMs: number;
   };
   adguard: AdGuardConfig;
+  connections: ConnectionsConfig;
   apns: ApnsConfig;
   databaseUrl: string;
   rateLimit: { windowMs: number; max: number; sensitiveMax: number };
@@ -404,6 +424,29 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
     });
   }
 
+  // --- camera connections --------------------------------------------------
+  // The key is what makes storing third-party credentials acceptable at all, so
+  // its absence turns the feature off rather than falling back to plaintext.
+  const connectionsEnabled = e.CONNECTIONS_SECRET_KEY.trim().length >= 32;
+  if (!connectionsEnabled) {
+    findings.push({
+      level: 'warn',
+      key: 'CONNECTIONS_SECRET_KEY',
+      message:
+        e.CONNECTIONS_SECRET_KEY.trim().length === 0
+          ? 'Not set. Camera connections cannot be added from the app; camera sources come from ORIONIS_* only. Generate one: `openssl rand -base64 48`.'
+          : 'Too short — supply at least 32 characters. Camera connections stay disabled until it is.',
+    });
+  }
+  if (connectionsEnabled && e.CONNECTIONS_SECRET_KEY_PREVIOUS.trim()) {
+    findings.push({
+      level: 'warn',
+      key: 'CONNECTIONS_SECRET_KEY_PREVIOUS',
+      message:
+        'A retired key is still accepted for decryption. Run `npm run secrets:rewrap`, then remove it.',
+    });
+  }
+
   // --- APNs ----------------------------------------------------------------
   const apnsKey = e.APNS_PRIVATE_KEY.replace(/\\n/g, '\n');
   const apnsConfigured = Boolean(
@@ -477,6 +520,14 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): LoadedConfi
       username: e.ADGUARD_USERNAME,
       password: e.ADGUARD_PASSWORD,
       timeoutMs: e.ADGUARD_TIMEOUT_MS,
+    },
+    connections: {
+      enabled: connectionsEnabled,
+      secretKey: e.CONNECTIONS_SECRET_KEY,
+      previousSecretKeys: e.CONNECTIONS_SECRET_KEY_PREVIOUS
+        ? [e.CONNECTIONS_SECRET_KEY_PREVIOUS]
+        : [],
+      probeTtlMs: e.CONNECTIONS_PROBE_TTL_SECONDS * 1000,
     },
     apns: {
       configured: apnsConfigured,
