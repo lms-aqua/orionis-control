@@ -113,73 +113,117 @@ struct DeviceSessionsView: View {
         } else if let error = model.error, model.sessions.isEmpty {
             ErrorStateView(error: error, retry: { await model.load() })
         } else {
-            List {
-                if let notice = model.notice {
-                    Label(notice, systemImage: "checkmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.green)
-                }
-                if let error = model.error { ErrorSummary(error: error) }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if let notice = model.notice {
+                        SettingsNoteRow(
+                            text: notice, systemImage: "checkmark.circle.fill", tint: Theme.good
+                        )
+                        .orionisCard()
+                    }
+                    // The list survives a failed refresh, so mark it stale
+                    // rather than presenting old sessions as current.
+                    if let error = model.error, !model.sessions.isEmpty {
+                        StaleDataBanner(
+                            asOf: Date(),
+                            title: "Couldn't refresh devices",
+                            reason: error.message,
+                            retry: { await model.load() })
+                    }
 
-                if model.activeSessions.isEmpty {
-                    EmptyStateView(
-                        title: "No active sessions",
-                        message: "Signed-in devices will appear here.",
-                        systemImage: "iphone.slash"
-                    )
-                    .listRowBackground(Color.clear)
-                } else {
-                    Section {
-                        ForEach(model.activeSessions) { session in
-                            sessionRow(session, model: model)
+                    if model.activeSessions.isEmpty {
+                        EmptyStateView(
+                            title: "No active sessions",
+                            message: "Signed-in devices will appear here.",
+                            systemImage: "iphone.slash")
+                    } else {
+                        DetailGroup("Active sessions") {
+                            ForEach(Array(model.activeSessions.enumerated()), id: \.element.id) {
+                                index, session in
+                                if index > 0 { SettingsDivider(inset: 46) }
+                                sessionRow(session, model: model)
+                            }
                         }
-                    } header: {
-                        Text("Active sessions")
-                    } footer: {
-                        Text("Remove devices you no longer use. Your current session cannot be removed here.")
+                        SettingsHint(
+                            "Remove devices you no longer use. Your current session cannot be removed here."
+                        )
                     }
                 }
+                .padding(16)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
             }
+            .scrollContentBackground(.hidden)
             .refreshable { await model.load() }
         }
     }
 
+    /// One session. The device you are holding is marked unmistakably, because
+    /// signing the wrong one out is the mistake this screen has to prevent.
     private func sessionRow(_ session: SessionSummary, model: DeviceSessionsModel) -> some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: session.current ? "iphone.gen3.circle.fill" : "iphone.gen3")
-                .font(.title2)
-                .foregroundStyle(session.current ? Color.accentColor : .secondary)
+                .font(.system(size: 19))
+                .foregroundStyle(session.current ? Theme.accent : Theme.textTertiary)
+                .frame(width: 26)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(session.deviceName ?? "Unnamed device").font(.headline)
-                    if session.current {
-                        Text("THIS DEVICE")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.tint)
-                    }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.deviceName ?? "Unnamed device")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+
+                if session.current {
+                    StatusPill(
+                        title: "Current device", systemImage: "checkmark.circle.fill",
+                        tint: Theme.accent)
                 }
+
                 if let lastUsed = session.lastUsedAt ?? session.createdAt {
-                    Text("Last used \(lastUsed.formatted(.relative(presentation: .named)))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Last active \(lastUsed.formatted(.relative(presentation: .named)))")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                if let created = session.createdAt, session.lastUsedAt != nil {
+                    Text("Signed in \(created.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
             if !session.current {
-                Button(role: .destructive) { pendingRemoval = session } label: {
+                Button { pendingRemoval = session } label: {
                     if model.removingId == session.id {
-                        ProgressView()
+                        ProgressView().controlSize(.small)
                     } else {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                        Text("Revoke")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.critical)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 6)
+                            .background(Theme.soft(Theme.critical), in: Capsule())
                     }
                 }
+                .buttonStyle(.plain)
                 .disabled(model.removingId != nil)
-                .accessibilityLabel("Sign out \(session.deviceName ?? "device")")
+                .accessibilityLabel("Revoke \(session.deviceName ?? "device")")
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLine(session))
+    }
+
+    private func accessibilityLine(_ session: SessionSummary) -> String {
+        var parts = [session.deviceName ?? "Unnamed device"]
+        if session.current { parts.append("current device") }
+        if let lastUsed = session.lastUsedAt ?? session.createdAt {
+            parts.append("last active \(lastUsed.formatted(.relative(presentation: .named)))")
+        }
+        return parts.joined(separator: ", ")
     }
 }

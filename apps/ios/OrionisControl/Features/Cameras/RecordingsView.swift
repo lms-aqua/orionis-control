@@ -96,6 +96,9 @@ final class RecordingsTimelineModel {
     // the next one automatically, so continuity isn't lost.
     private let windowSeconds = 90
 
+    /// Reached from the nonisolated `deinit` to deregister observers. Swift 6.2
+    /// calls the attribute ineffective, but removing it makes the deinit an
+    /// isolation error — see the same note in `CameraStreamController`.
     private nonisolated(unsafe) var timeObserver: Any?
     private nonisolated(unsafe) var itemTokens: [NSObjectProtocol] = []
 

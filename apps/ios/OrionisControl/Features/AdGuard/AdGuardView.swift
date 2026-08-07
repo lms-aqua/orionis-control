@@ -155,9 +155,14 @@ struct AdGuardView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var model: AdGuardViewModel?
     @State private var showProtectionSheet = false
+    @State private var path = NavigationPath()
+
+    /// Pushing DNS activity from a ranked row, which pre-fills the feed's
+    /// search so tapping "doubleclick.net" lands on that domain's queries.
+    private enum ActivityRoute: Hashable { case activity }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if let model { content(model) } else { LoadingStateView() }
             }
@@ -191,149 +196,248 @@ struct AdGuardView: View {
             }
         } else if let status = model.status {
             ScrollView {
-                VStack(spacing: 16) {
-                    protectionCard(status, model: model)
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    protectionHero(status, isStale: model.error != nil)
+
+                    // Protection state is the one thing on this screen that must
+                    // never be overstated: if the last refresh failed, the app
+                    // does not currently know whether filtering is on.
+                    if let error = model.error {
+                        StaleDataBanner(
+                            asOf: model.lastLoadedAt ?? Date(),
+                            title: "Couldn't refresh Network",
+                            reason: error.message,
+                            retry: { await model.load(showSpinner: false) })
+                    }
+
                     if let stats = model.stats {
-                        rangePicker(model)
-                        statsCard(stats)
-                        chartCard(stats)
-                        topListsCard(stats)
+                        analytics(stats, model: model)
                     }
-                    NavigationLink {
-                        QueryLogView(model: model)
-                    } label: {
-                        Label("Query log", systemImage: "list.bullet.rectangle")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
-                            .background(
-                                .background.secondary, in: RoundedRectangle(cornerRadius: 16))
-                    }
-                    .buttonStyle(.plain)
+
+                    activityEntry(model)
                 }
                 .padding(16)
+                // Held to a readable measure rather than stretched across a
+                // full iPad width, where ranked rows would separate a domain
+                // from its own count by hundreds of points.
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
+            }
+            .orionisScreen()
+            .navigationDestination(for: ActivityRoute.self) { _ in
+                QueryLogView(model: model)
             }
             .refreshable { await model.load(showSpinner: false) }
         }
     }
 
-    private func protectionCard(_ status: AdGuardStatus, model: AdGuardViewModel) -> some View {
-        DashboardCard(
-            title: "Protection",
-            systemImage: status.protectionEnabled ? "shield.fill" : "shield.slash.fill"
-        ) {
-            if status.protectionEnabled {
-                StatusBadge(status: .healthy, label: "Filtering active")
-            } else {
-                ProtectionPausedBanner(status: status)
-            }
+    // MARK: Protection hero
 
-            if let version = status.version {
-                Text("AdGuard Home \(version)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+    /// One unambiguous protection state, with the action beside it rather than
+    /// buried in a card body.
+    @ViewBuilder
+    private func protectionHero(_ status: AdGuardStatus, isStale: Bool) -> some View {
+        let canPause = environment.auth.state.user?.can(.adguardProtectionPause) == true
+        let resumeText = status.override?.resumeAt.map { resumeAt -> String in
+            let remaining = resumeAt.timeIntervalSinceNow
+            guard remaining > 0 else { return "Resuming now" }
+            let minutes = Int((remaining / 60).rounded(.up))
+            return minutes < 60
+                ? "Resumes in \(minutes) minute\(minutes == 1 ? "" : "s")"
+                : "Resumes at \(resumeAt.formatted(date: .omitted, time: .shortened))"
+        }
 
-            if environment.auth.state.user?.can(.adguardProtectionPause) == true {
-                Button(status.protectionEnabled ? "Pause protection" : "Resume protection") {
-                    showProtectionSheet = true
-                }
-                .buttonStyle(.bordered)
-                .tint(status.protectionEnabled ? .orange : .green)
-            } else {
-                Text("Your role cannot change protection.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        OperationalStatusHero(
+            title: status.protectionEnabled ? "Protection active" : "Protection paused",
+            message: status.protectionEnabled
+                ? "DNS filtering is protecting your network."
+                : resumeText
+                    ?? "DNS filtering is stopped for every device on this network.",
+            systemImage: status.protectionEnabled ? "shield.fill" : "shield.slash.fill",
+            // Amber, not red: a deliberate pause is a warning state, not a
+            // failure. A stale reading is not turned red either — the state is
+            // probably still true, it just cannot be confirmed right now.
+            tint: status.protectionEnabled
+                ? (isStale ? Theme.textSecondary : Theme.good) : Theme.warn,
+            // When the reading is stale the caption says when it was last
+            // confirmed, rather than implying it is true this second.
+            caption: isStale
+                ? lastConfirmedCaption
+                : status.version.map { "AdGuard Home \($0)" },
+            actionTitle: canPause
+                ? (status.protectionEnabled ? "Pause Protection" : "Resume Now") : nil,
+            actionIsDestructive: status.protectionEnabled,
+            action: canPause ? { showProtectionSheet = true } : nil)
+
+        if !canPause {
+            Text("Your role cannot change protection.")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 
-    private func rangePicker(_ model: AdGuardViewModel) -> some View {
+    /// When the protection reading was last actually confirmed by the gateway.
+    private var lastConfirmedCaption: String {
+        guard let at = model?.lastLoadedAt else { return "Last confirmation unknown" }
+        return "Last confirmed \(at.formatted(.relative(presentation: .named)))"
+    }
+
+    // MARK: Analytics
+
+    @ViewBuilder
+    private func analytics(_ stats: AdGuardStats, model: AdGuardViewModel) -> some View {
         @Bindable var model = model
-        return Picker("Range", selection: $model.range) {
-            ForEach(AdGuardRange.allCases) { range in
-                Text(range.displayName).tag(range)
-            }
-        }
-        .pickerStyle(.segmented)
-        .onChange(of: model.range) { _, _ in Task { await model.load(showSpinner: false) } }
-    }
 
-    private func statsCard(_ stats: AdGuardStats) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 12) {
-            MetricTile(
-                title: "Queries", value: stats.totalQueries.formattedCount,
-                systemImage: "arrow.left.arrow.right")
-            MetricTile(
-                title: "Blocked", value: stats.blockedQueries.formattedCount,
-                caption: String(format: "%.1f%%", stats.blockedPercent),
-                systemImage: "hand.raised.fill", tint: .orange)
-            MetricTile(
-                title: "Avg response",
-                value: String(format: "%.0f ms", stats.averageProcessingMs),
-                systemImage: "timer")
+        VStack(alignment: .leading, spacing: 13) {
+            SectionLabel(title: "Activity") {
+                // The range control belongs with the analytics it scopes, not
+                // floating above the whole screen.
+                Picker("Range", selection: $model.range) {
+                    ForEach(AdGuardRange.allCases) { range in
+                        Text(range.displayName).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 210)
+                // Generation checks inside the model keep an older range's
+                // response from overwriting a newer one.
+                .onChange(of: model.range) { _, _ in
+                    Task { await model.load(showSpinner: false) }
+                }
+            }
+
+            MetricStrip(metrics: [
+                .init(value: stats.totalQueries.formattedCount, label: "Queries"),
+                .init(
+                    value: stats.blockedQueries.formattedCount, label: "Blocked",
+                    caption: String(format: "%.1f%%", stats.blockedPercent),
+                    tint: Theme.accent),
+                .init(
+                    value: String(format: "%.0f ms", stats.averageProcessingMs),
+                    label: "Avg response"),
+            ])
+
+            chart(stats)
         }
+
+        topActivity(stats, model: model)
     }
 
     @ViewBuilder
-    private func chartCard(_ stats: AdGuardStats) -> some View {
+    private func chart(_ stats: AdGuardStats) -> some View {
         if stats.series.count > 1 {
-            DashboardCard(title: "Query volume", systemImage: "chart.bar.fill") {
-                Chart {
-                    ForEach(stats.series) { point in
-                        BarMark(
-                            x: .value("Time", point.at),
-                            y: .value("Allowed", max(0, point.queries - point.blocked))
-                        )
-                        .foregroundStyle(by: .value("Result", "Allowed"))
+            Chart {
+                ForEach(stats.series) { point in
+                    BarMark(
+                        x: .value("Time", point.at),
+                        y: .value("Allowed", max(0, point.queries - point.blocked))
+                    )
+                    .foregroundStyle(by: .value("Result", "Allowed"))
 
-                        BarMark(
-                            x: .value("Time", point.at),
-                            y: .value("Blocked", point.blocked)
-                        )
-                        .foregroundStyle(by: .value("Result", "Blocked"))
+                    BarMark(
+                        x: .value("Time", point.at),
+                        y: .value("Blocked", point.blocked)
+                    )
+                    .foregroundStyle(by: .value("Result", "Blocked"))
+                }
+            }
+            // Blocked is the accent, not a warning colour: a blocked query is
+            // protection succeeding.
+            .chartForegroundStyleScale([
+                "Allowed": Theme.good, "Blocked": Theme.accent,
+            ])
+            .chartLegend(position: .bottom, spacing: 10)
+            .chartYAxis {
+                AxisMarks(position: .leading) { value in
+                    AxisGridLine().foregroundStyle(Theme.hairline)
+                    AxisValueLabel {
+                        if let count = value.as(Int.self) {
+                            Text(count.formattedCount)
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(Theme.textTertiary)
+                        }
                     }
                 }
-                .chartForegroundStyleScale(["Allowed": Color.accentColor, "Blocked": Color.orange])
-                .chartLegend(position: .bottom)
-                .frame(height: 180)
-                .accessibilityLabel(
-                    "Query volume chart. \(stats.totalQueries) queries, \(stats.blockedQueries) blocked."
-                )
             }
+            .chartXAxis {
+                AxisMarks { value in
+                    AxisValueLabel {
+                        if let date = value.as(Date.self) {
+                            Text(date.formatted(date: .omitted, time: .shortened))
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                }
+            }
+            .frame(height: 170)
+            .padding(.top, 2)
+            .accessibilityLabel("Query volume over time")
+            .accessibilityValue(
+                "\(stats.totalQueries) queries, \(stats.blockedQueries) blocked, "
+                    + String(format: "%.1f percent", stats.blockedPercent))
         }
     }
 
-    private func topListsCard(_ stats: AdGuardStats) -> some View {
-        DashboardCard(title: "Top activity", systemImage: "list.number") {
-            topList("Most blocked", stats.topBlockedDomains)
-            if !stats.topClients.isEmpty {
-                Divider().padding(.vertical, 4)
-                topList("Busiest clients", stats.topClients)
-            }
-        }
-    }
+    // MARK: Top activity
 
     @ViewBuilder
-    private func topList(_ title: String, _ items: [NameCount]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline.weight(.medium))
-            if items.isEmpty {
+    private func topActivity(_ stats: AdGuardStats, model: AdGuardViewModel) -> some View {
+        rankedGroup(
+            "Top blocked domains", items: stats.topBlockedDomains, tint: Theme.accent,
+            model: model)
+        rankedGroup(
+            "Busiest clients", items: stats.topClients, tint: Theme.good, model: model)
+    }
+
+    /// Ranked rows that filter DNS activity when tapped, so the list is a way
+    /// into the feed rather than a dead end.
+    @ViewBuilder
+    private func rankedGroup(
+        _ title: String, items: [NameCount], tint: Color, model: AdGuardViewModel
+    ) -> some View {
+        if items.isEmpty {
+            DetailGroup(title) {
                 Text("Nothing recorded in this period.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(items.prefix(5)) { item in
-                    HStack {
-                        Text(item.name).font(.caption).lineLimit(1)
-                        Spacer()
-                        Text(item.count.formattedCount)
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            }
+        } else {
+            let top = Array(items.prefix(5))
+            let peak = Double(top.map(\.count).max() ?? 1)
+            DetailGroup(title) {
+                ForEach(Array(top.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { SettingsDivider() }
+                    RankedActivityRow(
+                        name: item.name,
+                        count: item.count,
+                        fraction: peak > 0 ? Double(item.count) / peak : 0,
+                        tint: tint
+                    ) {
+                        model.querySearch = item.name
+                        path.append(ActivityRoute.activity)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Activity entry
+
+    /// The way into the feed. Kept as an honest navigation row rather than a
+    /// preview: this screen does not load queries, and fetching some purely to
+    /// decorate an entry point would be a hidden request per §25.
+    private func activityEntry(_ model: AdGuardViewModel) -> some View {
+        DetailGroup {
+            SettingsNavRow(
+                title: "DNS Activity",
+                subtitle: "Search and filter recent queries by domain or client",
+                systemImage: "list.bullet.rectangle.fill"
+            ) { QueryLogView(model: model) }
+        }
     }
 }
 
@@ -360,63 +464,22 @@ struct ProtectionSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if status.protectionEnabled {
-                    Section {
-                        Picker("Pause for", selection: $duration) {
-                            ForEach(durations, id: \.1) { label, seconds in
-                                Text(label).tag(seconds)
-                            }
-                        }
-                        TextField("Reason (optional)", text: $reason, axis: .vertical)
-                            .lineLimit(2...3)
-                    } header: {
-                        Text("Pause DNS filtering")
-                    } footer: {
-                        Text(
-                            "Every device on this network will resolve DNS unfiltered until protection resumes. Filtering restores automatically when the timer ends. This action is recorded against your account."
-                        )
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if status.protectionEnabled {
+                        pauseFlow
+                    } else {
+                        resumeFlow
                     }
 
-                    Section {
-                        Button(role: .destructive) {
-                            Task { await submit(enabled: false) }
-                        } label: {
-                            if isSubmitting {
-                                ProgressView()
-                            } else {
-                                Text("Pause protection")
-                            }
-                        }
-                        .disabled(isSubmitting)
-                    }
-                } else {
-                    Section {
-                        Button {
-                            Task { await submit(enabled: true) }
-                        } label: {
-                            if isSubmitting {
-                                ProgressView()
-                            } else {
-                                Text("Resume protection now")
-                            }
-                        }
-                        .disabled(isSubmitting)
-                    } header: {
-                        Text("Protection is paused")
-                    } footer: {
-                        if let override = status.override, let resumeAt = override.resumeAt {
-                            Text(
-                                "Scheduled to resume at \(resumeAt.formatted(date: .omitted, time: .shortened))."
-                            )
-                        }
+                    if let error {
+                        WarningBanner(
+                            title: error.title, message: error.message, tint: Theme.critical)
                     }
                 }
-
-                if let error {
-                    Section { ErrorSummary(error: error) }
-                }
+                .padding(16)
             }
+            .orionisScreen()
             .navigationTitle("Protection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -424,6 +487,131 @@ struct ProtectionSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+        }
+    }
+
+    // MARK: Pause
+
+    private var pauseFlow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // The consequence leads. Everything below is how long and why.
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: "shield.slash.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(Theme.critical)
+                Text("Pause network protection?")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text("DNS filtering will stop for every device on this network.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+
+            SectionLabel("Pause for")
+            // A wrapping grid rather than a Picker: every option is visible, so
+            // the shortest safe duration is as easy to choose as the longest.
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8
+            ) {
+                ForEach(durations, id: \.1) { label, seconds in
+                    Button {
+                        duration = seconds
+                    } label: {
+                        Text(label)
+                            .font(.system(size: 13, weight: duration == seconds ? .semibold : .medium))
+                            .foregroundStyle(duration == seconds ? .white : Theme.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(
+                                duration == seconds ? Theme.critical : Theme.inset,
+                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .strokeBorder(
+                                        duration == seconds ? .clear : Theme.hairline, lineWidth: 1)
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(duration == seconds ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+
+            SectionLabel("Reason")
+            TextField("Optional — recorded in the audit log", text: $reason, axis: .vertical)
+                .lineLimit(2...3)
+                .font(.system(size: 15))
+                .padding(12)
+                .background(Theme.inset, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1))
+
+            DestructiveActionButton(
+                title: "Pause Protection", systemImage: "shield.slash.fill", isBusy: isSubmitting
+            ) {
+                Task { await submit(enabled: false) }
+            }
+            .padding(.top, 2)
+
+            Text(
+                "Filtering restores automatically when the timer ends. This action is recorded against your account."
+            )
+            .font(.caption)
+            .foregroundStyle(Theme.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Resume
+
+    private var resumeFlow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: "shield.lefthalf.filled.slash")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(Theme.warn)
+                Text("Protection is paused")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                // The scheduled resume is the single most useful fact here, so
+                // it is stated prominently rather than as a footnote.
+                if let override = status.override, let resumeAt = override.resumeAt {
+                    Text(
+                        "Resumes automatically at \(resumeAt.formatted(date: .omitted, time: .shortened))."
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+
+            Button {
+                Task { await submit(enabled: true) }
+            } label: {
+                HStack(spacing: 8) {
+                    if isSubmitting {
+                        ProgressView().tint(.white)
+                    } else {
+                        Image(systemName: "shield.fill").font(.system(size: 15, weight: .semibold))
+                    }
+                    Text("Resume Protection Now")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Theme.good, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSubmitting)
         }
     }
 
@@ -454,379 +642,8 @@ struct ProtectionSheet: View {
     }
 }
 
-// MARK: - Query log
+// MARK: - Query detail
 
-struct QueryLogView: View {
-    @Bindable var model: AdGuardViewModel
-    @AppStorage("adguard.watchedDomains") private var watchedDomainsRaw = "[]"
-    @AppStorage("adguard.queryPageSize") private var queryPageSize = 250
-    @State private var selected: DnsQuery?
-    @State private var message: String?
-    @State private var showInsights = false
-
-    var body: some View {
-        List {
-            if let message {
-                Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
-            }
-            if let error = model.queryError {
-                Section { ErrorSummary(error: error) }
-            }
-            if !watchedDomains.isEmpty {
-                Section("Watched domains") {
-                    ForEach(watchedDomains, id: \.self) { domain in
-                        Button {
-                            model.querySearch = domain
-                        } label: {
-                            Label(domain, systemImage: "star.fill")
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        .swipeActions {
-                            Button("Remove", role: .destructive) { toggleWatched(domain) }
-                        }
-                    }
-                }
-            }
-            if !model.queries.isEmpty {
-                Section {
-                    Text("Latest \(model.queries.count) loaded results")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Label("\(allowedCount) allowed", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        Spacer()
-                        Label("\(blockedCount) blocked", systemImage: "hand.raised.circle.fill")
-                            .foregroundStyle(.red)
-                        if otherCount > 0 {
-                            Spacer()
-                            Label("\(otherCount) other", systemImage: "questionmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .font(.subheadline.weight(.medium))
-                    if model.queryFilter == .all && blockedCount == model.queries.count {
-                        Label(
-                            "Every loaded result is blocked. This is a recent sample, not the all-time total.",
-                            systemImage: "info.circle"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    }
-                }
-            }
-            if model.isLoadingQueries && model.queries.isEmpty {
-                Section { ProgressView("Loading query activity...") }
-            } else if model.queries.isEmpty && model.queryError == nil {
-                Section {
-                    EmptyStateView(
-                        title: model.hasMoreQueries ? "No matches yet" : "No queries",
-                        message: model.hasMoreQueries
-                            ? "No matching queries were found in this page. Older history is still available."
-                            : model.querySearch.isEmpty
-                                ? "The query log is empty for the selected filter."
-                                : "No queries match “\(model.querySearch)”.",
-                        systemImage: "magnifyingglass"
-                    )
-                    if model.hasMoreQueries {
-                        Button {
-                            Task { await model.loadOlderQueries() }
-                        } label: {
-                            if model.isLoadingMoreQueries {
-                                ProgressView()
-                            } else {
-                                Label(
-                                    "Search older queries",
-                                    systemImage: "clock.arrow.circlepath")
-                            }
-                        }
-                        .disabled(model.isLoadingMoreQueries)
-                    }
-                }
-            } else {
-                ForEach(model.queries) { query in
-                    Button { selected = query } label: {
-                        QueryRow(
-                            query: query,
-                            isWatched: WatchedDomainStore.contains(
-                                query.domain, in: watchedDomains))
-                    }
-                        .buttonStyle(.plain)
-                }
-                if model.hasMoreQueries {
-                    Button {
-                        Task { await model.loadOlderQueries() }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if model.isLoadingMoreQueries {
-                                ProgressView()
-                            } else {
-                                Label(
-                                    "Load \(model.queryPageSize) older queries",
-                                    systemImage: "clock.arrow.circlepath")
-                            }
-                            Spacer()
-                        }
-                    }
-                    .disabled(model.isLoadingMoreQueries)
-                }
-            }
-        }
-        .listStyle(.plain)
-        .navigationTitle("Query log")
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $model.querySearch, prompt: "Search domain or client")
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { showInsights = true } label: {
-                    Label("Insights", systemImage: "chart.bar.xaxis")
-                }
-                .disabled(model.queries.isEmpty)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Picker("Filter", selection: $model.queryFilter) {
-                    ForEach(QueryLogFilter.allCases) { filter in
-                        Text(filter.displayName).tag(filter)
-                    }
-                }
-                .onChange(of: model.queryFilter) { _, _ in Task { await model.loadQueries() } }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Queries per page", selection: $queryPageSize) {
-                        Text("100 per page").tag(100)
-                        Text("250 per page").tag(250)
-                        Text("500 per page").tag(500)
-                    }
-                } label: {
-                    Label("History size", systemImage: "list.number")
-                }
-            }
-        }
-        .refreshable { await model.loadQueries() }
-        .task(id: "\(model.querySearch)|\(queryPageSize)") {
-            // Debounce typing, while still reloading immediately when the view
-            // first opens. Clearing search now restores the full log without
-            // requiring an extra keyboard submit.
-            model.queryPageSize = min(500, max(100, queryPageSize))
-            if !model.querySearch.isEmpty {
-                do {
-                    try await Task.sleep(for: .milliseconds(300))
-                } catch {
-                    return
-                }
-            }
-            guard !Task.isCancelled else { return }
-            await model.loadQueries()
-        }
-        .sheet(item: $selected) { query in
-            QueryDetailSheet(
-                query: query,
-                isWatched: Binding(
-                    get: { WatchedDomainStore.contains(query.domain, in: watchedDomains) },
-                    set: { desiredValue in
-                        if desiredValue
-                            != WatchedDomainStore.contains(query.domain, in: watchedDomains)
-                        {
-                            toggleWatched(query.domain)
-                        }
-                    })
-            ) { domain, kind in
-                    let result = await model.addRule(domain, kind: kind)
-                    switch result {
-                    case .success(let rule):
-                        message = "Added \(rule)."
-                        return nil
-                    case .failure(let error):
-                        return error
-                    }
-                }
-        }
-        .sheet(isPresented: $showInsights) {
-            QueryInsightsSheet(queries: model.queries) { search in
-                model.querySearch = search
-            }
-        }
-    }
-
-    private var watchedDomains: [String] { WatchedDomainStore.decode(watchedDomainsRaw) }
-    private var blockedCount: Int { model.queries.filter { $0.status == .blocked }.count }
-    private var allowedCount: Int { model.queries.filter { $0.status == .allowed }.count }
-    private var otherCount: Int { model.queries.count - blockedCount - allowedCount }
-
-    private func toggleWatched(_ domain: String) {
-        watchedDomainsRaw = WatchedDomainStore.encode(
-            WatchedDomainStore.toggling(domain, in: watchedDomains))
-    }
-}
-
-struct QueryRow: View {
-    let query: DnsQuery
-    let isWatched: Bool
-
-    private var presentation: (label: String, symbol: String, tint: Color) {
-        switch query.status {
-        case .allowed:
-            ("ALLOWED", "checkmark.circle.fill", .green)
-        case .blocked:
-            ("BLOCKED", "hand.raised.fill", .red)
-        case .rewritten:
-            ("REWRITTEN", "arrow.triangle.swap", .blue)
-        case .safeSearch:
-            ("SAFE SEARCH", "checkmark.shield.fill", .indigo)
-        case .unknown:
-            ("UNKNOWN", "questionmark.circle.fill", .secondary)
-        }
-    }
-
-    var body: some View {
-        let style = presentation
-        HStack(spacing: 10) {
-            Image(systemName: style.symbol)
-            .font(.caption)
-            .foregroundStyle(style.tint)
-            .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(query.domain)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(
-                    "\(query.clientName ?? query.client) · \(query.at.formatted(date: .omitted, time: .standard))"
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                if isWatched {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.yellow)
-                        .accessibilityLabel("Watched domain")
-                }
-                Text(style.label)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(style.tint)
-                Text(query.type)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.vertical, 2)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(query.domain), \(query.status.displayName), from \(query.clientName ?? query.client)"
-        )
-    }
-}
-
-struct QueryDetailSheet: View {
-    let query: DnsQuery
-    @Binding var isWatched: Bool
-    let addRule: (String, RuleKind) async -> APIError?
-
-    @Environment(AppEnvironment.self) private var environment
-    @Environment(\.dismiss) private var dismiss
-    @State private var error: APIError?
-    @State private var isSubmitting = false
-    @State private var confirming: RuleKind?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Query") {
-                    LabeledContent("Domain") {
-                        Text(query.domain).textSelection(.enabled)
-                    }
-                    LabeledContent("Client", value: query.clientName ?? query.client)
-                    LabeledContent("Type", value: query.type)
-                    LabeledContent("Result", value: query.status.displayName)
-                    if let reason = query.reason, !reason.isEmpty {
-                        LabeledContent("AdGuard reason", value: reason)
-                    }
-                    LabeledContent(
-                        "Time", value: query.at.formatted(date: .abbreviated, time: .standard))
-                    if let ms = query.processingMs {
-                        LabeledContent("Processing", value: String(format: "%.2f ms", ms))
-                    }
-                    if let upstream = query.upstream {
-                        LabeledContent("Upstream", value: upstream)
-                    }
-                }
-
-                if let rule = query.rule {
-                    Section("Matching rule") {
-                        Text(rule).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                }
-
-                Section {
-                    Button { isWatched.toggle() } label: {
-                        Label(
-                            isWatched ? "Stop watching domain" : "Watch domain",
-                            systemImage: isWatched ? "star.slash" : "star")
-                    }
-                    ShareLink(item: query.domain) {
-                        Label("Share domain", systemImage: "square.and.arrow.up")
-                    }
-                }
-
-                if environment.auth.state.user?.can(.adguardRulesWrite) == true {
-                    Section {
-                        Button("Block this domain", role: .destructive) { confirming = .block }
-                        Button("Always allow this domain") { confirming = .allow }
-                    } footer: {
-                        Text("Rule changes apply network-wide and are recorded in the audit log.")
-                    }
-                    .disabled(isSubmitting)
-                }
-
-                if let error { Section { ErrorSummary(error: error) } }
-            }
-            .navigationTitle("Query")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-            .confirmationDialog(
-                confirming == .block ? "Block \(query.domain)?" : "Allow \(query.domain)?",
-                isPresented: Binding(
-                    get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
-                titleVisibility: .visible
-            ) {
-                Button(confirming == .block ? "Block" : "Allow", role: confirming == .block ? .destructive : nil) {
-                    if let kind = confirming { Task { await submit(kind) } }
-                    confirming = nil
-                }
-                Button("Cancel", role: .cancel) { confirming = nil }
-            } message: {
-                Text(
-                    confirming == .block
-                        ? "Every device on this network will be blocked from resolving this domain."
-                        : "This domain will bypass all filter lists for every device on this network."
-                )
-            }
-        }
-    }
-
-    private func submit(_ kind: RuleKind) async {
-        isSubmitting = true
-        error = nil
-        defer { isSubmitting = false }
-        if let failure = await addRule(query.domain, kind) {
-            error = failure
-        } else {
-            dismiss()
-        }
-    }
-}
 
 struct QueryInsightsSheet: View {
     let queries: [DnsQuery]
@@ -838,52 +655,97 @@ struct QueryInsightsSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    LabeledContent("Loaded sample", value: insights.total.formatted())
-                    LabeledContent("Allowed", value: insights.allowed.formatted())
-                    LabeledContent("Blocked", value: insights.blocked.formatted())
-                    if insights.other > 0 {
-                        LabeledContent("Other", value: insights.other.formatted())
-                    }
-                    if let rate = insights.blockRate {
-                        LabeledContent("Block rate", value: String(format: "%.1f%%", rate))
-                    }
-                } header: {
-                    Text("Outcome mix")
-                } footer: {
-                    Text("Insights describe only the query rows currently loaded on this device.")
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // The sample size leads, because every number below it is
+                    // only true of the rows currently loaded.
+                    SheetHero(
+                        title: "\(insights.total.formatted()) queries",
+                        subtitle: "Loaded activity",
+                        caption: insights.blockRate.map { String(format: "%.1f%% blocked", $0) })
 
-                insightList("Top domains", items: insights.topDomains)
-                insightList("Top clients", items: insights.topClients)
+                    DetailGroup("Outcome mix") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            OutcomeMixBar(segments: [
+                                .init(
+                                    label: "Allowed", count: insights.allowed, tint: Theme.good),
+                                .init(
+                                    label: "Blocked", count: insights.blocked, tint: Theme.accent),
+                                .init(
+                                    label: "Other", count: insights.other,
+                                    tint: Theme.textTertiary),
+                            ])
+                        }
+                        .padding(14)
+                    }
 
-                if let average = insights.averageProcessingMs {
-                    Section("Performance") {
-                        LabeledContent(
-                            "Average processing", value: String(format: "%.2f ms", average))
-                        if let domain = insights.slowestDomain,
-                           let duration = insights.slowestProcessingMs
-                        {
-                            Button {
-                                choose(domain)
-                            } label: {
-                                LabeledContent(
-                                    "Slowest query", value: String(format: "%.2f ms", duration))
+                    // This disclaimer is load-bearing: these are not AdGuard's
+                    // all-time statistics and must never be read as such.
+                    SettingsHint(
+                        "Insights describe only the query rows currently loaded on this device, not all DNS history."
+                    )
+
+                    rankedGroup("Top domains", items: insights.topDomains, tint: Theme.accent)
+                    rankedGroup("Top clients", items: insights.topClients, tint: Theme.good)
+
+                    if let average = insights.averageProcessingMs {
+                        DetailGroup("Performance") {
+                            DetailValueRow(
+                                label: "Average processing",
+                                value: String(format: "%.2f ms", average), monospaced: true)
+                            if let domain = insights.slowestDomain,
+                                let duration = insights.slowestProcessingMs
+                            {
+                                SettingsDivider()
+                                Button { choose(domain) } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text("Slowest query")
+                                                .font(.system(size: 14))
+                                                .foregroundStyle(Theme.textSecondary)
+                                            Spacer(minLength: 10)
+                                            Text(String(format: "%.2f ms", duration))
+                                                .font(
+                                                    .system(size: 13, design: .monospaced))
+                                                .foregroundStyle(Theme.textPrimary)
+                                        }
+                                        Text(domain)
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .foregroundStyle(Theme.textTertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 11)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Filters DNS activity to this domain")
                             }
-                            Text(domain)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    DetailGroup {
+                        ShareLink(item: insights.shareText) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(width: 22)
+                                Text("Share Activity Summary")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(Theme.accent)
+                                Spacer(minLength: 8)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
                         }
                     }
                 }
-
-                Section {
-                    ShareLink(item: insights.shareText) {
-                        Label("Share activity summary", systemImage: "square.and.arrow.up")
-                    }
-                }
+                .padding(16)
             }
+            .orionisScreen()
             .navigationTitle("DNS insights")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -894,15 +756,21 @@ struct QueryInsightsSheet: View {
         }
     }
 
+    /// A ranked list whose bars are scaled against the largest item, so the
+    /// rows compare with each other rather than implying an absolute ceiling.
     @ViewBuilder
-    private func insightList(_ title: String, items: [NameCount]) -> some View {
+    private func rankedGroup(_ title: String, items: [NameCount], tint: Color) -> some View {
         if !items.isEmpty {
-            Section(title) {
-                ForEach(items) { item in
-                    Button { choose(item.name) } label: {
-                        LabeledContent(item.name, value: item.count.formatted())
-                    }
-                    .accessibilityHint("Filters the query log")
+            let peak = Double(items.map(\.count).max() ?? 1)
+            DetailGroup(title) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { SettingsDivider() }
+                    RankedActivityRow(
+                        name: item.name,
+                        count: item.count,
+                        fraction: peak > 0 ? Double(item.count) / peak : 0,
+                        tint: tint
+                    ) { choose(item.name) }
                 }
             }
         }

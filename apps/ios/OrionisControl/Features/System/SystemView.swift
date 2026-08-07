@@ -106,96 +106,173 @@ struct SystemView: View {
         } else if let error = model.error, model.snapshot == nil {
             ErrorStateView(error: error, retry: { await model.load() })
         } else if let snapshot = model.snapshot {
-            List {
-                Section {
-                    HStack {
-                        StatusBadge(status: snapshot.overall, label: "Overall")
-                        Spacer()
-                        Text(snapshot.checkedAt.formatted(date: .omitted, time: .shortened))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            // Severity order, so a failure is the first thing on the screen and
+            // healthy services never have to be scrolled past to find it.
+            let ranked = snapshot.services.sorted {
+                Self.severity($0.status) != Self.severity($1.status)
+                    ? Self.severity($0.status) < Self.severity($1.status)
+                    : $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+            let attention = ranked.filter { $0.status != .healthy }
+            let healthy = ranked.filter { $0.status == .healthy }
 
-                Section("Services") {
-                    ForEach(snapshot.services) { service in
-                        ServiceRow(service: service)
-                    }
-                }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    hero(snapshot, attention: attention)
 
-                if let result = model.lastResult {
-                    Section("Last action") {
-                        Label(
-                            result.message,
+                    // The model keeps the last good snapshot through a failed
+                    // refresh. Showing that as though it were current would
+                    // misreport live infrastructure health, so say it is old.
+                    if let error = model.error {
+                        StaleDataBanner(
+                            asOf: snapshot.checkedAt,
+                            title: "System status may be outdated",
+                            reason: error.message,
+                            retry: { await model.load(showSpinner: false) })
+                    }
+
+                    if let result = model.lastResult {
+                        // An operation's outcome is a headline event, not a
+                        // list row halfway down the screen.
+                        WarningBanner(
+                            title: result.message,
+                            message:
+                                "Completed at \(result.ranAt.formatted(date: .omitted, time: .standard))",
                             systemImage: result.ok
-                                ? "checkmark.circle.fill" : "xmark.octagon.fill"
-                        )
-                        .font(.subheadline)
-                        .foregroundStyle(result.ok ? Theme.good : Theme.critical)
-                        Text(result.ranAt.formatted(date: .omitted, time: .standard))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                                ? "checkmark.circle.fill" : "xmark.octagon.fill",
+                            tint: result.ok ? Theme.good : Theme.critical)
                     }
-                }
 
-                if let actionError = model.actionError {
-                    Section { ErrorSummary(error: actionError) }
-                }
+                    if let actionError = model.actionError {
+                        WarningBanner(
+                            title: actionError.title, message: actionError.message,
+                            tint: Theme.critical)
+                    }
 
-                if environment.auth.state.user?.can(.systemActionsRun) == true,
-                    !model.actions.isEmpty
-                {
-                    Section {
-                        ForEach(model.actions) { action in
-                            Button {
-                                if action.disruptive {
-                                    confirming = action
-                                } else {
-                                    Task { await run(action) }
-                                }
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(action.name)
-                                        Text(action.description)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if model.runningActionId == action.id {
-                                        ProgressView()
-                                    } else if action.disruptive {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.warn)
-                                    }
-                                }
+                    if !attention.isEmpty {
+                        DetailGroup("Needs attention") {
+                            ForEach(Array(attention.enumerated()), id: \.element.id) { index, service in
+                                if index > 0 { SettingsDivider() }
+                                ServiceRow(service: service)
                             }
-                            .disabled(model.runningActionId != nil)
                         }
-                    } header: {
-                        Text("Operations")
-                    } footer: {
-                        Text(
-                            "Only these specific operations can be run from the app. There is no general command access."
-                        )
+                    }
+
+                    if !healthy.isEmpty {
+                        DetailGroup(attention.isEmpty ? "Services" : "Operating normally") {
+                            ForEach(Array(healthy.enumerated()), id: \.element.id) { index, service in
+                                if index > 0 { SettingsDivider() }
+                                ServiceRow(service: service, compact: true)
+                            }
+                        }
+                    }
+
+                    operations(model)
+
+                    // Gateway build information is reference material, so it
+                    // sits below operational health rather than beside it.
+                    DetailGroup("Gateway") {
+                        DetailValueRow(label: "Version", value: snapshot.gateway.version)
+                        SettingsDivider()
+                        DetailValueRow(
+                            label: "Environment",
+                            value: snapshot.gateway.environment.capitalized)
+                        SettingsDivider()
+                        DetailValueRow(
+                            label: "Uptime",
+                            value: formatUptime(snapshot.gateway.uptimeSeconds))
+                    }
+
+                    if environment.auth.state.user?.can(.auditView) == true {
+                        DetailGroup {
+                            SettingsNavRow(
+                                title: "Audit Log",
+                                subtitle: "Who ran what, and what happened",
+                                systemImage: "doc.text.magnifyingglass",
+                                tint: Theme.textSecondary
+                            ) { AuditLogView() }
+                        }
                     }
                 }
+                .padding(16)
+                // Service rows are label/value pairs; past this width they just
+                // pull the status away from the name it belongs to.
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
+            }
+            .orionisScreen()
+            .refreshable { await model.load(showSpinner: false) }
+        }
+    }
 
-                Section("Gateway") {
-                    LabeledContent("Version", value: snapshot.gateway.version)
-                    LabeledContent("Environment", value: snapshot.gateway.environment.capitalized)
-                    LabeledContent(
-                        "Uptime", value: formatUptime(snapshot.gateway.uptimeSeconds))
-                }
+    /// The one-line answer to "is anything wrong?".
+    private func hero(_ snapshot: SystemHealthSnapshot, attention: [ServiceHealth]) -> some View {
+        let checked = "Checked \(snapshot.checkedAt.formatted(date: .omitted, time: .shortened))"
+        let worst = attention.first?.status
+        return OperationalStatusHero(
+            title: attention.isEmpty
+                ? "All systems healthy"
+                : attention.count == 1
+                    ? "1 service needs attention"
+                    : "\(attention.count) services need attention",
+            message: attention.isEmpty
+                ? "\(snapshot.services.count) service\(snapshot.services.count == 1 ? "" : "s") operational"
+                // Name the actual problems rather than restating the count.
+                : attention.prefix(2).map { "\($0.name): \($0.status.displayName)" }
+                    .joined(separator: " · "),
+            systemImage: attention.isEmpty
+                ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+            tint: attention.isEmpty ? Theme.good : Self.tint(for: worst ?? .warning),
+            caption: checked)
+    }
 
-                if environment.auth.state.user?.can(.auditView) == true {
-                    Section {
-                        NavigationLink("Audit log") { AuditLogView() }
+    @ViewBuilder
+    private func operations(_ model: SystemViewModel) -> some View {
+        if environment.auth.state.user?.can(.systemActionsRun) == true, !model.actions.isEmpty {
+            DetailGroup("Operations") {
+                ForEach(Array(model.actions.enumerated()), id: \.element.id) { index, action in
+                    if index > 0 { SettingsDivider() }
+                    SettingsButtonRow(
+                        title: action.name,
+                        subtitle: action.description,
+                        systemImage: action.disruptive
+                            ? "exclamationmark.triangle.fill" : "play.circle.fill",
+                        tint: action.disruptive ? Theme.warn : Theme.accent,
+                        isBusy: model.runningActionId == action.id,
+                        isEnabled: model.runningActionId == nil
+                    ) {
+                        if action.disruptive {
+                            confirming = action
+                        } else {
+                            Task { await run(action) }
+                        }
                     }
                 }
             }
-            .refreshable { await model.load(showSpinner: false) }
+            SettingsHint(
+                "Only these specific operations can be run from the app. There is no general command access."
+            )
+        }
+    }
+
+    /// Presentation order for §38: critical, offline, warning, unknown, healthy.
+    private static func severity(_ status: ServiceStatus) -> Int {
+        switch status {
+        case .critical: 0
+        case .offline: 1
+        case .warning: 2
+        case .unknown: 3
+        case .healthy: 4
+        }
+    }
+
+    static func tint(for status: ServiceStatus) -> Color {
+        switch status {
+        case .healthy: Theme.good
+        case .warning: Theme.warn
+        case .critical: Theme.critical
+        case .offline: Theme.critical
+        case .unknown: Theme.textTertiary
         }
     }
 
@@ -217,38 +294,77 @@ struct SystemView: View {
     }
 }
 
+/// One service.
+///
+/// A healthy service says so in one compact line. A failing one explains what
+/// broke and what it costs the user, because that is the only time the extra
+/// vertical space is worth spending. Status is a dot *and* a word, never colour
+/// alone.
 struct ServiceRow: View {
     let service: ServiceHealth
+    var compact = false
+
+    private var tint: Color { SystemView.tint(for: service.status) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                StatusBadge(status: service.status, label: service.name)
-                Spacer()
-                if let latency = service.latencyMs {
-                    Text("\(Int(latency)) ms")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 11) {
+            StatusDot(color: tint)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(service.name)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    if let latency = service.latencyMs {
+                        Text("\(Int(latency)) ms")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+
+                Text(service.status.displayName)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(tint)
+
+                if !compact {
+                    if let message = service.message {
+                        Text(message)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // What this failure actually costs the user.
+                    if !service.impacts.isEmpty {
+                        Text("Affects: \(service.impacts.formatted(.list(type: .and)))")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if let version = service.version, !compact {
+                    Text(version)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
-            if let message = service.message {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if !service.impacts.isEmpty {
-                Text("Affects: \(service.impacts.formatted(.list(type: .and)))")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.warn)
-            }
-            if let version = service.version {
-                Text(version)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 14)
+        .padding(.vertical, compact ? 10 : 12)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLine)
+    }
+
+    private var accessibilityLine: String {
+        var parts = [service.name, service.status.displayName]
+        if let message = service.message { parts.append(message) }
+        if !service.impacts.isEmpty {
+            parts.append("affects \(service.impacts.formatted(.list(type: .and)))")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -270,31 +386,63 @@ struct AuditLogView: View {
                     message: "Nothing has been recorded yet.",
                     systemImage: "doc.text.magnifyingglass")
             } else {
-                List(records) { record in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(record.action)
-                                .font(.subheadline.weight(.medium))
-                            Spacer()
-                            Text(record.outcome)
-                                .font(.caption2)
-                                .foregroundStyle(record.outcome == "success" ? Theme.good : Theme.warn)
-                        }
-                        Text(
-                            "\(record.actorName ?? "system") · \(record.occurredAt.formatted(date: .abbreviated, time: .standard))"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        if let target = record.targetId {
-                            Text(target).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                        }
-                        if let reason = record.reason {
-                            Text(reason).font(.caption2).foregroundStyle(.secondary)
+                // Action, actor and result lead; identifiers stay secondary.
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(records) { record in
+                            let ok = record.outcome == "success"
+                            HStack(alignment: .top, spacing: 11) {
+                                Image(
+                                    systemName: ok
+                                        ? "checkmark.circle.fill"
+                                        : "exclamationmark.triangle.fill"
+                                )
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(ok ? Theme.good : Theme.warn)
+                                .frame(width: 18)
+                                .padding(.top, 2)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(record.action)
+                                        .font(.system(size: 14.5, weight: .medium))
+                                        .foregroundStyle(Theme.textPrimary)
+                                    Text(record.actorName ?? "system")
+                                        .font(.system(size: 12.5))
+                                        .foregroundStyle(Theme.textSecondary)
+                                    if let target = record.targetId {
+                                        Text(target)
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(Theme.textTertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    if let reason = record.reason {
+                                        Text(reason)
+                                            .font(.system(size: 11.5))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                }
+
+                                Spacer(minLength: 6)
+
+                                Text(
+                                    record.occurredAt.formatted(
+                                        date: .omitted, time: .shortened)
+                                )
+                                .font(.system(size: 11).monospacedDigit())
+                                .foregroundStyle(Theme.textTertiary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 11)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(
+                                "\(record.action), \(record.actorName ?? "system"), \(record.outcome)"
+                            )
+                            SettingsDivider(inset: 45)
                         }
                     }
-                    .accessibilityElement(children: .combine)
                 }
-                .listStyle(.plain)
+                .orionisScreen()
                 .refreshable { await load() }
             }
         }

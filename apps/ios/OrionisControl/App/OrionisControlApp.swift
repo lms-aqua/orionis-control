@@ -83,6 +83,11 @@ final class DeepLinkRouter {
     var selectedTab: RootTab = .home
     var pendingDestination: Destination?
 
+    /// Navigation path for the More hub. Events and Settings are no longer
+    /// top-level tabs, so a deep link to either selects `.more` and pushes the
+    /// matching route onto this path.
+    var morePath: [MoreRoute] = []
+
     @discardableResult
     func handle(_ url: URL) -> Destination? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -122,11 +127,23 @@ final class DeepLinkRouter {
 
     func apply(_ destination: Destination) {
         switch destination {
-        case .camera: selectedTab = .cameras
-        case .event: selectedTab = .events
-        case .adGuard: selectedTab = .adGuard
-        case .system: selectedTab = .system
-        case .settings: selectedTab = .settings
+        case .camera:
+            selectedTab = .cameras
+            morePath = []
+        case .event:
+            // Events lives under the More hub; push it so the event detail has
+            // a sensible back path rather than appearing as a rootless screen.
+            selectedTab = .more
+            morePath = [.events]
+        case .adGuard:
+            selectedTab = .adGuard
+            morePath = []
+        case .system:
+            selectedTab = .system
+            morePath = []
+        case .settings:
+            selectedTab = .more
+            morePath = [.settings]
         }
         pendingDestination = destination
     }
@@ -137,18 +154,23 @@ final class DeepLinkRouter {
     }
 }
 
+/// The app's primary destinations.
+///
+/// Deliberately five, and never more: a compact-width `TabView` with six or more
+/// tabs makes UIKit generate its own "More" list, which Orionis does not control
+/// and does not want. Everything beyond the four operational surfaces lives in
+/// `MoreView`, a real screen this app designs — see `MoreRoute`.
 enum RootTab: String, Hashable, CaseIterable, Identifiable {
-    case home, cameras, events, adGuard, system, settings
+    case home, cameras, adGuard, system, more
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .home: "Home"
         case .cameras: "Cameras"
-        case .events: "Events"
         case .adGuard: "Network"
         case .system: "System"
-        case .settings: "Settings"
+        case .more: "More"
         }
     }
 
@@ -156,10 +178,37 @@ enum RootTab: String, Hashable, CaseIterable, Identifiable {
         switch self {
         case .home: "house.fill"
         case .cameras: "video.fill"
-        case .events: "bell.fill"
         case .adGuard: "shield.lefthalf.filled"
         case .system: "server.rack"
+        case .more: "square.grid.2x2.fill"
+        }
+    }
+}
+
+/// Destinations reachable from the More hub.
+enum MoreRoute: String, Hashable, Identifiable {
+    case events, settings, account, diagnostics, about, infrastructure
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .events: "Events & Activity"
+        case .settings: "Settings"
+        case .account: "Signed-in Devices"
+        case .diagnostics: "Diagnostics"
+        case .about: "About Orionis Control"
+        case .infrastructure: "Infrastructure"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .events: "bell.badge.fill"
         case .settings: "gearshape.fill"
+        case .account: "person.crop.circle.fill"
+        case .diagnostics: "stethoscope"
+        case .about: "info.circle.fill"
+        case .infrastructure: "cube.transparent.fill"
         }
     }
 }

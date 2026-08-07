@@ -596,10 +596,19 @@ extension AuthenticationService: TokenProviding {
 extension AuthenticationService: ASWebAuthenticationPresentationContextProviding {
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         MainActor.assumeIsolated {
-            let scene = UIApplication.shared.connectedScenes
+            let scenes = UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
-                .first { $0.activationState == .foregroundActive }
-            return scene?.keyWindow ?? ASPresentationAnchor()
+            let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+            if let window = scene?.keyWindow { return window }
+            // iOS 26 deprecated the bare UIWindow initialiser in favour of the
+            // scene-based one, so build from a scene when there is one at all.
+            if let scene { return ASPresentationAnchor(windowScene: scene) }
+            // No window scene exists at all, so nothing could be presented from
+            // any anchor this returns — but the protocol is non-failable and
+            // demands one. Every scene-less `UIWindow` initialiser is deprecated
+            // in iOS 26, so this line warns and cannot not warn; the branch is
+            // unreachable while the app has a UI.
+            return ASPresentationAnchor(frame: .zero)
         }
     }
 }

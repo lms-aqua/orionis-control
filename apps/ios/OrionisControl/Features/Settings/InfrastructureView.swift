@@ -100,33 +100,50 @@ struct InfrastructureView: View {
     @State private var restoringBackup: String?
 
     var body: some View {
-        Form {
-            if let model {
-                if let status = model.status {
-                    caddySection(status.caddy)
-                    autheliaSection(status.authelia, restart: status.autheliaRestart, model: model)
-                }
-                if !model.users.isEmpty { usersSection(model.users) }
-                if !model.backups.isEmpty { backupsSection(model) }
-                configSection
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                if let model {
+                    if let status = model.status {
+                        hero(status)
+                        // Operations sit directly under the state they act on,
+                        // before the reference material below.
+                        caddySection(status.caddy)
+                        autheliaSection(
+                            status.authelia, restart: status.autheliaRestart, model: model)
+                    }
 
-                if let notice = model.notice {
-                    Section {
-                        Label(notice, systemImage: "checkmark.circle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.green)
+                    if let notice = model.notice {
+                        SettingsNoteRow(
+                            text: notice, systemImage: "checkmark.circle.fill", tint: Theme.good
+                        )
+                        .orionisCard()
                     }
-                }
-                if let error = model.error {
-                    Section {
-                        Label(error.message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                    // The model keeps prior good data through a failed refresh,
+                    // so this reports staleness rather than replacing the screen.
+                    if let error = model.error {
+                        if model.status == nil {
+                            WarningBanner(
+                                title: error.title, message: error.message, tint: Theme.critical)
+                        } else {
+                            StaleDataBanner(
+                                asOf: Date(),
+                                title: "Infrastructure status may be outdated",
+                                reason: error.message,
+                                retry: { await model.load() })
+                        }
                     }
+
+                    if !model.users.isEmpty { usersSection(model.users) }
+                    if !model.backups.isEmpty { backupsSection(model) }
+                    configSection
+                } else {
+                    LoadingStateView(message: "Reading infrastructure…")
+                        .frame(minHeight: 220)
                 }
-            } else {
-                Section { LoadingStateView(message: "Reading infrastructure…") }
             }
+            .padding(16)
+            .frame(maxWidth: 820)
+            .frame(maxWidth: .infinity)
         }
         .orionisScreen()
         .navigationTitle("Infrastructure")
@@ -175,27 +192,79 @@ struct InfrastructureView: View {
 
     // MARK: Sections
 
+    /// The one-line answer to "is anything wrong down there?".
+    ///
+    /// Counts come only from what the gateway actually reported — a missing
+    /// figure is omitted rather than defaulted to zero, which would read as a
+    /// confident "nothing is online".
+    ///
+    /// Assembled outside the view builder: a `@ViewBuilder` body cannot contain
+    /// statements like `append`, whose `()` result is not a `View`.
+    private func heroDetail(_ status: InfraStatus) -> [String] {
+        var detail: [String] = []
+        if let online = status.caddy.online, let total = status.caddy.total {
+            detail.append("\(online) of \(total) Caddy servers online")
+        }
+        if let autheliaStatus = status.authelia.status {
+            detail.append("Authelia \(autheliaStatus.lowercased())")
+        }
+        return detail
+    }
+
+    @ViewBuilder
+    private func hero(_ status: InfraStatus) -> some View {
+        let caddyDown = status.caddy.offline ?? 0
+        let autheliaDown = status.authelia.running == false
+        let unreadable = status.caddy.error != nil || status.authelia.error != nil
+        let healthy = caddyDown == 0 && !autheliaDown && !unreadable
+        let detail = heroDetail(status)
+
+        OperationalStatusHero(
+            title: healthy
+                ? "Infrastructure healthy"
+                : unreadable ? "Infrastructure status incomplete" : "Infrastructure needs attention",
+            message: detail.isEmpty
+                ? (unreadable ? "Some components could not be read." : "No details reported.")
+                : detail.joined(separator: " · "),
+            systemImage: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+            tint: healthy ? Theme.good : (unreadable ? Theme.warn : Theme.critical))
+    }
+
     @ViewBuilder
     private func caddySection(_ caddy: CaddyState) -> some View {
-        Section("Caddy") {
-            if let error = caddy.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-            } else {
-                LabeledContent("Servers") {
-                    Text("\(caddy.online ?? 0) of \(caddy.total ?? 0) online")
-                        .foregroundStyle((caddy.offline ?? 0) > 0 ? .orange : .secondary)
-                }
-                ForEach(caddy.servers ?? []) { server in
-                    LabeledContent(server.name) {
-                        Label(
-                            server.status.capitalized,
-                            systemImage: server.isOnline ? "checkmark.circle.fill" : "xmark.circle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(server.isOnline ? .green : .red)
+        if let error = caddy.error {
+            WarningBanner(title: "Caddy could not be read", message: error, tint: Theme.warn)
+        } else {
+            DetailGroup("Caddy") {
+                DetailValueRow(
+                    label: "Servers",
+                    value: "\(caddy.online ?? 0) of \(caddy.total ?? 0) online",
+                    tint: (caddy.offline ?? 0) > 0 ? Theme.warn : nil)
+                // Offline servers first: the reason to open this screen is
+                // usually that one of them is down.
+                ForEach(
+                    (caddy.servers ?? []).sorted {
+                        $0.isOnline == $1.isOnline
+                            ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                            : !$0.isOnline
                     }
+                ) { server in
+                    SettingsDivider()
+                    HStack(spacing: 11) {
+                        StatusDot(color: server.isOnline ? Theme.good : Theme.critical)
+                        Text(server.name)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.textPrimary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(server.status.capitalized)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(server.isOnline ? Theme.good : Theme.critical)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(server.name), \(server.status)")
                 }
             }
         }
@@ -207,61 +276,61 @@ struct InfrastructureView: View {
         restart: AutheliaRestartState,
         model: InfrastructureModel
     ) -> some View {
-        Section {
-            if let error = authelia.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-            } else {
-                LabeledContent("State") {
-                    Label(
-                        authelia.status?.capitalized ?? "Unknown",
-                        systemImage: authelia.running == true ? "checkmark.circle.fill" : "xmark.circle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(authelia.running == true ? .green : .red)
-                }
+        if let error = authelia.error {
+            WarningBanner(title: "Authelia could not be read", message: error, tint: Theme.warn)
+        } else {
+            DetailGroup("Authelia") {
+                DetailValueRow(
+                    label: "State",
+                    value: authelia.status?.capitalized ?? "Unknown",
+                    tint: authelia.running == true ? Theme.good : Theme.critical)
                 if let health = authelia.health {
-                    LabeledContent("Health", value: health.capitalized)
+                    SettingsDivider()
+                    DetailValueRow(label: "Health", value: health.capitalized)
                 }
                 if let started = authelia.startedAt {
-                    LabeledContent(
-                        "Running since",
+                    SettingsDivider()
+                    DetailValueRow(
+                        label: "Running since",
                         value: started.formatted(date: .abbreviated, time: .shortened))
                 }
                 if let restarts = authelia.restartCount {
-                    LabeledContent("Restarts", value: "\(restarts)")
+                    SettingsDivider()
+                    DetailValueRow(label: "Restarts", value: "\(restarts)")
+                }
+
+                // A queued restart has not happened. Say so, rather than letting
+                // the button look like it already did something.
+                if restart.pending, let at = restart.requestedAt {
+                    SettingsDivider()
+                    SettingsNoteRow(
+                        text: "Restart queued \(at.formatted(date: .omitted, time: .shortened))"
+                            + (restart.requestedBy.map { " by \($0)" } ?? ""),
+                        systemImage: "clock.arrow.circlepath", tint: Theme.warn)
+                } else if let last = restart.lastRestartedAt {
+                    SettingsDivider()
+                    DetailValueRow(
+                        label: "Last restarted",
+                        value: last.formatted(date: .abbreviated, time: .shortened))
                 }
             }
 
-            // A queued restart has not happened. Say so, rather than letting the
-            // button look like it already did something.
-            if restart.pending, let at = restart.requestedAt {
-                Label(
-                    "Restart queued \(at.formatted(date: .omitted, time: .shortened))"
-                        + (restart.requestedBy.map { " by \($0)" } ?? ""),
-                    systemImage: "clock.arrow.circlepath"
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            } else if let last = restart.lastRestartedAt {
-                LabeledContent(
-                    "Last restarted",
-                    value: last.formatted(date: .abbreviated, time: .shortened))
-            }
-
+            // The disruptive action is its own group. Only it carries the
+            // destructive treatment — the screen around it stays neutral.
             if canManage, restart.available {
-                Button(role: .destructive) {
-                    confirmingRestart = true
-                } label: {
-                    Label("Restart Authelia", systemImage: "arrow.clockwise")
+                DetailGroup("Operations") {
+                    SettingsButtonRow(
+                        title: "Restart Authelia",
+                        subtitle: "Signs out every user on every protected site, including you",
+                        systemImage: "arrow.clockwise",
+                        tint: Theme.critical,
+                        isBusy: model.isWorking,
+                        isEnabled: !restart.pending
+                    ) { confirmingRestart = true }
                 }
-                .disabled(model.isWorking || restart.pending)
             }
-        } header: {
-            Text("Authelia")
-        } footer: {
-            Text(
+
+            SettingsHint(
                 "Authelia reads its configuration only when it starts, so a saved change is not live until it is restarted."
             )
         }
@@ -269,82 +338,103 @@ struct InfrastructureView: View {
 
     @ViewBuilder
     private func usersSection(_ users: [AutheliaUserSummary]) -> some View {
-        Section("Users") {
-            ForEach(users) { user in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
+        DetailGroup("Users") {
+            ForEach(Array(users.enumerated()), id: \.element.id) { index, user in
+                if index > 0 { SettingsDivider() }
+                HStack(alignment: .top, spacing: 11) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(user.displayName ?? user.username)
-                        if user.disabled {
-                            Text("disabled")
-                                .font(.caption2)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(.red.opacity(0.15), in: Capsule())
-                                .foregroundStyle(.red)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Theme.textPrimary)
+                        if let email = user.email {
+                            Text(email)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        if !user.groups.isEmpty {
+                            Text(user.groups.joined(separator: ", "))
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.textTertiary)
                         }
                     }
-                    if let email = user.email {
-                        Text(email).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !user.groups.isEmpty {
-                        Text(user.groups.joined(separator: ", "))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if user.disabled {
+                        StatusPill(title: "Disabled", tint: Theme.critical)
                     }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(
+                    "\(user.displayName ?? user.username)\(user.disabled ? ", disabled" : "")")
             }
         }
     }
 
     @ViewBuilder
     private func backupsSection(_ model: InfrastructureModel) -> some View {
-        Section("Configuration backups") {
-            ForEach(model.backups) { backup in
-                HStack {
-                    VStack(alignment: .leading, spacing: 1) {
+        DetailGroup("Configuration backups") {
+            ForEach(Array(model.backups.enumerated()), id: \.element.id) { index, backup in
+                if index > 0 { SettingsDivider() }
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(backup.name)
-                            .font(.caption)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(Theme.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        if let modified = backup.modifiedAt {
-                            Text(modified.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            if let modified = backup.modifiedAt {
+                                Text(modified.formatted(date: .abbreviated, time: .shortened))
+                            }
+                            Text(backup.size.formattedBytes)
                         }
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(Theme.textTertiary)
                     }
-                    Spacer()
-                    Text(backup.size.formattedBytes)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
                     if canManage {
-                        Button("Restore") { restoringBackup = backup.name }
-                            .font(.caption)
-                            .buttonStyle(.bordered)
-                            .disabled(model.isWorking)
+                        Button { restoringBackup = backup.name } label: {
+                            Text("Restore")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(Theme.warn)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 6)
+                                .background(Theme.soft(Theme.warn), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isWorking)
+                        .accessibilityLabel("Restore backup \(backup.name)")
                     }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
             }
         }
     }
 
     @ViewBuilder
     private var configSection: some View {
-        Section {
-            NavigationLink {
-                InfraConfigView(kind: .caddy)
-            } label: {
-                LabeledContent("Caddy configuration", value: "View")
-            }
-            NavigationLink {
-                InfraConfigView(kind: .authelia)
-            } label: {
-                LabeledContent("Authelia configuration", value: "View")
-            }
-        } footer: {
-            Text(
-                "Read-only here on purpose. Editing these by hand on a phone is how a site goes down by accident — make changes from the Caddy manager, where the diff is visible."
-            )
+        DetailGroup("Configuration") {
+            SettingsNavRow(
+                title: "Caddy Configuration",
+                subtitle: "Read-only",
+                systemImage: "doc.plaintext.fill",
+                tint: Theme.textSecondary
+            ) { InfraConfigView(kind: .caddy) }
+            SettingsDivider()
+            SettingsNavRow(
+                title: "Authelia Configuration",
+                subtitle: "Read-only",
+                systemImage: "doc.plaintext.fill",
+                tint: Theme.textSecondary
+            ) { InfraConfigView(kind: .authelia) }
         }
+        SettingsHint(
+            "Read-only here on purpose. Editing these by hand on a phone is how a site goes down by accident — make changes from the Caddy manager, where the diff is visible."
+        )
     }
 
     private var canManage: Bool {

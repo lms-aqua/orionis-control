@@ -224,11 +224,14 @@ struct CamerasView: View {
                 environment.preferences.favouriteCameraIds = remote
             }
         }
-        .onChange(of: router.pendingDestination) { _, destination in
-            if case .camera(let id) = destination {
-                path.append(id)
-                _ = router.consume()
-            }
+        // Same cold-start guarantee as Events: a camera notification tap that
+        // launches the app must still push the detail screen.
+        .onDeepLink(router) { destination in
+            if case .camera = destination { return true }
+            return false
+        } perform: { destination in
+            guard case .camera(let id) = destination else { return }
+            path.append(id)
         }
         .fullScreenCover(item: $fullScreen) { request in
             CameraLiveViewer(cameras: request.cameras, startAt: request.startIndex)
@@ -312,40 +315,59 @@ struct CamerasView: View {
                 action: { Task { await model.load() } }
             )
         } else {
-            ScrollView {
-                LazyVStack(spacing: 14) {
-                    systemStatusBanner(model.cameras)
-                    if let preferenceError = model.preferenceError {
-                        preferenceSyncBanner(preferenceError)
-                    }
+            // The filter bar sits outside the ScrollView so the answer to
+            // "which cameras are down?" is always one tap away rather than two
+            // levels into a toolbar menu.
+            VStack(spacing: 0) {
+                filterBar(model)
+                ScrollView {
+                    LazyVStack(spacing: 14) {
+                        // A failed background refresh must never replace a
+                        // usable wall with an error screen, but the online and
+                        // recording indicators below are then not current.
+                        if let error = model.error {
+                            StaleDataBanner(
+                                asOf: model.lastLoadedAt ?? Date(),
+                                title: "Camera status may be outdated",
+                                reason: error.message,
+                                retry: { await model.load(showSpinner: false) })
+                        }
+                        systemStatusBanner(model.cameras)
+                        if let preferenceError = model.preferenceError {
+                            preferenceSyncBanner(preferenceError)
+                        }
 
-                    if visible.isEmpty {
-                        noMatches(model)
-                    } else {
-                        LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(visible) { camera in
-                                NavigationLink(value: camera.id) {
-                                    CameraCard(
-                                        camera: camera,
-                                        frame: snapshots?.frame(for: camera.id),
-                                        isLoadingFrame: snapshots?.isPending(camera.id) ?? false,
-                                        isRefreshingFrame: snapshots?.isRefreshing(camera.id) ?? false,
-                                        isFavourite: environment.preferences.isFavourite(camera.id),
-                                        compact: effectiveColumns >= 3
-                                    )
+                        if visible.isEmpty {
+                            noMatches(model)
+                        } else {
+                            LazyVGrid(columns: columns, spacing: 14) {
+                                ForEach(visible) { camera in
+                                    NavigationLink(value: camera.id) {
+                                        CameraCard(
+                                            camera: camera,
+                                            frame: snapshots?.frame(for: camera.id),
+                                            isLoadingFrame: snapshots?.isPending(camera.id) ?? false,
+                                            isRefreshingFrame: snapshots?.isRefreshing(camera.id)
+                                                ?? false,
+                                            isFavourite: environment.preferences.isFavourite(
+                                                camera.id),
+                                            compact: effectiveColumns >= 3
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu { cardMenu(camera, within: visible) }
                                 }
-                                .buttonStyle(.plain)
-                                .contextMenu { cardMenu(camera, within: visible) }
                             }
                         }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                .scrollContentBackground(.hidden)
+                .refreshable { await model.load(showSpinner: false) }
             }
-            .orionisScreen()
+            .background { AppBackground() }
             .searchable(text: $model.searchText, prompt: "Search cameras")
-            .refreshable { await model.load(showSpinner: false) }
             // Snapshots refresh only while the grid is on screen, and only for
             // the cameras actually shown.
             // Include usability in the identity. A refresh can bring an offline
@@ -373,6 +395,89 @@ struct CamerasView: View {
                 }
             }
         }
+    }
+
+    // MARK: Filter bar
+
+    /// Always-visible status filters with live counts.
+    ///
+    /// The counts come from the full camera list rather than the filtered one,
+    /// so "Offline 2" keeps saying 2 after you tap it. Location stays in the
+    /// toolbar menu — it is open-ended and would push the row off screen.
+    @ViewBuilder
+    private func filterBar(_ model: CamerasViewModel) -> some View {
+        let all = model.cameras
+        let onlineCount = all.filter { $0.health.status == .online }.count
+        let offlineCount = all.count - onlineCount
+        let favouriteCount = all.filter { environment.preferences.isFavourite($0.id) }.count
+
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                FilterChip(
+                    title: "All", count: all.count,
+                    isSelected: !model.showFavouritesOnly && model.statusFilter == .all
+                        && model.locationFilter == nil
+                ) {
+                    model.statusFilter = .all
+                    model.showFavouritesOnly = false
+                    model.locationFilter = nil
+                }
+
+                FilterChip(
+                    title: "Online", count: onlineCount,
+                    isSelected: model.statusFilter == .online,
+                    tint: Theme.good
+                ) {
+                    model.statusFilter = model.statusFilter == .online ? .all : .online
+                }
+
+                FilterChip(
+                    title: "Offline", count: offlineCount,
+                    isSelected: model.statusFilter == .offline,
+                    tint: offlineCount > 0 ? Theme.critical : Theme.textTertiary
+                ) {
+                    model.statusFilter = model.statusFilter == .offline ? .all : .offline
+                }
+
+                FilterChip(
+                    title: "Favourites", systemImage: "star.fill", count: favouriteCount,
+                    isSelected: model.showFavouritesOnly,
+                    tint: Theme.warn
+                ) {
+                    model.showFavouritesOnly.toggle()
+                }
+
+                // A location filter set from the toolbar menu is otherwise
+                // invisible; surface it here so it can be seen and cleared.
+                if let location = model.locationFilter {
+                    FilterChip(
+                        title: location, systemImage: "mappin.and.ellipse",
+                        isSelected: true
+                    ) {
+                        model.locationFilter = nil
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
+        .sensoryFeedback(
+            OrionisHaptic.filterChanged.feedback,
+            trigger: FilterSignature(
+                status: model.statusFilter,
+                favouritesOnly: model.showFavouritesOnly,
+                location: model.locationFilter))
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+
+    /// One value the haptic can watch, so changing any filter fires exactly once.
+    private struct FilterSignature: Equatable {
+        let status: CamerasViewModel.StatusFilter
+        let favouritesOnly: Bool
+        let location: String?
     }
 
     @ViewBuilder
@@ -494,15 +599,34 @@ struct CamerasView: View {
         .allowsHitTesting(false)
     }
 
-    /// iPad and landscape get an extra column; the stored preference still decides
-    /// the base density.
+    /// The stored preference decides density on iPhone.
+    ///
+    /// On regular width the column count is derived from a minimum comfortable
+    /// tile width instead, so a wide iPad shows *larger* previews rather than
+    /// more tiny ones — a surveillance wall is only useful if a face or a plate
+    /// is legible in the tile. `columns` computes the real count from the
+    /// measured width; this value is the fallback and the compact answer.
     private var effectiveColumns: Int {
         let base = max(1, min(3, environment.preferences.gridColumns))
         return sizeClass == .regular ? min(4, base + 1) : base
     }
 
+    /// Minimum tile width per density step, used only at regular width.
+    private var minimumTileWidth: CGFloat {
+        switch max(1, min(3, environment.preferences.gridColumns)) {
+        case 1: 460  // Large: a few big viewports.
+        case 2: 330  // Standard.
+        default: 240  // Dense, but still readable.
+        }
+    }
+
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 14), count: effectiveColumns)
+        if sizeClass == .regular {
+            // Adaptive keeps every tile at or above the readable minimum and
+            // fits as many as the width genuinely allows.
+            return [GridItem(.adaptive(minimum: minimumTileWidth), spacing: 14)]
+        }
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: effectiveColumns)
     }
 }
 

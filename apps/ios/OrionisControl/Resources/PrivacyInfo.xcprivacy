@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Privacy manifest.
+
+  Required for App Store submission, which this repo has a workflow for
+  (.github/workflows/testflight.yml). Sideloading via AltStore does not enforce
+  it, but the declarations below are true either way and are cheaper to keep
+  accurate than to reconstruct at submission time.
+
+  Orionis Control talks only to the user's own gateway. It has no analytics, no
+  advertising identifier, no third-party SDK that phones home, and it does not
+  track users across apps or websites — hence no collected data types and no
+  tracking domains.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <!-- Nothing leaves the device except to the gateway the user configured,
+         which is their own infrastructure rather than a party to this app. -->
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <!-- @AppStorage / UserDefaults: viewer preferences (grid density,
+             stream quality, watched domains). App-scoped, never shared. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+
+        <!-- ProcessInfo.systemUptime, used by the stream health watchdog to
+             measure elapsed time between decoded frames. A monotonic clock is
+             required there because wall-clock time can jump; it is never used
+             to identify the device. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

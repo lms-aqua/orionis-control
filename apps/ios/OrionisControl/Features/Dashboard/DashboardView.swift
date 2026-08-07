@@ -294,7 +294,12 @@ struct DashboardView: View {
                             if event.id != events.items.prefix(4).last?.id { Divider() }
                         }
                     }
-                    Button("View all events") { router.selectedTab = .events }
+                    // Events now lives under the More hub; select the tab and
+                    // push the route so the back path stays correct.
+                    Button("View all events") {
+                        router.selectedTab = .more
+                        router.morePath = [.events]
+                    }
                         .font(.subheadline)
                         .padding(.top, 4)
                 }

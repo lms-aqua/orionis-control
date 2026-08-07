@@ -103,6 +103,9 @@ final class EventsViewModel {
 }
 
 struct EventsView: View {
+    /// False when pushed from the More hub, which already owns the stack.
+    var embedsNavigationStack: Bool = true
+
     @Environment(AppEnvironment.self) private var environment
     @Environment(DeepLinkRouter.self) private var router
     @State private var model: EventsViewModel?
@@ -110,7 +113,7 @@ struct EventsView: View {
     @State private var navigationError: APIError?
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(isEnabled: embedsNavigationStack) {
             Group {
                 if let model { content(model) } else { LoadingStateView() }
             }
@@ -126,19 +129,21 @@ struct EventsView: View {
             if model == nil { model = EventsViewModel(service: environment.service) }
             await model?.load()
         }
-        .onChange(of: router.pendingDestination) { _, destination in
-            if case .event(let id) = destination {
-                Task {
-                    do {
-                        let event = try await environment.service.event(id: id)
-                        selected = event
-                    } catch let apiError as APIError {
-                        navigationError = apiError
-                    } catch {
-                        navigationError = .unexpectedStatus(0, requestId: nil)
-                    }
-                    _ = router.consume()
-                }
+        // Covers the cold start: a notification tap that launches the app sets
+        // the destination long before this view exists, so observing changes
+        // alone would drop it.
+        .onDeepLink(router) { destination in
+            if case .event = destination { return true }
+            return false
+        } perform: { destination in
+            guard case .event(let id) = destination else { return }
+            do {
+                let event = try await environment.service.event(id: id)
+                selected = event
+            } catch let apiError as APIError {
+                navigationError = apiError
+            } catch {
+                navigationError = .unexpectedStatus(0, requestId: nil)
             }
         }
         .alert(
@@ -253,6 +258,18 @@ struct EventsView: View {
             )
         } else {
             List {
+                // The list survives a failed refresh; say so rather than
+                // presenting an old feed as current.
+                if let error = model.error {
+                    StaleDataBanner(
+                        asOf: model.lastLoadedAt ?? Date(),
+                        title: "Couldn't refresh events",
+                        reason: error.message,
+                        retry: { await model.load(showSpinner: false) }
+                    )
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                    .listRowSeparator(.hidden)
+                }
                 ForEach(model.visible) { event in
                     Button { selected = event } label: { EventRow(event: event) }
                         .buttonStyle(.plain)

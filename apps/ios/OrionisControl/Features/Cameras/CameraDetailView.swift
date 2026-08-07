@@ -17,9 +17,11 @@ final class CameraDetailViewModel {
     private(set) var siblings: [Camera] = []
     private(set) var events: [CameraEvent] = []
     private(set) var loadError: APIError?
-    private(set) var controlMessage: String?
+    private(set) var controlFeedback: CameraControlFeedback?
     private(set) var isInvokingControl = false
     private(set) var snapshot: UIImage?
+    /// Guards the transient-success expiry against a newer operation.
+    private var feedbackGeneration = 0
 
     private let cameraId: String
     private let cameras: any CameraServicing
@@ -84,23 +86,82 @@ final class CameraDetailViewModel {
     }
 
     func invoke(_ request: CameraControlRequest) async {
+        // Re-entrancy guard at the model, not only in the views. The buttons
+        // disable themselves while a control is in flight, but a confirmation
+        // dialog opened *before* another control started can still fire into
+        // this method — and the second call's `defer` would clear the busy flag
+        // while the first request was still outstanding. Repeated PTZ taps must
+        // also not queue up a runaway burst of commands.
+        guard !isInvokingControl else { return }
         isInvokingControl = true
-        controlMessage = nil
+        controlFeedback = nil
+        feedbackGeneration &+= 1
+        let generation = feedbackGeneration
         defer { isInvokingControl = false }
 
         do {
             let result = try await cameras.invokeControl(cameraId: cameraId, request: request)
-            controlMessage =
-                result.message ?? (result.applied ? "Applied." : "The camera did not apply it.")
+            // `applied == false` is not a failure and not a success: the gateway
+            // accepted the request but the camera did not act on it. Saying
+            // "Applied." there would be a lie, and a red error would overstate
+            // it, so it is reported as a warning.
+            controlFeedback =
+                result.applied
+                ? .success(result.message ?? "Applied.")
+                : .warning(result.message ?? "The camera did not apply it.")
             // Reflect any state change the camera reports.
             if let refreshed = try? await cameras.camera(id: cameraId) {
                 camera = refreshed
             }
         } catch let error as APIError {
-            controlMessage = "\(error.title): \(error.message)"
+            controlFeedback = .failure("\(error.title): \(error.message)")
         } catch {
-            controlMessage = "The control could not be sent."
+            controlFeedback = .failure("The control could not be sent.")
         }
+
+        await expireFeedbackIfTransient(generation)
+    }
+
+    /// Successful confirmations are transient; failures and warnings stay until
+    /// the next operation supersedes them, so a problem cannot scroll away
+    /// before it has been read.
+    private func expireFeedbackIfTransient(_ generation: Int) async {
+        guard case .success = controlFeedback else { return }
+        try? await Task.sleep(for: .seconds(6))
+        guard generation == feedbackGeneration else { return }
+        controlFeedback = nil
+    }
+}
+
+/// The outcome of a camera control operation.
+///
+/// Previously every outcome collapsed into one optional string, so the view had
+/// no way to tell a confirmation from an error and rendered a failed operation
+/// with a green checkmark. Keeping the three cases distinct is what makes that
+/// impossible to reintroduce.
+enum CameraControlFeedback: Equatable {
+    case success(String)
+    case warning(String)
+    case failure(String)
+
+    var message: String {
+        switch self {
+        case .success(let text), .warning(let text), .failure(let text): text
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .success: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .failure: "xmark.octagon.fill"
+        }
+    }
+
+    /// Whether this outcome should clear itself after a few seconds.
+    var isTransient: Bool {
+        if case .success = self { return true }
+        return false
     }
 }
 
@@ -110,6 +171,7 @@ struct CameraDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var model: CameraDetailViewModel?
     /// Held as view state, not built in `body`: the player must survive
     /// re-evaluation rather than being recreated by it.
@@ -119,6 +181,8 @@ struct CameraDetailView: View {
     @State private var confirmingControl: CameraControlRequest?
     @State private var showDiagnostics = false
     @State private var showFullScreen = false
+    /// Guards the fullscreen handoff so a double-tap cannot start two of them.
+    @State private var isEnteringFullScreen = false
 
     var body: some View {
         Group {
@@ -166,7 +230,8 @@ struct CameraDetailView: View {
             Task { [stream] in await stream?.stop() }
         }
         .fullScreenCover(isPresented: $showFullScreen) {
-            // Inline playback is released first: only one stream should be open.
+            // By the time this presents, `enterFullScreen()` has already awaited
+            // the inline stop, so the viewer's session is the only one open.
             let wall = model?.siblings.isEmpty == false
                 ? model!.siblings
                 : [model?.camera].compactMap { $0 }
@@ -175,9 +240,10 @@ struct CameraDetailView: View {
                 startAt: wall.firstIndex(where: { $0.id == cameraId }) ?? 0)
         }
         .onChange(of: showFullScreen) { _, presented in
-            if presented {
-                Task { await stream?.stop() }
-            } else if environment.preferences.autoplayLiveView {
+            // Only the dismissal side is handled here. Presentation is driven by
+            // `enterFullScreen()`, which must sequence the stop before the
+            // cover appears.
+            if !presented, environment.preferences.autoplayLiveView {
                 Task { await startStream() }
             }
         }
@@ -218,23 +284,50 @@ struct CameraDetailView: View {
         if let error = model.loadError, model.camera == nil {
             ErrorStateView(error: error, retry: { await model.load() })
         } else if let camera = model.camera {
+            // Hierarchy: the camera first, then what it is doing, then the two
+            // things people actually came for -- footage and controls. Device
+            // metadata and diagnostics sit at the bottom, behind a push.
+            //
+            // On regular width the same pieces reflow into two panes so the
+            // video can be large while status and controls stay visible beside
+            // it, rather than the iPhone column stretched across an iPad.
             ScrollView {
-                VStack(spacing: 16) {
-                    playerSection(model, camera: camera)
-                    if camera.capabilities.hasAnyControl {
-                        controlsSection(model, camera: camera)
+                if sizeClass == .regular {
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(spacing: 16) {
+                            playerSection(model, camera: camera)
+                            recordingsSection(camera)
+                            eventsSection(model)
+                        }
+                        .frame(maxWidth: .infinity)
+
+                        VStack(spacing: 16) {
+                            statusRow(camera)
+                            controlFeedbackBanner(model)
+                            if camera.capabilities.hasAnyControl {
+                                controlsSection(model, camera: camera)
+                            }
+                            informationRow(camera)
+                        }
+                        // Held to a readable measure: an inspector column wider
+                        // than this just spreads label/value pairs apart.
+                        .frame(width: 340)
                     }
-                    if let message = model.controlMessage {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                } else {
+                    VStack(spacing: 16) {
+                        playerSection(model, camera: camera)
+                        statusRow(camera)
+                        recordingsSection(camera)
+                        if camera.capabilities.hasAnyControl {
+                            controlsSection(model, camera: camera)
+                        }
+                        controlFeedbackBanner(model)
+                        eventsSection(model)
+                        informationRow(camera)
                     }
-                    detailsSection(camera)
-                    recordingsSection(camera)
-                    eventsSection(model)
+                    .padding(16)
                 }
-                .padding(16)
             }
             .orionisScreen()
             .refreshable {
@@ -433,37 +526,46 @@ struct CameraDetailView: View {
     }
 
     @ViewBuilder
+    /// Media controls, in media-control language.
+    ///
+    /// A row of generic bordered buttons read as a form, not a player. These are
+    /// circular controls sized to 44pt with material backing, so they stay
+    /// legible whether they sit over video or under it. Obscure controls live
+    /// behind the trailing menu rather than competing with playback.
     private func playerControls(_ model: CameraDetailViewModel, camera: Camera) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             if let stream, !stream.state.isTerminal {
-                Button {
+                MediaControlButton(
+                    systemImage: stream.state == .paused ? "play.fill" : "pause.fill",
+                    label: stream.state == .paused ? "Resume live view" : "Pause live view",
+                    tint: Theme.textPrimary
+                ) {
                     if stream.state == .paused { stream.resume() } else { stream.pause() }
-                } label: {
-                    Label(
-                        stream.state == .paused ? "Play" : "Pause",
-                        systemImage: stream.state == .paused ? "play.fill" : "pause.fill"
-                    )
-                    .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(
-                    stream.state == .paused ? "Resume live view" : "Pause live view")
             }
 
             if camera.capabilities.audio == true {
-                Button {
+                MediaControlButton(
+                    systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                    label: isMuted ? "Unmute audio" : "Mute audio",
+                    isActive: !isMuted,
+                    tint: Theme.textPrimary
+                ) {
                     isMuted.toggle()
                     stream?.setAudioMuted(isMuted)
-                } label: {
-                    Label(
-                        isMuted ? "Unmute" : "Mute",
-                        systemImage: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
-                    )
-                    .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(isMuted ? "Unmute audio" : "Mute audio")
             }
+
+            if camera.health.status.isUsable {
+                MediaControlButton(
+                    systemImage: "arrow.up.left.and.arrow.down.right",
+                    label: "Open full screen",
+                    tint: Theme.textPrimary,
+                    isEnabled: !isEnteringFullScreen
+                ) { Task { await enterFullScreen() } }
+            }
+
+            Spacer(minLength: 4)
 
             if camera.capabilities.qualities.count > 1 {
                 Picker("Quality", selection: $quality) {
@@ -472,33 +574,171 @@ struct CameraDetailView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .tint(Theme.textSecondary)
                 .onChange(of: quality) { _, _ in Task { await startStream() } }
             }
 
-            if camera.health.status.isUsable {
-                Button {
-                    showFullScreen = true
-                } label: {
-                    Label(
-                        "Full screen",
-                        systemImage: "arrow.up.left.and.arrow.down.right"
-                    )
-                    .labelStyle(.iconOnly)
+            // Advanced information belongs behind the overflow, not on the
+            // primary control row.
+            Menu {
+                Toggle(isOn: $showDiagnostics) {
+                    Label("Stream Diagnostics", systemImage: "waveform.path.ecg")
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Open full screen")
-            }
-
-            Spacer()
-
-            Button {
-                showDiagnostics.toggle()
             } label: {
-                Label("Diagnostics", systemImage: "waveform.path.ecg")
-                    .labelStyle(.iconOnly)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .background(Theme.inset, in: Circle())
+                    .overlay(Circle().strokeBorder(Theme.hairline, lineWidth: 1))
             }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Stream diagnostics")
+            .accessibilityLabel("More controls")
+        }
+        .sensoryFeedback(OrionisHaptic.controlSucceeded.feedback, trigger: isMuted)
+    }
+
+    /// Shared by both layouts so the feedback rendering cannot drift apart.
+    @ViewBuilder
+    private func controlFeedbackBanner(_ model: CameraDetailViewModel) -> some View {
+        if let feedback = model.controlFeedback {
+            WarningBanner(
+                title: feedback.message,
+                systemImage: feedback.symbolName,
+                tint: Self.tint(for: feedback))
+            .transition(.opacity)
+        }
+    }
+
+    /// Hands playback over to the fullscreen viewer without overlapping sessions.
+    ///
+    /// Presenting the cover and stopping the inline stream used to race: the
+    /// cover appeared immediately while the stop ran in a detached Task, so
+    /// `CameraLiveViewer` opened its gateway session while the inline session
+    /// was still live. That breaks the one-stream-per-viewer invariant, and the
+    /// gateway can reject the new session or leave the old one orphaned with
+    /// audio still running. Awaiting the stop first makes the ordering real
+    /// rather than merely intended.
+    private func enterFullScreen() async {
+        guard !isEnteringFullScreen else { return }
+        isEnteringFullScreen = true
+        defer { isEnteringFullScreen = false }
+        await stream?.stop()
+        showFullScreen = true
+    }
+
+    /// A failed control operation must never be drawn in the success colour.
+    static func tint(for feedback: CameraControlFeedback) -> Color {
+        switch feedback {
+        case .success: Theme.good
+        case .warning: Theme.warn
+        case .failure: Theme.critical
+        }
+    }
+
+    // MARK: Status
+
+    /// One compact line of live state. Deliberately not another card — it
+    /// belongs to the video above it.
+    private func statusRow(_ camera: Camera) -> some View {
+        let tint: Color =
+            switch camera.health.status {
+            case .online: Theme.good
+            case .degraded: Theme.warn
+            case .offline: Theme.critical
+            case .unknown: Theme.textTertiary
+            }
+
+        return HStack(alignment: .top, spacing: 10) {
+            StatusDot(color: tint).padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Text(camera.health.status.accessibleDescription.capitalized)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tint)
+                    if camera.health.recording == true {
+                        StatusPill(title: "Recording", systemImage: "record.circle", tint: Theme.critical)
+                    }
+                    if camera.health.privacyEnabled {
+                        StatusPill(
+                            title: "Privacy", systemImage: "eye.slash.fill", tint: Theme.textSecondary)
+                    }
+                }
+                if let location = camera.location {
+                    Text(location)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                if let message = camera.health.message {
+                    Text(message)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            if camera.health.status == .offline, let lastSeen = camera.health.lastSeenAt {
+                Text("Last seen \(lastSeen.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(Theme.textTertiary)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Device metadata, pushed rather than stacked. It must not compete with
+    /// video and recordings for attention.
+    private func informationRow(_ camera: Camera) -> some View {
+        DetailGroup {
+            SettingsNavRow(
+                title: "Camera Information",
+                subtitle: [camera.model, camera.firmware].compactMap { $0 }.joined(separator: " · "),
+                systemImage: "info.circle.fill",
+                tint: Theme.textSecondary
+            ) {
+                SettingsScreen(title: "Camera Information") {
+                    DetailGroup("Device") {
+                        DetailValueRow(label: "Name", value: camera.name)
+                        if let location = camera.location {
+                            SettingsDivider()
+                            DetailValueRow(label: "Location", value: location)
+                        }
+                        if let group = camera.group {
+                            SettingsDivider()
+                            DetailValueRow(label: "Group", value: group)
+                        }
+                        if let model = camera.model {
+                            SettingsDivider()
+                            DetailValueRow(label: "Model", value: model)
+                        }
+                        if let firmware = camera.firmware {
+                            SettingsDivider()
+                            DetailValueRow(label: "Firmware", value: firmware, monospaced: true)
+                        }
+                        SettingsDivider()
+                        DetailValueRow(label: "Identifier", value: camera.id, monospaced: true)
+                    }
+
+                    DetailGroup("Status") {
+                        DetailValueRow(
+                            label: "State",
+                            value: camera.health.status.accessibleDescription.capitalized)
+                        if let lastSeen = camera.health.lastSeenAt {
+                            SettingsDivider()
+                            DetailValueRow(
+                                label: "Last seen", value: lastSeen.relativeDescription)
+                        }
+                        if let message = camera.health.message {
+                            SettingsDivider()
+                            DetailValueRow(label: "Message", value: message)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -673,37 +913,7 @@ struct CameraDetailView: View {
                 : "Requires a higher role than \(environment.auth.state.user?.role.displayName ?? "yours")")
     }
 
-    // MARK: Details and events
-
-    private func detailsSection(_ camera: Camera) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            CardHeader(title: "Details", systemImage: "info.circle")
-            CameraStatusBadge(health: camera.health)
-            if let location = camera.location { detailRow("Location", location) }
-            if let group = camera.group { detailRow("Group", group) }
-            if let model = camera.model { detailRow("Model", model) }
-            if let firmware = camera.firmware { detailRow("Firmware", firmware) }
-            if let lastSeen = camera.health.lastSeenAt {
-                detailRow("Last seen", lastSeen.relativeDescription)
-            }
-            if let message = camera.health.message {
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .orionisCard()
-    }
-
-    private func detailRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-        }
-        .font(.subheadline)
-        .accessibilityElement(children: .combine)
-    }
+    // MARK: Recordings and activity
 
     @ViewBuilder
     private func recordingsSection(_ camera: Camera) -> some View {

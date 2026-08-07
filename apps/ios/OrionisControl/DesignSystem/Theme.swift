@@ -119,6 +119,29 @@ extension View {
     }
 }
 
+// MARK: - Navigation scaffold
+
+/// Wraps content in a `NavigationStack` only when it is acting as the root of a
+/// tab.
+///
+/// Screens such as Settings and Events are now reachable two ways: directly as a
+/// primary destination, and pushed from the More hub. Pushing a view that owns a
+/// `NavigationStack` onto an existing one nests them, which strands the back
+/// button and duplicates the toolbar. Callers that already provide a stack pass
+/// `isEnabled: false`.
+struct OptionalNavigationStack<Content: View>: View {
+    let isEnabled: Bool
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        if isEnabled {
+            NavigationStack { content }
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - Building blocks
 
 /// A card header: a tinted rounded-square glyph, a title, and an optional

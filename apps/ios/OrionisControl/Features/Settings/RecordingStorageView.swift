@@ -87,25 +87,30 @@ struct RecordingStorageView: View {
     private let choices = [1, 3, 7, 14, 30, 60, 90, 180, 365]
 
     var body: some View {
-        Form {
-            if let model {
-                if let storage = model.storage {
-                    usageSection(storage)
-                    if let cameras = storage.perCamera, !cameras.isEmpty {
-                        perCameraSection(cameras)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                if let model {
+                    if let storage = model.storage {
+                        usageHero(storage)
+                        metrics(storage)
+                        if let cameras = storage.perCamera, !cameras.isEmpty {
+                            perCameraSection(cameras)
+                        }
                     }
-                }
-                retentionSection(model)
-                if let error = model.error {
-                    Section {
-                        Label(error.message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                    retentionSection(model)
+                    if let error = model.error {
+                        WarningBanner(
+                            title: "Couldn't read storage", message: error.message,
+                            tint: Theme.warn)
                     }
+                } else {
+                    LoadingStateView(message: "Loading storage…")
+                        .frame(minHeight: 220)
                 }
-            } else {
-                Section { LoadingStateView(message: "Loading storage…") }
             }
+            .padding(16)
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
         }
         .orionisScreen()
         .navigationTitle("Recordings")
@@ -132,58 +137,165 @@ struct RecordingStorageView: View {
 
     // MARK: Usage
 
+    /// Leads with how full storage actually is.
+    ///
+    /// The percentage is only shown when the gateway gave a capacity to measure
+    /// against — without one there is no honest fraction to draw, so the used
+    /// figure stands alone rather than inventing a denominator.
     @ViewBuilder
-    private func usageSection(_ storage: StorageStatus) -> some View {
-        Section("Space used") {
-            VStack(alignment: .leading, spacing: 10) {
-                if let fraction = storage.usedFraction {
-                    ProgressView(value: fraction)
-                        .tint(fraction > 0.9 ? .red : fraction > 0.75 ? .orange : .accentColor)
-                }
-                HStack(alignment: .firstTextBaseline) {
+    private func usageHero(_ storage: StorageStatus) -> some View {
+        let fraction = storage.usedFraction
+        let tint: Color =
+            switch fraction {
+            case .some(let value) where value > 0.9: Theme.critical
+            case .some(let value) where value > 0.75: Theme.warn
+            default: Theme.accent
+            }
+
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let fraction {
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.system(size: 34, weight: .bold).monospacedDigit())
+                        .foregroundStyle(tint)
+                    Text("used")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.textSecondary)
+                } else {
                     Text(storage.recordingsUsed?.formattedBytes ?? "Unavailable")
-                        .font(.title2.weight(.semibold))
-                    if let capacity = storage.recordingsCapacity {
-                        Text(storage.isBudgeted ? "of \(capacity.formattedBytes) budget" : "of \(capacity.formattedBytes)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let fraction {
+                // Already clamped upstream; drawn from the same clamped value so
+                // a malformed gateway figure cannot overflow the track.
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Theme.inset)
+                        Capsule()
+                            .fill(tint)
+                            .frame(width: max(3, geometry.size.width * fraction))
                     }
                 }
+                .frame(height: 10)
             }
-            .padding(.vertical, 4)
 
-            if let daily = storage.dailyBytes, daily > 0 {
-                LabeledContent("Recording", value: "\(daily.formattedBytes) a day")
+            if let used = storage.recordingsUsed, let capacity = storage.recordingsCapacity {
+                Text(
+                    "\(used.formattedBytes) of \(capacity.formattedBytes)"
+                        + (storage.isBudgeted ? " budget" : "")
+                )
+                .font(.system(size: 13.5))
+                .foregroundStyle(Theme.textSecondary)
             }
+
             if let days = storage.daysRemaining {
-                LabeledContent(
-                    "Room left",
-                    value: days <= 1 ? "under a day" : "about \(days) days")
+                if days <= 2 {
+                    WarningBanner(
+                        title: days <= 1 ? "Storage is almost full" : "Storage is nearly full",
+                        message: days <= 1
+                            ? "Under a day of recording room remains."
+                            : "About \(days) days of recording room remain.",
+                        tint: days <= 1 ? Theme.critical : Theme.warn)
+                }
             }
-            if let count = storage.fileCount {
-                LabeledContent("Segments", value: "\(count)")
-            }
-            if let oldest = storage.oldestRecordingAt {
-                LabeledContent(
-                    "Oldest footage",
-                    value: oldest.formatted(date: .abbreviated, time: .shortened))
-            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(15)
+        .orionisCard()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(storageAccessibilityLabel(storage))
+    }
+
+    /// Spoken form, so the bar is never the only way to read the number.
+    private func storageAccessibilityLabel(_ storage: StorageStatus) -> String {
+        var parts = ["Recording storage"]
+        if let fraction = storage.usedFraction {
+            parts.append("\(Int((fraction * 100).rounded())) percent used")
+        }
+        if let used = storage.recordingsUsed, let capacity = storage.recordingsCapacity {
+            parts.append("\(used.formattedBytes) of \(capacity.formattedBytes)")
+        } else if let used = storage.recordingsUsed {
+            parts.append("\(used.formattedBytes) used")
+        }
+        if let days = storage.daysRemaining {
+            parts.append(days <= 1 ? "under a day remaining" : "about \(days) days remaining")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// Secondary figures in one strip rather than four separate cards. Every
+    /// entry is omitted when the gateway did not supply it.
+    ///
+    /// Assembled outside the view builder: a `@ViewBuilder` body cannot contain
+    /// statements like `append`, whose `()` result is not a `View`.
+    private func metricEntries(_ storage: StorageStatus) -> [MetricStrip.Metric] {
+        var entries: [MetricStrip.Metric] = []
+        if let daily = storage.dailyBytes, daily > 0 {
+            entries.append(.init(value: daily.formattedBytes, label: "Per day"))
+        }
+        if let count = storage.fileCount {
+            entries.append(.init(value: count.formattedCount, label: "Segments"))
+        }
+        if let oldest = storage.oldestRecordingAt {
+            entries.append(
+                .init(
+                    value: oldest.formatted(date: .abbreviated, time: .omitted),
+                    label: "Oldest footage"))
+        }
+        return entries
+    }
+
+    @ViewBuilder
+    private func metrics(_ storage: StorageStatus) -> some View {
+        let entries = metricEntries(storage)
+        if !entries.isEmpty {
+            MetricStrip(metrics: entries)
+                .padding(15)
+                .orionisCard()
         }
     }
 
     @ViewBuilder
     private func perCameraSection(_ cameras: [CameraStorageUsage]) -> some View {
-        Section("By camera") {
-            ForEach(cameras) { camera in
-                LabeledContent(camera.displayName) {
-                    VStack(alignment: .trailing, spacing: 1) {
+        let peak = Double(cameras.map(\.bytes).max() ?? 1)
+        DetailGroup("Storage by camera") {
+            ForEach(Array(cameras.enumerated()), id: \.element.id) { index, camera in
+                if index > 0 { SettingsDivider() }
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 10) {
+                        Text(camera.displayName)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.textPrimary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
                         Text(camera.bytes.formattedBytes)
-                            .monospacedDigit()
-                        Text("\(camera.fileCount) segments")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(Theme.textSecondary)
                     }
+                    GeometryReader { geometry in
+                        Capsule()
+                            .fill(Theme.accent.opacity(0.5))
+                            .frame(
+                                width: max(
+                                    2,
+                                    geometry.size.width
+                                        * (peak > 0 ? Double(camera.bytes) / peak : 0)))
+                    }
+                    .frame(height: 3)
+                    Text("\(camera.fileCount) segments")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(
+                    "\(camera.displayName), \(camera.bytes.formattedBytes), \(camera.fileCount) segments"
+                )
             }
         }
     }
@@ -192,57 +304,64 @@ struct RecordingStorageView: View {
 
     @ViewBuilder
     private func retentionSection(_ model: RecordingStorageModel) -> some View {
-        Section {
-            if let retention = model.retention {
-                LabeledContent("Keeping footage for") {
-                    Text(retention.appliedDays.map { "\($0) days" } ?? "unknown")
-                        .foregroundStyle(.secondary)
-                }
+        if let retention = model.retention {
+            DetailGroup("Retention") {
+                DetailValueRow(
+                    label: "Keeping footage for",
+                    value: retention.appliedDays.map { "\($0) days" } ?? "Unknown")
 
                 // A queued change has not happened yet. Saying so beats implying
                 // the recorder already agreed.
                 if retention.pending, let requested = retention.requestedDays {
-                    Label(
-                        "Changing to \(requested) days — waiting for the recorder to apply it.",
-                        systemImage: "clock.arrow.circlepath"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    SettingsDivider()
+                    SettingsNoteRow(
+                        text:
+                            "Changing to \(requested) days — waiting for the recorder to apply it.",
+                        systemImage: "clock.arrow.circlepath", tint: Theme.warn)
                 }
 
                 if canChange(retention) {
-                    Picker("Change to", selection: retentionBinding(retention)) {
-                        ForEach(choices.filter { $0 >= retention.minDays && $0 <= retention.maxDays }, id: \.self) { days in
+                    SettingsDivider()
+                    SettingsMenuRow(
+                        title: "Change to", selection: retentionBinding(retention)
+                    ) {
+                        ForEach(
+                            choices.filter {
+                                $0 >= retention.minDays && $0 <= retention.maxDays
+                            }, id: \.self
+                        ) { days in
                             Text("\(days) days").tag(days)
                         }
                     }
                     .disabled(model.isSaving)
-                } else if !retention.changeable {
-                    Text("Retention is set on the server and cannot be changed from here.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Changing retention needs administrator access.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
 
                 if let saved = model.savedMessage {
-                    Label(saved, systemImage: "checkmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.green)
+                    SettingsDivider()
+                    SettingsNoteRow(
+                        text: saved, systemImage: "checkmark.circle.fill", tint: Theme.good)
                 }
-            } else {
-                Text("Retention could not be read.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
-        } header: {
-            Text("Retention")
-        } footer: {
-            Text(
-                "Footage older than this is deleted automatically. Shortening it deletes existing footage sooner."
-            )
+
+            // The reason a control is absent is stated, rather than leaving an
+            // unexplained gap where the picker would be.
+            if !retention.changeable {
+                SettingsHint("Retention is set on the server and cannot be changed from here.")
+            } else if !canChange(retention) {
+                SettingsHint("Changing retention needs administrator access.")
+            } else {
+                SettingsHint(
+                    "Footage older than this is deleted automatically. Shortening it deletes existing footage sooner."
+                )
+            }
+        } else {
+            DetailGroup("Retention") {
+                Text("Retention could not be read.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            }
         }
     }
 
