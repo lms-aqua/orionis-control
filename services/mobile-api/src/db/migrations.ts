@@ -229,4 +229,48 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_audit_actor_time ON audit_events(actor_id, occurred_at DESC);
     `,
   },
+  {
+    id: '0008_connections',
+    sql: `
+      -- Camera sources, configurable at runtime instead of only through env.
+      --
+      -- 'provider' names a plugin in the provider registry; 'settings_json'
+      -- holds that plugin's non-secret configuration and 'secrets_json' its
+      -- credentials, each value encrypted individually (see lib/secrets.ts).
+      -- Secrets are a separate column so the non-secret half can be read,
+      -- logged and diffed without ever touching the cipher.
+      CREATE TABLE connections (
+        id             TEXT PRIMARY KEY,
+        provider       TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        enabled        INTEGER NOT NULL DEFAULT 1,
+        settings_json  TEXT NOT NULL DEFAULT '{}',
+        secrets_json   TEXT NOT NULL DEFAULT '{}',
+        -- Ordering for the merged camera wall. Lower sorts first; ties break
+        -- on name so the order is total and stable across restarts.
+        sort_order     INTEGER NOT NULL DEFAULT 100,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        created_by     TEXT
+      );
+
+      -- A connection's slug prefixes every camera ID it contributes
+      -- ("frigate-main:driveway"), so two sources may use the same upstream
+      -- camera name without colliding. Uniqueness is therefore load-bearing,
+      -- not cosmetic.
+      CREATE UNIQUE INDEX idx_connections_name ON connections(name);
+
+      -- Health is observed, never authored: it records the last probe rather
+      -- than anything the operator typed, so it is kept out of the config row
+      -- and is safe to wipe.
+      CREATE TABLE connection_health (
+        connection_id  TEXT PRIMARY KEY REFERENCES connections(id) ON DELETE CASCADE,
+        status         TEXT NOT NULL,
+        message        TEXT,
+        camera_count   INTEGER,
+        latency_ms     INTEGER,
+        checked_at     TEXT NOT NULL
+      );
+    `,
+  },
 ];
