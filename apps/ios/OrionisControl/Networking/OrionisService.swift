@@ -875,9 +875,16 @@ struct OrionisService: OrionisServicing {
 
     func createConnection(_ request: ConnectionCreateRequest) async throws -> ConnectionSummary {
         // The gateway probes what it just stored, so this can take an upstream
-        // round trip on top of the write.
+        // round trip on top of the write — long enough for a second tap. The
+        // key makes that retry return the first result instead of a conflict.
         try await api.request(
-            Endpoint(method: .post, path: "/connections", body: request, timeout: 30),
+            Endpoint(
+                method: .post,
+                path: "/connections",
+                body: request,
+                idempotencyKey: UUID().uuidString,
+                timeout: 30
+            ),
             as: ConnectionSummary.self)
     }
 
@@ -890,8 +897,14 @@ struct OrionisService: OrionisServicing {
     }
 
     func removeConnection(id: String) async throws {
+        // The gateway requires the confirmation header for this: it deletes
+        // stored credentials and removes the source's cameras.
         try await api.requestVoid(
-            Endpoint(method: .delete, path: "/connections/\(escaped(id))"))
+            Endpoint(
+                method: .delete,
+                path: "/connections/\(escaped(id))",
+                confirmDisruptive: true
+            ))
     }
 
     func probeConnection(id: String) async throws -> ConnectionHealth {

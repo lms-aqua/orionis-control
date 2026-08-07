@@ -171,7 +171,7 @@ describe('lifecycle', () => {
     const removed = await h.app.inject({
       method: 'DELETE',
       url: `${API_PREFIX}/connections/${record.id}`,
-      headers: h.auth(token),
+      headers: { ...h.auth(token), 'x-confirm-disruptive': 'true' },
     });
     expect(removed.statusCode).toBe(200);
 
@@ -181,6 +181,85 @@ describe('lifecycle', () => {
       headers: h.auth(token),
     });
     expect(gone.statusCode).toBe(404);
+  });
+
+  it('refuses to remove a source without explicit confirmation', async () => {
+    // Removal deletes stored credentials and takes cameras off the wall. The
+    // app asks first, but the app asking is presentation — the gateway refuses
+    // regardless, the same as pausing DNS protection.
+    const { h, token } = await signedInAs('orionis-admins');
+    const created = await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/connections`,
+      headers: h.auth(token),
+      payload: manualRtsp('Front Door'),
+    });
+    const id = created.json().data.id;
+
+    const unconfirmed = await h.app.inject({
+      method: 'DELETE',
+      url: `${API_PREFIX}/connections/${id}`,
+      headers: h.auth(token),
+    });
+    expect(unconfirmed.statusCode).toBe(400);
+    expect(unconfirmed.json().error.details.requiresHeader).toBe('X-Confirm-Disruptive: true');
+
+    // ...and the source is still there.
+    const still = await h.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/connections/${id}`,
+      headers: h.auth(token),
+    });
+    expect(still.statusCode).toBe(200);
+  });
+
+  it('returns the first result when a create is retried with the same key', async () => {
+    // Creating probes an upstream, so it is slow enough to be double-tapped.
+    const { h, token } = await signedInAs('orionis-admins');
+    const headers = { ...h.auth(token), 'idempotency-key': 'create-front-door-1' };
+
+    const first = await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/connections`,
+      headers,
+      payload: manualRtsp('Front Door'),
+    });
+    const second = await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/connections`,
+      headers,
+      payload: manualRtsp('Front Door'),
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    // The same source, not a second one and not a conflict.
+    expect(second.json().data.id).toBe(first.json().data.id);
+
+    const listed = await h.app.inject({
+      method: 'GET',
+      url: `${API_PREFIX}/connections`,
+      headers: h.auth(token),
+    });
+    expect(listed.json().data.connections).toHaveLength(1);
+  });
+
+  it('rejects the same key used for a different source', async () => {
+    const { h, token } = await signedInAs('orionis-admins');
+    const headers = { ...h.auth(token), 'idempotency-key': 'reused-key-1' };
+    await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/connections`,
+      headers,
+      payload: manualRtsp('Front Door'),
+    });
+    const different = await h.app.inject({
+      method: 'POST',
+      url: `${API_PREFIX}/connections`,
+      headers,
+      payload: manualRtsp('Back Door'),
+    });
+    expect(different.statusCode).toBe(409);
   });
 
   it('refuses a second connection whose identifier would collide', async () => {

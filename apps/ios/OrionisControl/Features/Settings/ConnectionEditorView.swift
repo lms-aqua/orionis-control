@@ -70,9 +70,7 @@ struct ConnectionEditorView: View {
                 if isSaving {
                     // Creating also probes the upstream server-side, which can
                     // take a few seconds; say so rather than looking hung.
-                    ProgressView(isEditing ? "Saving…" : "Adding and checking…")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    BusyOverlay(message: isEditing ? "Saving…" : "Adding and checking…")
                 }
             }
             .task { prime() }
@@ -99,7 +97,7 @@ struct ConnectionEditorView: View {
                             SettingsIcon(systemImage: provider.symbolName, tint: Theme.accent)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(provider.displayName)
-                                    .font(.system(size: 15, weight: .medium))
+                                    .font(.subheadline.weight(.medium))
                                     .foregroundStyle(Theme.textPrimary)
                                 Text(provider.summary)
                                     .font(.caption)
@@ -117,6 +115,7 @@ struct ConnectionEditorView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 12)
                         .contentShape(Rectangle())
+                        .accessibilityElement(children: .combine)
                     }
                     .buttonStyle(.plain)
                 }
@@ -181,7 +180,7 @@ struct ConnectionEditorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(field.label)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(Theme.textPrimary)
                     Spacer()
                     if existing?.hasSecret(field.key) == true {
@@ -195,7 +194,8 @@ struct ConnectionEditorView: View {
                 .textContentType(.password)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .font(.system(size: 15))
+                .font(.subheadline)
+                .accessibilityLabel(field.label)
                 if let help = field.help {
                     Text(help)
                         .font(.caption2)
@@ -208,14 +208,15 @@ struct ConnectionEditorView: View {
         default:
             VStack(alignment: .leading, spacing: 6) {
                 Text(field.label)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(Theme.textPrimary)
                 TextField(field.placeholder ?? "", text: binding(for: field), axis: .vertical)
                     .lineLimit(1...4)
                     .keyboardType(field.type == .number ? .numberPad : .URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.system(size: 15))
+                    .font(.subheadline)
+                    .accessibilityLabel(field.label)
                 if let help = field.help {
                     Text(help)
                         .font(.caption2)
@@ -233,10 +234,11 @@ struct ConnectionEditorView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
-                .font(.system(size: 15, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(Theme.textPrimary)
             TextField(placeholder, text: text)
-                .font(.system(size: 15))
+                .font(.subheadline)
+                .accessibilityLabel(label)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

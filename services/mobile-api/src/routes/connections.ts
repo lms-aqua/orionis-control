@@ -17,7 +17,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AppError } from '../lib/errors.ts';
 import { ok } from '../lib/envelope.ts';
-import { actorOf, requirePermission } from '../http/context.ts';
+import { actorOf, requirePermission, withIdempotency } from '../http/context.ts';
 import type { ConnectionRecord, ConnectionStore } from '../adapters/connections/store.ts';
 
 const SettingsSchema = z.record(z.string().min(1).max(64), z.unknown());
@@ -87,25 +87,35 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
   app.post('/connections', { preHandler: requirePermission('connections.manage') }, async (req) => {
     const body = CreateBody.parse(req.body ?? {});
     const store = storeOf(req.services);
-    const record = store.create({ ...body, createdBy: req.principal?.userId ?? null });
 
-    req.services.audit.record({
-      action: 'connection.created',
-      actor: actorOf(req),
-      outcome: 'success',
-      targetType: 'connection',
-      targetId: record.id,
-      requestId: req.id,
-      ip: req.ip,
-      // Provider and name only: settings can carry an address, and secrets are
-      // never eligible for the log at all.
-      metadata: { provider: record.provider, name: record.name, slug: record.slug },
+    // Creating stores credentials and then probes an upstream, so it is slow
+    // enough to be retried by an impatient hand. Name uniqueness already turns
+    // a duplicate into a 409 rather than a second source, but an idempotency
+    // key makes the retry return the original result instead of an error.
+    const endpoint = 'POST /connections';
+    const { value } = await withIdempotency(req, endpoint, body, async () => {
+      const record = store.create({ ...body, createdBy: req.principal?.userId ?? null });
+
+      req.services.audit.record({
+        action: 'connection.created',
+        actor: actorOf(req),
+        outcome: 'success',
+        targetType: 'connection',
+        targetId: record.id,
+        requestId: req.id,
+        ip: req.ip,
+        // Provider and name only: settings can carry an address, and secrets are
+        // never eligible for the log at all.
+        metadata: { provider: record.provider, name: record.name, slug: record.slug },
+      });
+
+      // Probed immediately so the operator sees whether it works, rather than
+      // saving something broken and finding out at the camera wall.
+      const health = await store.probe(record.id);
+      return { ...present(store, store.get(record.id)), health };
     });
 
-    // Probed immediately so the operator sees whether it works, rather than
-    // saving something broken and finding out at the camera wall.
-    const health = await store.probe(record.id);
-    return ok({ ...present(store, store.get(record.id)), health }, req.id);
+    return ok(value, req.id);
   });
 
   // --- GET /connections/:connectionId ---------------------------------------
@@ -155,6 +165,20 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
     async (req) => {
       const store = storeOf(req.services);
       const record = store.get(req.params.connectionId);
+
+      // Removal deletes stored credentials and takes this source's cameras off
+      // the wall. Nothing on the camera system itself changes, but the local
+      // loss is real and unrecoverable — so it joins the same explicit
+      // confirmation convention as pausing DNS protection and restarting a
+      // camera, rather than relying on the app to ask nicely.
+      if (req.headers['x-confirm-disruptive'] !== 'true') {
+        throw new AppError(
+          'VALIDATION_FAILED',
+          `Removing "${record.name}" deletes its stored credentials and removes its cameras from the app. Confirm to proceed.`,
+          { requiresHeader: 'X-Confirm-Disruptive: true' },
+        );
+      }
+
       store.remove(record.id);
 
       req.services.audit.record({

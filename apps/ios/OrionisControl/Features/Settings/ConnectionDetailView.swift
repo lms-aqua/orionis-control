@@ -99,7 +99,7 @@ struct ConnectionDetailView: View {
             StatusDot(color: colour, pulsing: health?.status == .healthy && connection.enabled)
             VStack(alignment: .leading, spacing: 3) {
                 Text(statusTitle(connection))
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
                 if let message = health?.message {
                     Text(message)
@@ -143,16 +143,21 @@ struct ConnectionDetailView: View {
             Image(systemName: available ? "checkmark.circle.fill" : "minus.circle")
                 .font(.system(size: 15))
                 .foregroundStyle(available ? Theme.good : Theme.textTertiary)
+                .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: 15, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(available ? Theme.textPrimary : Theme.textSecondary)
             Spacer()
             Text(available ? "Yes" : "No")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(Theme.textTertiary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+        // "Live view, Yes" reads as a fragment; spelling it out is what a
+        // sighted reader gets from the tick.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title): \(available ? "supported" : "not supported")")
     }
 
     @ViewBuilder
@@ -366,7 +371,7 @@ struct ConnectionChallengeView: View {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(challenge.prompt)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.callout.weight(.semibold))
                             .foregroundStyle(Theme.textPrimary)
                         if let sentTo = challenge.sentTo {
                             Text("Sent to \(sentTo)")
@@ -387,7 +392,7 @@ struct ConnectionChallengeView: View {
                         TextField("Verification code", text: $code)
                             .keyboardType(.numberPad)
                             .textContentType(.oneTimeCode)
-                            .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                            .font(.system(.title2, design: .monospaced).weight(.semibold))
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 16)
@@ -419,11 +424,7 @@ struct ConnectionChallengeView: View {
                 }
             }
             .overlay {
-                if isSubmitting {
-                    ProgressView("Verifying…")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
+                if isSubmitting { BusyOverlay(message: "Verifying…") }
             }
         }
     }

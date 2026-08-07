@@ -538,7 +538,12 @@ export function buildOpenApiDocument(): object {
         post: {
           tags: ['connections'],
           summary: 'Add a camera connection (administrator only)',
+          description:
+            'Accepts an Idempotency-Key header; a repeat with the same key returns the original result rather than creating a second source.',
           security: authed,
+          parameters: [
+            { name: 'Idempotency-Key', in: 'header', required: false, schema: { type: 'string' } },
+          ],
           responses: {
             '200': jsonResponse('Created and probed', envelope({ type: 'object' })),
             '409': errorResponse('A connection with that name or identifier already exists'),
@@ -561,7 +566,17 @@ export function buildOpenApiDocument(): object {
         delete: {
           tags: ['connections'],
           summary: 'Remove a connection and its stored credentials',
+          description:
+            'Disruptive: requires the header X-Confirm-Disruptive: true. Deletes the stored credentials and removes the cameras this source contributes.',
           security: authed,
+          parameters: [
+            {
+              name: 'X-Confirm-Disruptive',
+              in: 'header',
+              required: true,
+              schema: { type: 'string', enum: ['true'] },
+            },
+          ],
           responses: {
             '200': jsonResponse('Removed', envelope({ type: 'object' })),
             '404': errorResponse('No such connection'),

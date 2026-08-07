@@ -4754,9 +4754,20 @@
           "connections"
         ],
         "summary": "Add a camera connection (administrator only)",
+        "description": "Accepts an Idempotency-Key header; a repeat with the same key returns the original result rather than creating a second source.",
         "security": [
           {
             "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5097,9 +5108,23 @@
           "connections"
         ],
         "summary": "Remove a connection and its stored credentials",
+        "description": "Disruptive: requires the header X-Confirm-Disruptive: true. Deletes the stored credentials and removes the cameras this source contributes.",
         "security": [
           {
             "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Confirm-Disruptive",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ]
+            }
           }
         ],
         "responses": {

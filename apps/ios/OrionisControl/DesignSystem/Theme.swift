@@ -160,7 +160,7 @@ struct CardHeader: View {
                 .frame(width: 30, height: 30)
                 .background(Theme.soft(tint), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(Theme.textPrimary)
             Spacer(minLength: 8)
             if let tag {
@@ -177,6 +177,7 @@ struct CardHeader: View {
 struct StatusDot: View {
     var color: Color
     var pulsing: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var on = false
 
     var body: some View {
@@ -188,8 +189,14 @@ struct StatusDot: View {
                     .stroke(color.opacity(0.5), lineWidth: on ? 7 : 0)
                     .opacity(on ? 0 : 1)
             )
+            // The dot always sits beside text that states the same status, so
+            // hiding it from VoiceOver removes a decorative element rather than
+            // information.
+            .accessibilityHidden(true)
             .onAppear {
-                guard pulsing else { return }
+                // A never-ending pulse is exactly what Reduce Motion is for; the
+                // colour and the accompanying label still carry the status.
+                guard pulsing, !reduceMotion else { return }
                 withAnimation(.easeOut(duration: 2).repeatForever(autoreverses: false)) { on = true }
             }
     }
@@ -203,7 +210,7 @@ struct SectionLabel<Trailing: View>: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title.uppercased())
-                .font(.system(size: 12, weight: .semibold))
+                .font(.caption.weight(.semibold))
                 .tracking(1.2)
                 .foregroundStyle(Theme.textSecondary)
             Spacer(minLength: 8)

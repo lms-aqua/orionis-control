@@ -143,7 +143,7 @@ struct ConnectionsView: View {
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(Theme.textTertiary)
             Text("No camera sources yet")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
             Text(
                 "Add a Frigate server, a UniFi Protect console, a Tapo or Wyze camera, Nest, or any RTSP stream. They all appear as one camera list."
@@ -154,7 +154,7 @@ struct ConnectionsView: View {
 
             if canManage {
                 Button("Add a source") { isAdding = true }
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 11)

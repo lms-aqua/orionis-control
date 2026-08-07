@@ -69,7 +69,7 @@ struct SettingsChip: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 9.5, weight: .bold))
+            .font(.caption2.weight(.bold))
             .tracking(0.5)
             .foregroundStyle(tint)
             .padding(.horizontal, 7)
@@ -86,7 +86,7 @@ struct SettingsRowLabel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 15, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.leading)
             if let subtitle {
@@ -140,7 +140,7 @@ struct SettingsNavRow<Destination: View>: View {
                 if let chip { SettingsChip(text: chip, tint: chipTint) }
                 if let value {
                     Text(value)
-                        .font(.system(size: 13).monospacedDigit())
+                        .font(.footnote.monospacedDigit())
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                 }
@@ -150,6 +150,10 @@ struct SettingsNavRow<Destination: View>: View {
             }
             .settingsRowPadding()
             .contentShape(Rectangle())
+            // Read as one item — "Security & Privacy, Face ID, auto-lock…" —
+            // rather than as four separate stops for the icon, title, subtitle
+            // and chevron.
+            .accessibilityElement(children: .combine)
         }
         .buttonStyle(.plain)
     }
@@ -222,11 +226,11 @@ struct SettingsValueRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
-                .font(.system(size: 15, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(Theme.textPrimary)
             Spacer(minLength: 8)
             Text(value)
-                .font(monospaced ? .system(size: 13.5, design: .monospaced) : .system(size: 14))
+                .font(monospaced ? .system(.footnote, design: .monospaced) : .subheadline)
                 .foregroundStyle(Theme.textSecondary)
                 .lineLimit(truncatesInMiddle ? 1 : 3)
                 .truncationMode(truncatesInMiddle ? .middle : .tail)
@@ -258,7 +262,7 @@ struct SettingsButtonRow: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(tint)
                     if let subtitle {
                         Text(subtitle)
@@ -299,6 +303,30 @@ struct SettingsNoteRow: View {
 }
 
 // MARK: - Screen scaffold
+
+/// A blocking progress overlay that honours Reduce Transparency.
+///
+/// The material background is a nicety; behind Reduce Transparency it becomes a
+/// solid surface instead, because a person who has asked for that has asked not
+/// to read text through a blur.
+struct BusyOverlay: View {
+    let message: String
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ProgressView(message)
+            .padding()
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(reduceTransparency ? AnyShapeStyle(Theme.surfaceRaised) : AnyShapeStyle(.regularMaterial))
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Theme.hairline, lineWidth: 1)
+            )
+            .accessibilityLabel(message)
+    }
+}
 
 /// The shared layout for every Settings category screen: the app ground, a
 /// scrolling column of labelled groups, and an inline navigation title.
