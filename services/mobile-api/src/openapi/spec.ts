@@ -79,6 +79,10 @@ export function buildOpenApiDocument(): object {
       { name: 'events', description: 'Camera events and recordings' },
       { name: 'adguard', description: 'AdGuard Home status and management' },
       { name: 'system', description: 'Service health, dashboard and approved actions' },
+      {
+        name: 'connections',
+        description: 'Camera sources configured at runtime (administrator only)',
+      },
       { name: 'devices', description: 'Device sessions, push and preferences' },
     ],
     components: {
@@ -517,6 +521,107 @@ export function buildOpenApiDocument(): object {
         },
       },
       '/audit': get('Audit log (administrator only)', 'system', { type: 'object' }),
+
+      // Camera connections. Administrator-only throughout: a connection holds
+      // credentials for a third-party system and decides what the gateway will
+      // fetch. Stored credentials are never returned — responses report only
+      // which keys are set.
+      '/connections/providers': get(
+        'Installable connection types and the fields each needs (administrator only)',
+        'connections',
+        { type: 'object' },
+      ),
+      '/connections': {
+        ...get('Configured camera connections (administrator only)', 'connections', {
+          type: 'object',
+        }),
+        post: {
+          tags: ['connections'],
+          summary: 'Add a camera connection (administrator only)',
+          description:
+            'Accepts an Idempotency-Key header; a repeat with the same key returns the original result rather than creating a second source.',
+          security: authed,
+          parameters: [
+            { name: 'Idempotency-Key', in: 'header', required: false, schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': jsonResponse('Created and probed', envelope({ type: 'object' })),
+            '409': errorResponse('A connection with that name or identifier already exists'),
+            ...commonErrors,
+          },
+        },
+      },
+      '/connections/{connectionId}': {
+        ...get('One camera connection (administrator only)', 'connections', { type: 'object' }),
+        patch: {
+          tags: ['connections'],
+          summary: 'Change a connection; omitted credentials keep their stored value',
+          security: authed,
+          responses: {
+            '200': jsonResponse('Updated', envelope({ type: 'object' })),
+            '404': errorResponse('No such connection'),
+            ...commonErrors,
+          },
+        },
+        delete: {
+          tags: ['connections'],
+          summary: 'Remove a connection and its stored credentials',
+          description:
+            'Disruptive: requires the header X-Confirm-Disruptive: true. Deletes the stored credentials and removes the cameras this source contributes.',
+          security: authed,
+          parameters: [
+            {
+              name: 'X-Confirm-Disruptive',
+              in: 'header',
+              required: true,
+              schema: { type: 'string', enum: ['true'] },
+            },
+          ],
+          responses: {
+            '200': jsonResponse('Removed', envelope({ type: 'object' })),
+            '404': errorResponse('No such connection'),
+            ...commonErrors,
+          },
+        },
+      },
+      '/connections/{connectionId}/probe': {
+        post: {
+          tags: ['connections'],
+          summary: 'Check reachability and credentials now, and record the result',
+          security: authed,
+          responses: {
+            '200': jsonResponse('Probe recorded', envelope({ type: 'object' })),
+            '404': errorResponse('No such connection'),
+            ...commonErrors,
+          },
+        },
+      },
+      '/connections/{connectionId}/auth/begin': {
+        post: {
+          tags: ['connections'],
+          summary: 'Begin interactive sign-in; may return a second-factor challenge',
+          security: authed,
+          responses: {
+            '200': jsonResponse('Complete, challenged or failed', envelope({ type: 'object' })),
+            '404': errorResponse('No such connection'),
+            '501': errorResponse('This connection type does not sign in interactively'),
+            ...commonErrors,
+          },
+        },
+      },
+      '/connections/{connectionId}/auth/complete': {
+        post: {
+          tags: ['connections'],
+          summary: 'Submit the verification code the upstream sent',
+          security: authed,
+          responses: {
+            '200': jsonResponse('Complete or failed', envelope({ type: 'object' })),
+            '404': errorResponse('No such connection'),
+            '501': errorResponse('This connection type does not sign in interactively'),
+            ...commonErrors,
+          },
+        },
+      },
       '/diagnostics/incidents': {
         post: {
           tags: ['system'],

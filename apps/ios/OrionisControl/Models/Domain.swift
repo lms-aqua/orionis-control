@@ -56,6 +56,8 @@ enum Permission: String, Codable, Sendable {
     case infraView = "infra.view"
     case infraManage = "infra.manage"
     case devicesManage = "devices.manage"
+    case connectionsView = "connections.view"
+    case connectionsManage = "connections.manage"
 }
 
 struct CurrentUser: Codable, Sendable, Equatable, Identifiable {

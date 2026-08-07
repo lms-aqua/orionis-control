@@ -44,6 +44,12 @@ export const AUDIT_ACTIONS = [
   'device.removed',
   'notifications.preferences.updated',
   'client.media.incident_reported',
+  'connection.created',
+  'connection.updated',
+  'connection.removed',
+  'connection.probed',
+  'connection.auth.started',
+  'connection.auth.completed',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

@@ -231,7 +231,7 @@ export interface Page<T> {
  * production data.
  */
 export interface OrionisAdapter {
-  readonly kind: 'http' | 'unconfigured';
+  readonly kind: 'http' | 'unconfigured' | 'aggregate';
   readonly configured: boolean;
   /**
    * Whether anything upstream can actually detect events.

@@ -69,25 +69,32 @@ function gatewayHost(publicBaseUrl: string): string {
 
 export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
   // --- GET /infra/status ----------------------------------------------------
-  app.get('/infra/status', { preHandler: requirePermission('infra.view') }, async (req) => {
-    const { infra, config } = req.services;
-    if (!infra.configured) {
-      throw new AppError(
-        'SERVICE_NOT_CONFIGURED',
-        'Infrastructure management is not configured on this gateway.',
-      );
-    }
+  app.get(
+    '/infra/status',
+    {
+      preHandler: requirePermission('infra.view'),
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (req) => {
+      const { infra, config } = req.services;
+      if (!infra.configured) {
+        throw new AppError(
+          'SERVICE_NOT_CONFIGURED',
+          'Infrastructure management is not configured on this gateway.',
+        );
+      }
 
-    // Each side is reported independently: one being unreachable should not hide
-    // the state of the other.
-    const [caddy, authelia, restart] = await Promise.all([
-      infra.caddyStatus().catch((error: unknown) => ({ error: describe(error) })),
-      infra.autheliaRuntime().catch((error: unknown) => ({ error: describe(error) })),
-      readAutheliaRestart(config.orionis.retentionDir),
-    ]);
+      // Each side is reported independently: one being unreachable should not hide
+      // the state of the other.
+      const [caddy, authelia, restart] = await Promise.all([
+        infra.caddyStatus().catch((error: unknown) => ({ error: describe(error) })),
+        infra.autheliaRuntime().catch((error: unknown) => ({ error: describe(error) })),
+        readAutheliaRestart(config.orionis.retentionDir),
+      ]);
 
-    return ok({ caddy, authelia, autheliaRestart: restart }, req.id);
-  });
+      return ok({ caddy, authelia, autheliaRestart: restart }, req.id);
+    },
+  );
 
   // --- GET /infra/caddy/config ----------------------------------------------
   app.get<{ Querystring: { serverId?: string } }>(
@@ -101,63 +108,78 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // --- PUT /infra/caddy/config ----------------------------------------------
-  app.put('/infra/caddy/config', { preHandler: requirePermission('infra.manage') }, async (req) => {
-    const body = CaddyConfigBody.parse(req.body ?? {});
-    const { infra, config, audit } = req.services;
+  app.put(
+    '/infra/caddy/config',
+    {
+      preHandler: requirePermission('infra.manage'),
+      config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+    },
+    async (req) => {
+      const body = CaddyConfigBody.parse(req.body ?? {});
+      const { infra, config, audit } = req.services;
 
-    // 1. Refuse anything that would disconnect the app from the server. This runs
-    //    before the config is sent anywhere.
-    guardCaddyConfig({
-      content: body.content,
-      gatewayHost: gatewayHost(config.publicBaseUrl),
-      gatewayUpstream: config.infra.gatewayUpstream,
-    });
+      // 1. Refuse anything that would disconnect the app from the server. This runs
+      //    before the config is sent anywhere.
+      guardCaddyConfig({
+        content: body.content,
+        gatewayHost: gatewayHost(config.publicBaseUrl),
+        gatewayUpstream: config.infra.gatewayUpstream,
+      });
 
-    // 2. Describe what the change does to other sites, and require that removals
-    //    were intended. Taking a client site offline should never be a side effect.
-    const current = await infra.caddyCurrentConfig(body.serverId);
-    const summary = summariseCaddyChange(current.raw, body.content);
-    if (summary.removesLiveHosts && body.confirmRemovingHosts !== true) {
-      // Matches the convention already used for disruptive camera controls.
-      throw new AppError(
-        'VALIDATION_FAILED',
-        `This change removes ${summary.removedHosts.length} site(s) that are currently served: ` +
-          `${summary.removedHosts.join(', ')}. Confirm to apply it.`,
-        { removedHosts: summary.removedHosts, addedHosts: summary.addedHosts },
-      );
-    }
+      // 2. Describe what the change does to other sites, and require that removals
+      //    were intended. Taking a client site offline should never be a side effect.
+      const current = await infra.caddyCurrentConfig(body.serverId);
+      const summary = summariseCaddyChange(current.raw, body.content);
+      if (summary.removesLiveHosts && body.confirmRemovingHosts !== true) {
+        // Matches the convention already used for disruptive camera controls.
+        throw new AppError(
+          'VALIDATION_FAILED',
+          `This change removes ${summary.removedHosts.length} site(s) that are currently served: ` +
+            `${summary.removedHosts.join(', ')}. Confirm to apply it.`,
+          { removedHosts: summary.removedHosts, addedHosts: summary.addedHosts },
+        );
+      }
 
-    // 3. caddymanager keeps its own backup and validates on apply; a rejected
-    //    config surfaces as a typed error rather than a broken server.
-    await auditMutation(
-      audit,
-      {
-        action: 'infra.caddy.config_applied',
-        actor: actorOf(req),
-        targetType: 'caddy',
-        targetId: body.serverId,
-        requestId: req.id,
-        ip: req.ip,
-        metadata: {
-          removedHosts: summary.removedHosts,
-          addedHosts: summary.addedHosts,
-          bytes: body.content.length,
+      // 3. caddymanager keeps its own backup and validates on apply; a rejected
+      //    config surfaces as a typed error rather than a broken server.
+      await auditMutation(
+        audit,
+        {
+          action: 'infra.caddy.config_applied',
+          actor: actorOf(req),
+          targetType: 'caddy',
+          targetId: body.serverId,
+          requestId: req.id,
+          ip: req.ip,
+          metadata: {
+            removedHosts: summary.removedHosts,
+            addedHosts: summary.addedHosts,
+            bytes: body.content.length,
+          },
         },
-      },
-      () => infra.caddyApplyConfig(body.configId, body.content),
-    );
-    return ok({ applied: true, ...summary }, req.id);
-  });
+        () => infra.caddyApplyConfig(body.configId, body.content),
+      );
+      return ok({ applied: true, ...summary }, req.id);
+    },
+  );
 
   // --- GET /infra/authelia/config -------------------------------------------
-  app.get('/infra/authelia/config', { preHandler: requirePermission('infra.view') }, async (req) =>
-    ok(await req.services.infra.autheliaConfig(), req.id),
+  app.get(
+    '/infra/authelia/config',
+    {
+      preHandler: requirePermission('infra.view'),
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (req) => ok(await req.services.infra.autheliaConfig(), req.id),
   );
 
   // --- PUT /infra/authelia/config -------------------------------------------
   app.put(
     '/infra/authelia/config',
-    { preHandler: requirePermission('infra.manage') },
+    {
+      preHandler: requirePermission('infra.manage'),
+      config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+    },
     async (req) => {
       const body = AutheliaConfigBody.parse(req.body ?? {});
       const { infra, config, audit } = req.services;
@@ -208,8 +230,13 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // --- GET /infra/authelia/users --------------------------------------------
-  app.get('/infra/authelia/users', { preHandler: requirePermission('infra.view') }, async (req) =>
-    ok({ items: await req.services.infra.autheliaUsers() }, req.id),
+  app.get(
+    '/infra/authelia/users',
+    {
+      preHandler: requirePermission('infra.view'),
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (req) => ok({ items: await req.services.infra.autheliaUsers() }, req.id),
   );
 
   // --- PUT /infra/authelia/users/:username/password -------------------------
@@ -240,8 +267,13 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // --- GET /infra/authelia/backups ------------------------------------------
-  app.get('/infra/authelia/backups', { preHandler: requirePermission('infra.view') }, async (req) =>
-    ok({ items: await req.services.infra.autheliaBackups() }, req.id),
+  app.get(
+    '/infra/authelia/backups',
+    {
+      preHandler: requirePermission('infra.view'),
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (req) => ok({ items: await req.services.infra.autheliaBackups() }, req.id),
   );
 
   // --- POST /infra/authelia/backups/restore ---------------------------------
@@ -283,7 +315,10 @@ export async function registerInfraRoutes(app: FastifyInstance): Promise<void> {
   // no way to restart a container by design.
   app.post(
     '/infra/authelia/restart',
-    { preHandler: requirePermission('infra.manage') },
+    {
+      preHandler: requirePermission('infra.manage'),
+      config: { rateLimit: { max: 5, timeWindow: '5 minutes' } },
+    },
     async (req) => {
       const { config, audit } = req.services;
       const principal = req.principal!;

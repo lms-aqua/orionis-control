@@ -16,6 +16,12 @@ import type { OrionisAdapter } from './adapters/orionis/types.ts';
 import { HttpAdGuardAdapter, UnconfiguredAdGuardAdapter } from './adapters/adguard/http.ts';
 import type { AdGuardAdapter } from './adapters/adguard/types.ts';
 import { PushService } from './notifications/push.ts';
+import { SecretsCipher } from './lib/secrets.ts';
+import {
+  AggregateOrionisAdapter,
+  buildProviderRegistry,
+  ConnectionStore,
+} from './adapters/connections/index.ts';
 
 export interface AppServices {
   config: Config;
@@ -26,6 +32,8 @@ export interface AppServices {
   orionis: OrionisAdapter;
   infra: CaddyManagerClient;
   adguard: AdGuardAdapter;
+  /** Null when no encryption key is configured, which disables the feature. */
+  connections: ConnectionStore | null;
   push: PushService;
   startedAt: Date;
 }
@@ -51,7 +59,7 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
     fetchImpl,
   );
 
-  const orionis: OrionisAdapter =
+  const envOrionis: OrionisAdapter =
     opts.orionis ??
     (config.orionis.configured
       ? config.orionis.adapter === 'go2rtc'
@@ -84,6 +92,43 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
           )
       : new UnconfiguredOrionisAdapter());
 
+  // --- camera connections ---------------------------------------------------
+  // Sources added at runtime. The aggregate adapter wraps the environment-built
+  // one rather than replacing it: with no connection enabled it delegates
+  // straight through, so an existing deployment is untouched until someone adds
+  // their first connection, and no restart is needed when they do.
+  const connections: ConnectionStore | null = config.connections.enabled
+    ? new ConnectionStore(
+        db,
+        buildProviderRegistry(),
+        new SecretsCipher(config.connections.secretKey, config.connections.previousSecretKeys),
+        fetchImpl,
+        config.orionis.timeoutMs,
+        config.connections.probeTtlMs,
+      )
+    : null;
+
+  const orionis: OrionisAdapter =
+    connections && !opts.orionis
+      ? new AggregateOrionisAdapter(
+          () => connections.active(),
+          (connectionId, error) => {
+            // A source that failed mid-fan-out is recorded so the Connections
+            // screen can explain a partial camera wall instead of leaving the
+            // gap unexplained.
+            connections.recordHealth(connectionId, {
+              status: 'degraded',
+              message: error instanceof Error ? error.message : 'This source failed to respond.',
+              cameraCount: null,
+              latencyMs: null,
+              checkedAt: new Date().toISOString(),
+            });
+          },
+          (connectionId) => connections.healthCached(connectionId),
+          envOrionis,
+        )
+      : envOrionis;
+
   const adguard: AdGuardAdapter =
     opts.adguard ??
     (config.adguard.configured
@@ -105,6 +150,7 @@ export function buildServices(config: Config, opts: BuildServicesOptions = {}): 
     orionis,
     infra,
     adguard,
+    connections,
     push: new PushService(db, config),
     startedAt: new Date(),
   };

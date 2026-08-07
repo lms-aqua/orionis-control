@@ -20,6 +20,7 @@
     "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
     "migrate": "npm run build && node dist/db/migrate-cli.js",
+    "secrets:rewrap": "npm run build && node dist/db/rewrap-cli.js",
     "openapi": "npm run build && node dist/openapi/emit.js"
   },
   "dependencies": {
