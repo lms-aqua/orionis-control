@@ -1,3 +1,7 @@
+Orionis Control 1.6.0 adds two more camera brands: Uniview (UNV) and Hanwha Vision (Wisenet). Both talk to the camera on your own network over its local interface — the camera's own login, nothing sent to a vendor cloud — and give you snapshots and live view. As with the other local sources, events and recordings are left off rather than half-wired. These are verified by tests and against the vendors' documented interfaces; the live connection to your own camera is the one thing only you can confirm. (Uniview's snapshot path varies a little by model — if stills don't appear, live view still works over RTSP, and you can set the exact path under advanced settings.)
+
+---
+
 Orionis Control 1.5.0 adds Arlo. Like Ring and Eufy, Arlo has no local API of its own, so this connects through an existing open-source bridge that others maintain — arlo-cam-api — which stands in for the Arlo base station on your own network and hands each camera's live stream to the app. It runs entirely on your network: Orionis never signs in to Arlo's cloud and holds no Arlo password. You get live view; snapshots and cloud clips stay on Arlo's side. Verified against the bridge's documented API; the live connection through a running bridge to your own base station is the part only you can confirm.
 
 ---
