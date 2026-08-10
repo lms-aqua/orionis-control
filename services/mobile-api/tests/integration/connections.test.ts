@@ -118,6 +118,7 @@ describe('providers', () => {
     expect(providers.map((p) => p.id).sort()).toEqual([
       'axis',
       'dahua',
+      'eufy',
       'foscam',
       'frigate',
       'hikvision',
@@ -125,6 +126,7 @@ describe('providers', () => {
       'nest',
       'onvif',
       'reolink',
+      'ring',
       'rtsp',
       'scrypted',
       'tapo',
