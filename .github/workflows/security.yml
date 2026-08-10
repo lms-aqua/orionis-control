@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0 # full history: a rotated secret is still a leaked secret
 
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
