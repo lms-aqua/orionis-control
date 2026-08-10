@@ -102,7 +102,10 @@ final class AudioSessionOwner {
             // `.mixWithOthers` keeps every other session on the device alive,
             // including a microphone capture we must not disturb.
             try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
-            try session.setActive(true)
+            // `options:` is explicit because the AudioSessionConfiguring protocol
+            // declares no default for it — AVAudioSession's own overload does, but
+            // the call goes through the protocol so the argument must be passed.
+            try session.setActive(true, options: [])
             isActive = true
             return true
         } catch {
