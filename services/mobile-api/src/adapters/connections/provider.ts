@@ -209,6 +209,17 @@ export interface InteractiveAuth {
    * credentials when they are neither.
    */
   pendingSettings(): Record<string, unknown>;
+
+  /**
+   * Whether a completed sign-in is already on the connection.
+   *
+   * A bridge that streams this source needs the *verified* session, not the raw
+   * email and password: handed only those, it introduces itself to the upstream
+   * as a stranger and is mailed a fresh verification code on every start. The
+   * store refuses to stand a bridge up until this is true, so the code the user
+   * types in the app is the only one they ever see.
+   */
+  isSignedIn(): boolean;
 }
 
 export function supportsInteractiveAuth(
@@ -216,7 +227,8 @@ export function supportsInteractiveAuth(
 ): provider is CameraProvider & InteractiveAuth {
   return (
     typeof (provider as Partial<InteractiveAuth>).beginAuth === 'function' &&
-    typeof (provider as Partial<InteractiveAuth>).completeAuth === 'function'
+    typeof (provider as Partial<InteractiveAuth>).completeAuth === 'function' &&
+    typeof (provider as Partial<InteractiveAuth>).isSignedIn === 'function'
   );
 }
 

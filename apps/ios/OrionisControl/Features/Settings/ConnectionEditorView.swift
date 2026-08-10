@@ -402,11 +402,18 @@ struct ConnectionEditorView: View {
                         secrets: secrets,
                         enabled: enabled
                     ))
-                if willProvision {
+                if willProvision && !descriptor.capabilities.interactiveAuth {
                     // Asked for immediately, so "Add" really is the whole of it.
                     // A failure here is deliberately not fatal to the save: the
                     // connection exists and is correct, and the detail screen
                     // shows what went wrong and offers to try again.
+                    //
+                    // A source that signs in interactively is skipped here: it is
+                    // not signed in yet, and the gateway refuses a bridge without a
+                    // verified session — so its bridge is set up after the code
+                    // step (see ConnectionDetailView), not on create. Booting it
+                    // now with only an email and password is what mailed a
+                    // verification code on every start.
                     _ = try? await environment.service.provisionConnectionBridge(id: created.id)
                 }
             }

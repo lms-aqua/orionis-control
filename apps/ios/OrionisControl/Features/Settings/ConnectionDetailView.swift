@@ -91,6 +91,7 @@ struct ConnectionDetailView: View {
             ConnectionChallengeView(connectionId: connectionId, challenge: challenge) { message in
                 signInNotice = message
                 await load()
+                await maybeProvisionAfterSignIn()
             }
         }
         .confirmationDialog(
@@ -404,6 +405,17 @@ struct ConnectionDetailView: View {
         }
     }
 
+    /// Stands the bridge up automatically once a sign-in has succeeded, so the
+    /// user does not have to find a second button. The gateway only permits it
+    /// now that a verified session exists; before sign-in the bridge is
+    /// deliberately not created, which is what stopped the repeated verification
+    /// codes. No-op for a source that needs no bridge or already has one.
+    private func maybeProvisionAfterSignIn() async {
+        guard canProvision, descriptor?.bridge != nil else { return }
+        guard provisioning == nil || provisioning?.state == .failed else { return }
+        await provisionBridge()
+    }
+
     private func probe() async {
         isProbing = true
         defer { isProbing = false }
@@ -427,6 +439,7 @@ struct ConnectionDetailView: View {
                 // Some accounts are already trusted and skip the code entirely.
                 signInNotice = message
                 await load()
+                await maybeProvisionAfterSignIn()
             case .challenge(let received):
                 challenge = received
             case .failed(let message):

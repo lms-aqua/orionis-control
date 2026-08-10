@@ -43,12 +43,26 @@ async function adminWithProvisioning(
   return { h, token: tokens.accessToken, dir };
 }
 
-/** A Blink source. Never reaches the network: nothing here probes successfully. */
-const blink = (name: string) => ({
+/**
+ * A Blink source that has already finished signing in — the account, the client
+ * identity Blink verified, and the session token are all present, which is what
+ * the store now requires before it will stand a bridge up. Never reaches the
+ * network: nothing here probes successfully.
+ */
+const blink = (name: string, extraSettings: Record<string, unknown> = {}) => ({
   provider: 'lostblink',
   name,
-  settings: { email: 'pat@example.invalid' },
-  secrets: { password: 'not-a-real-password' },
+  settings: {
+    email: 'pat@example.invalid',
+    tier: 'u011',
+    accountId: 42,
+    clientId: 7,
+    userId: 99,
+    uniqueId: 'stable-client-id',
+    deviceIdentifier: 'Orionis Control',
+    ...extraSettings,
+  },
+  secrets: { password: 'not-a-real-password', authToken: 'verified-session-token' },
 });
 
 async function create(h: Harness, token: string, body: Record<string, unknown>): Promise<string> {
@@ -117,18 +131,52 @@ describe('asking for a bridge', () => {
 
   it('hands over only the keys the provider declared, and no others', async () => {
     const { h, token, dir } = await adminWithProvisioning();
-    const id = await create(h, token, {
-      ...blink('Blink Hall'),
-      settings: { email: 'pat@example.invalid', mediamtxApiUrl: 'http://elsewhere:9997' },
-    });
+    // The connection also holds an address the bridge *provides* for itself
+    // (mediamtxApiUrl); that must never be handed back to it.
+    const id = await create(
+      h,
+      token,
+      blink('Blink Hall', { mediamtxApiUrl: 'http://elsewhere:9997' }),
+    );
     await provision(h, token, id);
 
     const handover = (await readRequest(dir, id)).handover as Record<string, string>;
-    // lostblink signs in to Blink itself, so it needs these two.
     expect(handover.email).toBe('pat@example.invalid');
     expect(handover.password).toBe('not-a-real-password');
-    // And nothing else the connection happens to hold.
-    expect(Object.keys(handover).sort()).toEqual(['email', 'password']);
+    // The verified session, which is the whole reason a bridge waits for sign-in.
+    expect(handover.authToken).toBe('verified-session-token');
+    // Exactly the declared keys that are present — and not mediamtxApiUrl.
+    expect(Object.keys(handover).sort()).toEqual(
+      [
+        'accountId',
+        'authToken',
+        'clientId',
+        'deviceIdentifier',
+        'email',
+        'password',
+        'tier',
+        'uniqueId',
+        'userId',
+      ].sort(),
+    );
+    expect(handover.mediamtxApiUrl).toBeUndefined();
+  });
+
+  it('refuses to set up a bridge before the source has finished signing in', async () => {
+    const { h, token, dir } = await adminWithProvisioning();
+    // Only the email and password have been entered — no verified session yet.
+    const id = await create(h, token, {
+      provider: 'lostblink',
+      name: 'Blink Unverified',
+      settings: { email: 'pat@example.invalid' },
+      secrets: { password: 'not-a-real-password' },
+    });
+
+    const res = await provision(h, token, id);
+    expect(res.statusCode, res.body).toBe(400);
+    // Nothing was written to the shared directory: blinkpy is never booted with
+    // bare credentials, which is what mailed a code on every start.
+    await expect(readRequest(dir, id)).rejects.toThrow();
   });
 
   it('mints the bridge’s own credential rather than reading one back later', async () => {
@@ -289,8 +337,10 @@ describe('what the host says back', () => {
       })
     ).json().data.settings;
     expect(settings.mediamtxApiUrl).toBe('http://orionis-blink-strict-mediamtx:9997');
+    // The applier's attempts to rewrite settings outside the template's `provides`
+    // are ignored: the signed-in values stand, the injected ones do not.
     expect(settings.email).toBe('pat@example.invalid');
-    expect(settings.tier).toBeUndefined();
+    expect(settings.tier).toBe('u011');
   });
 
   it('refuses an address it would not have accepted from a person', async () => {
