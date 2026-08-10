@@ -632,6 +632,19 @@ export class ConnectionStore {
       );
     }
 
+    // A source that signs in interactively must be signed in before its bridge
+    // is created. Otherwise the bridge is handed only the raw email and password
+    // and logs in from scratch — which mails the user a verification code at a
+    // console nobody is watching, on every start. Requiring the verified session
+    // first means the code they typed in the app is the only one they ever get.
+    const provider = this.instance(id);
+    if (supportsInteractiveAuth(provider) && !provider.isSignedIn()) {
+      throw new AppError(
+        'VALIDATION_FAILED',
+        'Finish signing in to this source before setting it up, so its bridge is handed the verified session instead of asking for a new verification code.',
+      );
+    }
+
     const existing = this.#provisioning.get(id);
     if (existing && existing.state !== 'failed') {
       // Idempotent by intent: asking twice for the same bridge is what an

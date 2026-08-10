@@ -256,4 +256,14 @@ export class FakeInteractiveProvider extends FakeProvider implements Interactive
   pendingSettings(): Record<string, unknown> {
     return this.#verified ? { accountId: 42 } : {};
   }
+
+  /**
+   * Reads persisted state, not the in-memory #verified flag: the store rebuilds
+   * a fresh instance from the stored settings/secrets after a sign-in, and it is
+   * that instance the bridge guard asks. Signed in ⇔ both the account and its
+   * token were written back — exactly the pair completeAuth persists.
+   */
+  isSignedIn(): boolean {
+    return Boolean(this.ctx.settings.accountId) && Boolean(this.ctx.secrets.authToken);
+  }
 }

@@ -213,6 +213,15 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     return Boolean(this.#ctx.settings.accountId);
   }
 
+  /**
+   * A usable session needs both the account it belongs to and the token that
+   * proves it: an accountId with no authToken is a half-written sign-in the
+   * bridge cannot reuse, so it does not count as signed in.
+   */
+  isSignedIn(): boolean {
+    return this.#signedIn && Boolean(this.#ctx.secrets.authToken);
+  }
+
   async #paths(): Promise<MediaMtxPath[]> {
     const response = await this.#ctx.fetchImpl(`${this.#apiUrl}/v3/paths/list`, {
       signal: AbortSignal.timeout(this.#ctx.timeoutMs),
