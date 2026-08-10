@@ -122,6 +122,7 @@ describe('providers', () => {
       'eufy',
       'foscam',
       'frigate',
+      'hanwha',
       'hikvision',
       'lostblink',
       'nest',
@@ -132,6 +133,7 @@ describe('providers', () => {
       'scrypted',
       'tapo',
       'unifi',
+      'uniview',
       'vivotek',
       'wyze',
     ]);
