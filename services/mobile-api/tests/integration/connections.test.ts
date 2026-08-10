@@ -116,6 +116,7 @@ describe('providers', () => {
       capabilities: Record<string, boolean>;
     }[];
     expect(providers.map((p) => p.id).sort()).toEqual([
+      'arlo',
       'axis',
       'dahua',
       'eufy',
