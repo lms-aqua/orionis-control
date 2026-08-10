@@ -37,6 +37,16 @@ export const MAX_RECORDING_CLIP_SECONDS = 1_800;
  */
 export const MAX_RECORDING_RUN_SECONDS = 30 * 24 * 60 * 60;
 
+/**
+ * How recently the newest known segment must end for a camera to count as
+ * recording *right now*. MediaMTX reports the in-progress run with an end that
+ * tracks near-current time, so a small fixed tolerance (flush lag + clock skew)
+ * is enough: within the window ⇒ footage is still arriving; past it ⇒ the
+ * recorder has stopped. Deliberately NOT scaled by segment length — a long
+ * finished run must not read as live for its own duration.
+ */
+export const LIVE_RECORDING_WINDOW_MS = 120_000;
+
 /** Opaque, URL-safe, and self-describing so no server-side index is needed. */
 export function encodeRecordingId(ref: RecordingRef): string {
   const raw = `${ref.cameraId}|${ref.start}|${ref.durationSeconds}`;
@@ -153,6 +163,47 @@ export class MediaMtxRecordings {
         start: entry.start,
         durationSeconds: entry.duration,
       }));
+  }
+
+  /**
+   * Whether each camera is recording right now, as `true | false | null`:
+   *   true  — a segment ends within LIVE_RECORDING_WINDOW_MS of now (live);
+   *   false — the camera has a known history but nothing recent is arriving;
+   *   null  — the recorder could not be reached, so activity is genuinely
+   *           unknown (an outage must never be reported as "not recording").
+   * Concurrency is bounded like storage(), so a large NVR is not stampeded, and
+   * segment lookups reuse the same 2s cache the listing/coverage paths use.
+   */
+  async recordingStatus(cameraIds: string[]): Promise<Map<string, boolean | null>> {
+    const status = new Map<string, boolean | null>();
+    const now = Date.now();
+    for (let index = 0; index < cameraIds.length; index += 8) {
+      const batch = cameraIds.slice(index, index + 8);
+      const resolved = await Promise.all(
+        batch.map(async (cameraId) => {
+          try {
+            return this.isRecordingLive(await this.segments(cameraId), now);
+          } catch {
+            // Recorder unreachable for this camera: unknown, not "off".
+            return null;
+          }
+        }),
+      );
+      batch.forEach((cameraId, offset) => status.set(cameraId, resolved[offset]!));
+    }
+    return status;
+  }
+
+  private isRecordingLive(refs: RecordingRef[], nowMs: number): boolean {
+    let newestEnd = Number.NEGATIVE_INFINITY;
+    for (const ref of refs) {
+      const start = new Date(ref.start).getTime();
+      if (!Number.isFinite(start)) continue;
+      newestEnd = Math.max(newestEnd, start + ref.durationSeconds * 1000);
+    }
+    // No footage at all ⇒ not recording. Otherwise live iff the newest moment of
+    // footage is within the window of now (a future end, from clock skew, counts).
+    return newestEnd >= nowMs - LIVE_RECORDING_WINDOW_MS;
   }
 
   private toRecording(ref: RecordingRef, cameraName: string | null): Recording {
