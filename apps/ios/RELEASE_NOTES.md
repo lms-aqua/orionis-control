@@ -1,3 +1,7 @@
+Orionis Control 1.3.0 adds Scrypted as a camera source. If you run a Scrypted server, add it once with its address and your login, and its cameras show up on the wall alongside everything else — with snapshots, and live view through the same path the other sources use. Scrypted talks its own protocol rather than a plain web API, so this connects the way Scrypted's own apps do. Events, recordings and pan-tilt controls aren't wired up yet; the source says so plainly instead of showing empty tabs.
+
+---
+
 Orionis Control 1.2.0 stops Blink from texting you a code every time. Adding a Blink source used to set its helper up the moment you tapped Add — before you had signed in — so the helper met Blink as a stranger with only an email and password and got mailed a fresh verification code on every start, forever. Now the order is the other way round: you add the source, sign in once with the code Blink sends, and only then does Orionis stand the helper up and hand it the verified session. One code, at the start, in the app — not a stream of them at a console nobody is watching. Sources that do not sign in this way (Wyze, a plain RTSP bridge) are unchanged and still set up as soon as you add them.
 
 ---

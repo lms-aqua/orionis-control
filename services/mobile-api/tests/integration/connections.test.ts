@@ -120,6 +120,7 @@ describe('providers', () => {
       'lostblink',
       'nest',
       'rtsp',
+      'scrypted',
       'tapo',
       'unifi',
       'wyze',
