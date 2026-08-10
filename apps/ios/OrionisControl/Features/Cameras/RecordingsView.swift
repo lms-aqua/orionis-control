@@ -55,6 +55,10 @@ final class RecordingsTimelineModel {
 
     let player = AVPlayer()
 
+    /// Whether this timeline currently holds a claim on the shared audio
+    /// session. Read from the nonisolated `deinit`, same as the observers above.
+    private nonisolated(unsafe) var holdsAudioSession = false
+
     private(set) var coverage: [DateInterval] = []
     /// Real gaps between runs, so the scrubber can show where footage is missing
     /// instead of leaving a stretch that merely looks unrecorded.
@@ -117,6 +121,32 @@ final class RecordingsTimelineModel {
     deinit {
         for token in itemTokens { NotificationCenter.default.removeObserver(token) }
         if let timeObserver { player.removeTimeObserver(timeObserver) }
+        // Belt and braces: `.onDisappear` pauses, which releases. This covers a
+        // model torn down without that — the identifier is a value, so nothing
+        // captures a deallocating `self`.
+        if holdsAudioSession {
+            let id = ObjectIdentifier(self)
+            Task { @MainActor in AudioSessionOwner.shared.relinquish(id: id) }
+        }
+    }
+
+    // MARK: Playback state
+
+    /// The one place playback starts and stops.
+    ///
+    /// Recorded footage carries an audio track, and playing it activates the
+    /// process-wide audio session. Claiming it here — and only here — is what
+    /// keeps camera audio from silencing a call or a screen share's microphone
+    /// and never handing it back, which is exactly what happened when this
+    /// player left the session entirely to AVFoundation.
+    private func setPlaying(_ playing: Bool) {
+        isPlaying = playing
+        if playing {
+            holdsAudioSession = AudioSessionOwner.shared.claim(self)
+        } else if holdsAudioSession {
+            AudioSessionOwner.shared.relinquish(self)
+            holdsAudioSession = false
+        }
     }
 
     // MARK: Loading
@@ -134,7 +164,7 @@ final class RecordingsTimelineModel {
         windowStart = nil
         windowEnd = nil
         windowContinuation = nil
-        isPlaying = false
+        setPlaying(false)
         isLoading = true
         defer {
             if generation == coverageGeneration { isLoading = false }
@@ -233,7 +263,7 @@ final class RecordingsTimelineModel {
 
     func pause() {
         player.pause()
-        isPlaying = false
+        setPlaying(false)
     }
 
     func suspendForBackground() {
@@ -283,9 +313,9 @@ final class RecordingsTimelineModel {
     func togglePlay() {
         if isPlaying {
             player.pause()
-            isPlaying = false
+            setPlaying(false)
         } else {
-            isPlaying = true
+            setPlaying(true)
             if player.currentItem == nil || !isCovered(currentTime) {
                 seek(to: currentTime, autoplay: true)
             } else {
@@ -323,7 +353,7 @@ final class RecordingsTimelineModel {
                 toleranceAfter: .zero)
             if autoplay {
                 player.play()
-                isPlaying = true
+                setPlaying(true)
             }
             return
         }
@@ -338,7 +368,7 @@ final class RecordingsTimelineModel {
             windowStart = nil
             windowEnd = nil
             windowContinuation = nil
-            isPlaying = false
+            setPlaying(false)
         }
     }
 
@@ -353,7 +383,7 @@ final class RecordingsTimelineModel {
             windowStart = nil
             windowEnd = nil
             windowContinuation = nil
-            isPlaying = false
+            setPlaying(false)
             return
         }
         let offset = max(0, date.timeIntervalSince(window.start))
@@ -393,7 +423,7 @@ final class RecordingsTimelineModel {
                 }
                 if autoplay {
                     self.player.play()
-                    self.isPlaying = true
+                    self.setPlaying(true)
                 }
             } catch {
                 guard generation == self.loadGeneration else { return }
@@ -401,7 +431,7 @@ final class RecordingsTimelineModel {
                 self.windowStart = nil
                 self.windowEnd = nil
                 self.windowContinuation = nil
-                self.isPlaying = false
+                self.setPlaying(false)
                 self.errorText = "Couldn't load footage at that time."
             }
         }
@@ -445,7 +475,7 @@ final class RecordingsTimelineModel {
 
     private func recordingPlaybackFailed() {
         player.pause()
-        isPlaying = false
+        setPlaying(false)
         errorText = "This recording could not continue playing. Move the playhead to retry."
     }
 

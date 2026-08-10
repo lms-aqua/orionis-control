@@ -403,22 +403,22 @@ final class CameraStreamController {
         player.play()
     }
 
+    /// Claims the shared session through the single owner rather than
+    /// configuring `AVAudioSession` here. Two players setting a process-wide
+    /// category independently is what let camera audio silence a screen share's
+    /// microphone and never give it back.
     private func configureAudioPlayback() {
         guard !audioSessionActive else { return }
-        let audio = AVAudioSession.sharedInstance()
-        do {
-            try audio.setCategory(.playback, mode: .moviePlayback)
-            try audio.setActive(true)
+        if AudioSessionOwner.shared.claim(self) {
             audioSessionActive = true
-        } catch {
+        } else {
             diagnostics.lastErrorSummary = "Audio output could not be activated"
         }
     }
 
     private func deactivateAudioPlayback() {
         guard audioSessionActive else { return }
-        try? AVAudioSession.sharedInstance().setActive(
-            false, options: .notifyOthersOnDeactivation)
+        AudioSessionOwner.shared.relinquish(self)
         audioSessionActive = false
     }
 
@@ -448,6 +448,9 @@ final class CameraStreamController {
         switch type {
         case .began:
             // iOS has already deactivated it; keep our ownership state honest.
+            // The claim stays registered with the owner so the reactivation
+            // below is a plain re-activate rather than a fresh claim.
+            AudioSessionOwner.shared.noteSystemDeactivation()
             audioSessionActive = false
         case .ended:
             let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
@@ -471,9 +474,9 @@ final class CameraStreamController {
         case .newDeviceAvailable, .oldDeviceUnavailable, .routeConfigurationChange,
              .wakeFromSleep, .noSuitableRouteForCategory:
             // Reassert the receive-only playback category after Bluetooth,
-            // AirPlay, headphones, or sleep changes the selected output.
-            audioSessionActive = false
-            configureAudioPlayback()
+            // AirPlay, headphones, or sleep changes the selected output. The
+            // claim is untouched — only the category needs re-applying.
+            audioSessionActive = AudioSessionOwner.shared.reassertCategory()
         case .unknown, .categoryChange, .override:
             break
         @unknown default:
