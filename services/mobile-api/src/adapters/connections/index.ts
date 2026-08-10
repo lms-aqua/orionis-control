@@ -6,6 +6,7 @@
  * routes, the aggregator or the app changes.
  */
 import { ProviderRegistry } from './provider.ts';
+import { ARLO_DESCRIPTOR, ArloProvider } from './providers/arlo.ts';
 import { AXIS_DESCRIPTOR, AxisProvider } from './providers/axis.ts';
 import { DAHUA_DESCRIPTOR, DahuaProvider } from './providers/dahua.ts';
 import { EUFY_DESCRIPTOR, EufyProvider } from './providers/eufy.ts';
@@ -42,6 +43,7 @@ export function buildProviderRegistry(): ProviderRegistry {
   registry.register(WYZE_DESCRIPTOR, (ctx) => new WyzeProvider(ctx));
   registry.register(RING_DESCRIPTOR, (ctx) => new RingProvider(ctx));
   registry.register(EUFY_DESCRIPTOR, (ctx) => new EufyProvider(ctx));
+  registry.register(ARLO_DESCRIPTOR, (ctx) => new ArloProvider(ctx));
   registry.register(NEST_DESCRIPTOR, (ctx) => new NestProvider(ctx));
   return registry;
 }
