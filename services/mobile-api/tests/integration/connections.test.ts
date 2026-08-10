@@ -116,9 +116,13 @@ describe('providers', () => {
       capabilities: Record<string, boolean>;
     }[];
     expect(providers.map((p) => p.id).sort()).toEqual([
+      'dahua',
       'frigate',
+      'hikvision',
       'lostblink',
       'nest',
+      'onvif',
+      'reolink',
       'rtsp',
       'scrypted',
       'tapo',

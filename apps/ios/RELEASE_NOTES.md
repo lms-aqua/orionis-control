@@ -1,3 +1,7 @@
+Orionis Control 1.4.0 adds four more camera sources: Reolink, Dahua (which also covers Amcrest), Hikvision, and a generic ONVIF source for everything else. The first three talk to the camera on your own network — its own login, nothing sent to a vendor cloud — and give you snapshots and live view. The ONVIF source is the catch-all: point it at any standards-compliant camera and it asks the camera itself for its stream and snapshot URLs, so brands without a dedicated source still work without you hunting down the right path. As with the other local sources, motion events, saved recordings and pan-tilt are left off rather than half-wired — each source says what it does instead of showing tabs that fail. These are verified by tests and against the vendors' documented interfaces; the live connection to your own camera is the one thing only you can confirm.
+
+---
+
 Orionis Control 1.3.0 adds Scrypted as a camera source. If you run a Scrypted server, add it once with its address and your login, and its cameras show up on the wall alongside everything else — with snapshots, and live view through the same path the other sources use. Scrypted talks its own protocol rather than a plain web API, so this connects the way Scrypted's own apps do. Events, recordings and pan-tilt controls aren't wired up yet; the source says so plainly instead of showing empty tabs.
 
 ---

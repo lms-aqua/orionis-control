@@ -6,9 +6,13 @@
  * routes, the aggregator or the app changes.
  */
 import { ProviderRegistry } from './provider.ts';
+import { DAHUA_DESCRIPTOR, DahuaProvider } from './providers/dahua.ts';
 import { FRIGATE_DESCRIPTOR, FrigateProvider } from './providers/frigate.ts';
+import { HIKVISION_DESCRIPTOR, HikvisionProvider } from './providers/hikvision.ts';
 import { LOSTBLINK_DESCRIPTOR, LostblinkProvider } from './providers/lostblink.ts';
 import { NEST_DESCRIPTOR, NestProvider } from './providers/nest.ts';
+import { ONVIF_DESCRIPTOR, OnvifProvider } from './providers/onvif.ts';
+import { REOLINK_DESCRIPTOR, ReolinkProvider } from './providers/reolink.ts';
 import { RTSP_DESCRIPTOR, RtspProvider } from './providers/rtsp.ts';
 import { SCRYPTED_DESCRIPTOR, ScryptedProvider } from './providers/scrypted.ts';
 import { TAPO_DESCRIPTOR, TapoProvider } from './providers/tapo.ts';
@@ -23,6 +27,10 @@ export function buildProviderRegistry(): ProviderRegistry {
   registry.register(LOSTBLINK_DESCRIPTOR, (ctx) => new LostblinkProvider(ctx));
   registry.register(UNIFI_DESCRIPTOR, (ctx) => new UnifiProvider(ctx));
   registry.register(TAPO_DESCRIPTOR, (ctx) => new TapoProvider(ctx));
+  registry.register(REOLINK_DESCRIPTOR, (ctx) => new ReolinkProvider(ctx));
+  registry.register(DAHUA_DESCRIPTOR, (ctx) => new DahuaProvider(ctx));
+  registry.register(HIKVISION_DESCRIPTOR, (ctx) => new HikvisionProvider(ctx));
+  registry.register(ONVIF_DESCRIPTOR, (ctx) => new OnvifProvider(ctx));
   registry.register(WYZE_DESCRIPTOR, (ctx) => new WyzeProvider(ctx));
   registry.register(NEST_DESCRIPTOR, (ctx) => new NestProvider(ctx));
   return registry;
