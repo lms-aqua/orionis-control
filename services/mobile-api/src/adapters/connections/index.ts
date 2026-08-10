@@ -12,6 +12,7 @@ import { DAHUA_DESCRIPTOR, DahuaProvider } from './providers/dahua.ts';
 import { EUFY_DESCRIPTOR, EufyProvider } from './providers/eufy.ts';
 import { FOSCAM_DESCRIPTOR, FoscamProvider } from './providers/foscam.ts';
 import { FRIGATE_DESCRIPTOR, FrigateProvider } from './providers/frigate.ts';
+import { HANWHA_DESCRIPTOR, HanwhaProvider } from './providers/hanwha.ts';
 import { HIKVISION_DESCRIPTOR, HikvisionProvider } from './providers/hikvision.ts';
 import { LOSTBLINK_DESCRIPTOR, LostblinkProvider } from './providers/lostblink.ts';
 import { NEST_DESCRIPTOR, NestProvider } from './providers/nest.ts';
@@ -22,6 +23,7 @@ import { RTSP_DESCRIPTOR, RtspProvider } from './providers/rtsp.ts';
 import { SCRYPTED_DESCRIPTOR, ScryptedProvider } from './providers/scrypted.ts';
 import { TAPO_DESCRIPTOR, TapoProvider } from './providers/tapo.ts';
 import { UNIFI_DESCRIPTOR, UnifiProvider } from './providers/unifi.ts';
+import { UNIVIEW_DESCRIPTOR, UniviewProvider } from './providers/uniview.ts';
 import { VIVOTEK_DESCRIPTOR, VivotekProvider } from './providers/vivotek.ts';
 import { WYZE_DESCRIPTOR, WyzeProvider } from './providers/wyze.ts';
 
@@ -39,6 +41,8 @@ export function buildProviderRegistry(): ProviderRegistry {
   registry.register(AXIS_DESCRIPTOR, (ctx) => new AxisProvider(ctx));
   registry.register(FOSCAM_DESCRIPTOR, (ctx) => new FoscamProvider(ctx));
   registry.register(VIVOTEK_DESCRIPTOR, (ctx) => new VivotekProvider(ctx));
+  registry.register(UNIVIEW_DESCRIPTOR, (ctx) => new UniviewProvider(ctx));
+  registry.register(HANWHA_DESCRIPTOR, (ctx) => new HanwhaProvider(ctx));
   registry.register(ONVIF_DESCRIPTOR, (ctx) => new OnvifProvider(ctx));
   registry.register(WYZE_DESCRIPTOR, (ctx) => new WyzeProvider(ctx));
   registry.register(RING_DESCRIPTOR, (ctx) => new RingProvider(ctx));
