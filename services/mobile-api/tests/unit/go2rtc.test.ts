@@ -84,6 +84,58 @@ describe('Go2rtcOrionisAdapter camera identity', () => {
     expect(cameras.unknown!.capabilities.audio).toBeNull();
   });
 
+  it('shows a camera as recording when the recorder has a live segment', async () => {
+    const recordings = new MediaMtxRecordings(
+      'http://recordings.invalid',
+      1_000,
+      7,
+      (async () =>
+        new Response(
+          JSON.stringify([{ start: new Date(Date.now() - 15_000).toISOString(), duration: 60 }]),
+        )) as typeof fetch,
+    );
+    const adapter = new Go2rtcOrionisAdapter(
+      'http://go2rtc.invalid',
+      1_000,
+      streams({ front: { producers: [{ url: 'rtsp://camera.invalid' }] } }),
+      {},
+      recordings,
+    );
+    const front = (await adapter.listCameras()).find((camera) => camera.id === 'front')!;
+    expect(front.health.recording).toBe(true);
+  });
+
+  it('reports recording=false (not null) once footage stops arriving', async () => {
+    const recordings = new MediaMtxRecordings(
+      'http://recordings.invalid',
+      1_000,
+      7,
+      (async () =>
+        new Response(
+          JSON.stringify([{ start: '2020-01-01T00:00:00.000Z', duration: 60 }]),
+        )) as typeof fetch,
+    );
+    const adapter = new Go2rtcOrionisAdapter(
+      'http://go2rtc.invalid',
+      1_000,
+      streams({ front: { producers: [{ url: 'rtsp://camera.invalid' }] } }),
+      {},
+      recordings,
+    );
+    const front = (await adapter.listCameras()).find((camera) => camera.id === 'front')!;
+    expect(front.health.recording).toBe(false);
+  });
+
+  it('reports recording=false when no recorder is configured', async () => {
+    const adapter = new Go2rtcOrionisAdapter(
+      'http://go2rtc.invalid',
+      1_000,
+      streams({ front: { producers: [{ url: 'rtsp://camera.invalid' }] } }),
+    );
+    const front = (await adapter.listCameras()).find((camera) => camera.id === 'front')!;
+    expect(front.health.recording).toBe(false);
+  });
+
   it('keeps historical footage visible while a labelled camera is offline', async () => {
     const recordings = new MediaMtxRecordings(
       'http://recordings.invalid',

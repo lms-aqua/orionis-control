@@ -197,6 +197,7 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     id: string,
     stream: Go2rtcStream | undefined,
     metadata?: WyzeCameraMetadata,
+    recordingLive: boolean | null = null,
   ): Camera {
     // A configured camera that has dropped out of go2rtc entirely (its source
     // went unreachable, so the sync pruned it) is still a camera the user owns.
@@ -233,10 +234,12 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
       capabilities: { ...CAPABILITIES, audio: hasAudio, protocols: [...this.protocols] },
       health: {
         status: online ? 'online' : 'offline',
-        // A configured recorder is intent, not proof that bytes are reaching
-        // disk. MediaMTX playback must expose a recent segment before this can be
-        // known, and go2rtc's stream response alone cannot prove that.
-        recording: this.recordings === null ? false : null,
+        // With no recorder, nothing is being written, so recording is a plain
+        // false. With one, we prove activity from the recorder itself: a fresh
+        // MediaMTX segment (resolved by listCameras/getCamera) means true, its
+        // absence false, and an unreachable recorder null — never guessed from
+        // go2rtc's stream response, which cannot see the disk.
+        recording: this.recordings === null ? false : recordingLive,
         streaming: online,
         motionDetected: false,
         privacyEnabled: false,
@@ -259,8 +262,12 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
 
   async listCameras(): Promise<Camera[]> {
     const [streams, metadata] = await Promise.all([this.streams(), this.metadata()]);
-    return this.roster(Object.keys(streams)).map((id) =>
-      this.toCamera(id, streams[id], metadata[id]),
+    const roster = this.roster(Object.keys(streams));
+    // One batched recorder lookup for the whole wall, so a camera that is really
+    // recording shows the live badge instead of the "can't prove it" null.
+    const recording = this.recordings ? await this.recordings.recordingStatus(roster) : null;
+    return roster.map((id) =>
+      this.toCamera(id, streams[id], metadata[id], recording?.get(id) ?? null),
     );
   }
 
@@ -271,7 +278,10 @@ export class Go2rtcOrionisAdapter implements OrionisAdapter {
     if (!Object.hasOwn(streams, cameraId) && !Object.hasOwn(this.labels, cameraId)) {
       throw new AppError('NOT_FOUND', `No camera named "${cameraId}" is known to go2rtc.`);
     }
-    return this.toCamera(cameraId, streams[cameraId], metadata[cameraId]);
+    const recording = this.recordings
+      ? ((await this.recordings.recordingStatus([cameraId])).get(cameraId) ?? null)
+      : null;
+    return this.toCamera(cameraId, streams[cameraId], metadata[cameraId], recording);
   }
 
   async getSnapshot(cameraId: string): Promise<SnapshotResult> {

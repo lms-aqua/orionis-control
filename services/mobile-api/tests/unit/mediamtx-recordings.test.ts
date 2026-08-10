@@ -46,6 +46,47 @@ describe('recording ids', () => {
   });
 });
 
+describe('MediaMtxRecordings.recordingStatus', () => {
+  const store = (fetchImpl: typeof fetch) =>
+    new MediaMtxRecordings('http://hls.invalid:9996', 2000, 7, fetchImpl);
+  const at = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString();
+
+  it('reports a camera as recording when its newest footage is fresh', async () => {
+    // Segment started 30s ago and runs a minute: its end is in the future, well
+    // inside the live window, so the recorder is actively writing.
+    const status = await store(playback({ '56': [{ start: at(-30_000), duration: 60 }] })) //
+      .recordingStatus(['56']);
+    expect(status.get('56')).toBe(true);
+  });
+
+  it('reports not-recording once the newest footage is older than the window', async () => {
+    const status = await store(playback({ '56': [{ start: at(-3_600_000), duration: 600 }] })) //
+      .recordingStatus(['56']);
+    expect(status.get('56')).toBe(false);
+  });
+
+  it('reports not-recording for a camera with no footage at all', async () => {
+    expect((await store(playback({ '56': [] })).recordingStatus(['56'])).get('56')).toBe(false);
+  });
+
+  it('reports unknown (null) when the recorder cannot be reached', async () => {
+    const status = await store((async () => new Response('boom', { status: 500 })) as typeof fetch) //
+      .recordingStatus(['56']);
+    expect(status.get('56')).toBeNull();
+  });
+
+  it('judges each camera independently across a batch', async () => {
+    const status = await store(
+      playback({
+        '56': [{ start: at(-10_000), duration: 60 }], // live
+        '57': [{ start: at(-7_200_000), duration: 600 }], // stale
+      }),
+    ).recordingStatus(['56', '57']);
+    expect(status.get('56')).toBe(true);
+    expect(status.get('57')).toBe(false);
+  });
+});
+
 describe('MediaMtxRecordings.list', () => {
   const store = (fetchImpl: typeof fetch, retention: number | null = 7) =>
     new MediaMtxRecordings('http://hls.invalid:9996', 2000, retention, fetchImpl);
