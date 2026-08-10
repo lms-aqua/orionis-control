@@ -1,309 +1,1104 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orionis Control — self-hosted infrastructure, in your pocket</title>
-<meta name="description" content="A native iOS app for your self-hosted cameras, DNS filtering, system health, and infrastructure — sub-second live video, a scrubbable DVR, and OIDC-secured access.">
-<style>
-  :root{
-    --bg:#0b0f17; --bg-soft:#111725; --card:#141b2b; --card-2:#0f1521;
-    --line:#212c42; --text:#e8edf7; --muted:#93a1bd; --faint:#63708c;
-    --brand:#3b6be0; --brand-2:#5b8bff; --accent:#38d39f; --warn:#f0a53a;
-    --radius:16px; --maxw:1080px;
-    --shadow:0 10px 30px rgba(0,0,0,.35);
-  }
-  :root[data-theme="light"]{
-    --bg:#f6f8fc; --bg-soft:#eef2f9; --card:#ffffff; --card-2:#f4f7fc;
-    --line:#e2e8f2; --text:#141b2b; --muted:#556080; --faint:#8290ab;
-    --shadow:0 10px 30px rgba(20,40,90,.08);
-  }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  body{
-    margin:0; background:var(--bg); color:var(--text);
-    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased;
-  }
-  a{color:var(--brand-2); text-decoration:none}
-  a:hover{text-decoration:underline}
-  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
-  .eyebrow{color:var(--brand-2); font-weight:700; letter-spacing:.14em; text-transform:uppercase; font-size:12.5px}
-  h1,h2,h3{line-height:1.15; letter-spacing:-.02em; margin:0}
-  h2{font-size:clamp(23px,3.4vw,32px); margin:0 0 6px}
-  section{padding:72px 0; border-top:1px solid var(--line)}
-  .muted{color:var(--muted)}
-  .lead{font-size:18px; color:var(--muted); max-width:62ch}
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Orionis Control — Help &amp; Support</title>
+    <meta
+      name="description"
+      content="Help and support for Orionis Control: getting started, cameras, recordings, adding camera sources, notifications, troubleshooting and FAQ."
+    />
+    <meta name="robots" content="index,follow" />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --panel: #f6f7fb;
+        --panel-2: #eef0f7;
+        --line: #e3e6ef;
+        --text: #1a1f2b;
+        --muted: #5b6478;
+        --faint: #8891a3;
+        --brand: #6d28d9;
+        --brand-2: #7c3aed;
+        --brand-ink: #ffffff;
+        --accent: #7c3aed;
+        --ok: #1f8f5f;
+        --warn: #b6791f;
+        --code-bg: #f0f1f7;
+        --radius: 14px;
+        --sidebar: 288px;
+        --maxw: 820px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #0d1117;
+          --panel: #111725;
+          --panel-2: #0f1521;
+          --line: #212c42;
+          --text: #e8edf7;
+          --muted: #97a3bd;
+          --faint: #6b7893;
+          --brand: #a78bfa;
+          --brand-2: #c4b5fd;
+          --brand-ink: #14101f;
+          --accent: #a78bfa;
+          --ok: #48c78e;
+          --warn: #e0a54a;
+          --code-bg: #161d2e;
+        }
+      }
+      :root[data-theme="dark"] {
+        --bg: #0d1117;
+        --panel: #111725;
+        --panel-2: #0f1521;
+        --line: #212c42;
+        --text: #e8edf7;
+        --muted: #97a3bd;
+        --faint: #6b7893;
+        --brand: #a78bfa;
+        --brand-2: #c4b5fd;
+        --brand-ink: #14101f;
+        --accent: #a78bfa;
+        --ok: #48c78e;
+        --warn: #e0a54a;
+        --code-bg: #161d2e;
+      }
 
-  /* header */
-  header.site{position:sticky; top:0; z-index:20; backdrop-filter:saturate(140%) blur(10px);
-    background:color-mix(in srgb, var(--bg) 82%, transparent); border-bottom:1px solid var(--line)}
-  .nav{display:flex; align-items:center; gap:14px; height:60px}
-  .brand{display:flex; align-items:center; gap:11px; font-weight:800; letter-spacing:-.01em}
-  .logo{width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
-    background:linear-gradient(150deg,var(--brand),#7aa2ff); box-shadow:0 4px 14px rgba(59,107,224,.5)}
-  .logo svg{width:18px;height:18px}
-  .nav .spacer{flex:1}
-  .nav a.navlink{color:var(--muted); font-weight:600; font-size:14px; padding:6px 4px}
-  .nav a.navlink:hover{color:var(--text); text-decoration:none}
-  .toggle{cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--text);
-    border-radius:9px; padding:6px 10px; font-size:13px; font-weight:600}
-  @media(max-width:720px){ .nav a.navlink{display:none} }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          16px/1.65 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Inter,
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: var(--brand);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      code {
+        background: var(--code-bg);
+        padding: 0.12em 0.4em;
+        border-radius: 6px;
+        font-size: 0.9em;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .skip {
+        position: absolute;
+        left: -999px;
+        top: 0;
+        background: var(--brand);
+        color: var(--brand-ink);
+        padding: 10px 14px;
+        border-radius: 8px;
+        z-index: 100;
+      }
+      .skip:focus {
+        left: 12px;
+        top: 12px;
+      }
 
-  /* hero */
-  .hero{padding:76px 0 40px; position:relative; overflow:hidden}
-  .hero:before{content:""; position:absolute; inset:-40% 30% auto -10%; height:520px;
-    background:radial-gradient(60% 60% at 30% 30%, rgba(59,107,224,.35), transparent 70%); filter:blur(20px); z-index:-1}
-  .hero h1{font-size:clamp(34px,6vw,58px); margin:16px 0 0}
-  .hero .lead{margin-top:16px; font-size:clamp(17px,2.4vw,21px)}
-  .cta{display:flex; gap:12px; flex-wrap:wrap; margin-top:26px}
-  .btn{display:inline-flex; align-items:center; gap:8px; padding:12px 18px; border-radius:11px; font-weight:700; font-size:15px}
-  .btn.primary{background:linear-gradient(150deg,var(--brand),#6a97ff); color:#fff; box-shadow:0 8px 22px rgba(59,107,224,.4)}
-  .btn.primary:hover{text-decoration:none; filter:brightness(1.06)}
-  .btn.ghost{border:1px solid var(--line); color:var(--text); background:var(--card)}
-  .btn.ghost:hover{text-decoration:none; border-color:var(--brand)}
-  .pill{display:inline-flex; align-items:center; gap:8px; padding:5px 12px; border:1px solid var(--line);
-    border-radius:999px; background:var(--card); font-size:13px; font-weight:600; color:var(--muted)}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 25%,transparent)}
+      header.top {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 18px;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: saturate(140%) blur(10px);
+        border-bottom: 1px solid var(--line);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: var(--text);
+      }
+      .brand:hover {
+        text-decoration: none;
+      }
+      .logo {
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        background: linear-gradient(135deg, #4f46e5, #7c3aed 55%, #a78bfa);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        font-size: 15px;
+      }
+      .brand small {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .spacer {
+        flex: 1;
+      }
+      .btn {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--text);
+        border-radius: 9px;
+        padding: 7px 11px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        line-height: 1;
+      }
+      .btn:hover {
+        border-color: var(--brand);
+      }
+      #menuBtn {
+        display: none;
+      }
 
-  /* stat row */
-  .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:44px}
-  .stat{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px}
-  .stat b{display:block; font-size:26px; letter-spacing:-.02em}
-  .stat span{color:var(--muted); font-size:13px}
-  @media(max-width:720px){ .stats{grid-template-columns:repeat(2,1fr)} }
+      .shell {
+        display: grid;
+        grid-template-columns: var(--sidebar) 1fr;
+        align-items: start;
+        max-width: 1220px;
+        margin: 0 auto;
+      }
+      nav.side {
+        position: sticky;
+        top: 57px;
+        align-self: start;
+        height: calc(100vh - 57px);
+        overflow: auto;
+        padding: 22px 14px 40px 22px;
+        border-right: 1px solid var(--line);
+      }
+      nav.side .search {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--text);
+        border-radius: 9px;
+        padding: 9px 11px;
+        font-size: 14px;
+        margin-bottom: 14px;
+      }
+      nav.side .group {
+        font-size: 11.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--faint);
+        margin: 16px 0 6px;
+        font-weight: 700;
+      }
+      nav.side a {
+        display: block;
+        padding: 6px 10px;
+        border-radius: 8px;
+        color: var(--muted);
+        font-size: 14.5px;
+        border-left: 2px solid transparent;
+      }
+      nav.side a:hover {
+        color: var(--text);
+        text-decoration: none;
+        background: var(--panel);
+      }
+      nav.side a.active {
+        color: var(--brand);
+        background: var(--panel);
+        border-left-color: var(--brand);
+        font-weight: 600;
+      }
 
-  /* grid cards */
-  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:34px}
-  @media(max-width:860px){ .grid{grid-template-columns:1fr 1fr} }
-  @media(max-width:560px){ .grid{grid-template-columns:1fr} }
-  .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px; transition:.18s}
-  .card:hover{transform:translateY(-3px); border-color:color-mix(in srgb,var(--brand) 55%,var(--line)); box-shadow:var(--shadow)}
-  .ico{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;font-size:20px;margin-bottom:12px;
-    background:color-mix(in srgb,var(--brand) 16%,transparent); border:1px solid color-mix(in srgb,var(--brand) 30%,transparent)}
-  .card h3{font-size:17px; margin-bottom:6px}
-  .card p{margin:0; color:var(--muted); font-size:14.5px}
+      main {
+        min-width: 0;
+        padding: 34px clamp(20px, 5vw, 60px) 90px;
+      }
+      .content {
+        max-width: var(--maxw);
+      }
+      .hero h1 {
+        font-size: clamp(28px, 5vw, 40px);
+        line-height: 1.1;
+        letter-spacing: -0.025em;
+        margin: 0 0 12px;
+      }
+      .hero p.lead {
+        font-size: 18px;
+        color: var(--muted);
+        margin: 0 0 8px;
+        max-width: 60ch;
+      }
+      section.doc {
+        padding-top: 40px;
+        margin-top: 12px;
+        border-top: 1px solid var(--line);
+        scroll-margin-top: 74px;
+      }
+      section.doc:first-of-type {
+        border-top: 0;
+      }
+      h2 {
+        font-size: clamp(21px, 3.2vw, 27px);
+        letter-spacing: -0.02em;
+        margin: 0 0 10px;
+        scroll-margin-top: 74px;
+      }
+      h3 {
+        font-size: 17px;
+        margin: 26px 0 6px;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      ul,
+      ol {
+        margin: 0 0 14px;
+        padding-left: 22px;
+      }
+      li {
+        margin: 5px 0;
+      }
+      .lead-muted {
+        color: var(--muted);
+      }
 
-  /* pipeline */
-  .flow{display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; margin-top:30px}
-  .node{flex:1 1 150px; background:var(--card); border:1px solid var(--line); border-radius:13px; padding:14px 16px; position:relative}
-  .node .k{font-size:12px; color:var(--brand-2); font-weight:800; letter-spacing:.06em; text-transform:uppercase}
-  .node .v{font-weight:700; margin-top:3px}
-  .node .d{color:var(--muted); font-size:13px; margin-top:2px}
-  .arrow{align-self:center; color:var(--faint); font-size:20px; padding:0 2px}
-  @media(max-width:720px){ .arrow{transform:rotate(90deg)} .node{flex-basis:100%} }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px 18px;
+        margin: 14px 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin: 14px 0;
+      }
+      .grid .card {
+        margin: 0;
+      }
+      .card h3 {
+        margin: 0 0 4px;
+        font-size: 15.5px;
+      }
+      .card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14.5px;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--brand) 16%, transparent);
+        color: var(--brand);
+        border: 1px solid color-mix(in srgb, var(--brand) 34%, transparent);
+      }
+      .note {
+        border-left: 3px solid var(--brand);
+        background: color-mix(in srgb, var(--brand) 8%, transparent);
+        border-radius: 0 10px 10px 0;
+        padding: 12px 16px;
+        margin: 14px 0;
+      }
+      .note.warn {
+        border-left-color: var(--warn);
+        background: color-mix(in srgb, var(--warn) 12%, transparent);
+      }
+      .note p:last-child {
+        margin: 0;
+      }
+      .note strong {
+        color: var(--text);
+      }
 
-  /* timeline */
-  .tl{margin-top:30px; border-left:2px solid var(--line); padding-left:22px; display:grid; gap:20px}
-  .tl .row{position:relative}
-  .tl .row:before{content:""; position:absolute; left:-29px; top:5px; width:12px;height:12px;border-radius:50%;
-    background:var(--bg); border:2px solid var(--brand)}
-  .tl .row.new:before{background:var(--accent); border-color:var(--accent); box-shadow:0 0 0 5px color-mix(in srgb,var(--accent) 22%,transparent)}
-  .ver{display:inline-flex; gap:8px; align-items:baseline}
-  .ver b{font-size:16px}
-  .ver .tag{font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--brand-2)}
-  .tl .row p{margin:4px 0 0; color:var(--muted); font-size:14.5px}
+      details.faq {
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 2px 16px;
+        margin: 10px 0;
+        background: var(--panel);
+      }
+      details.faq > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 12px 0;
+        list-style: none;
+      }
+      details.faq > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.faq > summary::before {
+        content: "＋";
+        color: var(--brand);
+        font-weight: 700;
+        margin-right: 10px;
+      }
+      details.faq[open] > summary::before {
+        content: "－";
+      }
+      details.faq > div {
+        padding: 0 0 14px;
+        color: var(--muted);
+      }
+      details.faq > div :where(p, li):last-child {
+        margin-bottom: 0;
+      }
 
-  /* roadmap */
-  .road{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:30px}
-  @media(max-width:820px){ .road{grid-template-columns:1fr} }
-  .lane{background:var(--card-2); border:1px solid var(--line); border-radius:var(--radius); padding:20px}
-  .lane h3{font-size:15px; display:flex; align-items:center; gap:9px; margin-bottom:14px}
-  .lane h3 .lb{font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; padding:3px 9px; border-radius:999px}
-  .lb.now{background:color-mix(in srgb,var(--accent) 18%,transparent); color:var(--accent)}
-  .lb.next{background:color-mix(in srgb,var(--brand) 18%,transparent); color:var(--brand-2)}
-  .lb.later{background:color-mix(in srgb,var(--warn) 16%,transparent); color:var(--warn)}
-  .item{display:flex; gap:11px; padding:11px 0; border-top:1px dashed var(--line)}
-  .item:first-of-type{border-top:0}
-  .item .m{flex-shrink:0; margin-top:1px}
-  .item b{font-weight:700; font-size:14.5px}
-  .item p{margin:2px 0 0; color:var(--muted); font-size:13.5px}
+      .steps {
+        counter-reset: step;
+        list-style: none;
+        padding-left: 0;
+      }
+      .steps > li {
+        position: relative;
+        padding-left: 40px;
+        margin: 12px 0;
+      }
+      .steps > li::before {
+        counter-increment: step;
+        content: counter(step);
+        position: absolute;
+        left: 0;
+        top: -2px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--brand);
+        color: var(--brand-ink);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 700;
+      }
 
-  /* stack */
-  .badges{display:flex; flex-wrap:wrap; gap:9px; margin-top:26px}
-  .badge{border:1px solid var(--line); background:var(--card); border-radius:9px; padding:8px 13px; font-size:13.5px; font-weight:600; color:var(--muted)}
-  .badge b{color:var(--text)}
+      table.sources {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 14px 0;
+        font-size: 14.5px;
+        display: block;
+        overflow-x: auto;
+      }
+      table.sources th,
+      table.sources td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      table.sources th {
+        color: var(--faint);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      table.sources td:first-child {
+        font-weight: 600;
+        white-space: nowrap;
+      }
 
-  footer{padding:44px 0 60px; color:var(--faint); font-size:13.5px; border-top:1px solid var(--line)}
-  .note{margin-top:14px; padding:14px 16px; border:1px dashed var(--line); border-radius:12px; color:var(--muted); font-size:13.5px; background:var(--card-2)}
-</style>
-</head>
-<body>
+      footer.site {
+        border-top: 1px solid var(--line);
+        margin-top: 40px;
+        padding-top: 22px;
+        color: var(--faint);
+        font-size: 13.5px;
+      }
+      footer.site a {
+        color: var(--muted);
+      }
 
-<header class="site">
-  <div class="wrap nav">
-    <span class="brand">
-      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l7.2 3.2v5.4c0 4.6-3 8.7-7.2 10.2C7.8 19.9 4.8 15.8 4.8 11.2V5.8L12 2.6z" fill="#fff" opacity=".95"/><path d="M9.4 12.2l1.9 1.9 3.6-3.9" stroke="#3b6be0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-      Orionis&nbsp;Control
-    </span>
-    <span class="spacer"></span>
-    <a class="navlink" href="#features">Features</a>
-    <a class="navlink" href="#architecture">Architecture</a>
-    <a class="navlink" href="#whatsnew">What's new</a>
-    <a class="navlink" href="#roadmap">Roadmap</a>
-    <button class="toggle" id="themeBtn" aria-label="Toggle theme">◐ Theme</button>
-  </div>
-</header>
+      .backdrop {
+        display: none;
+      }
+      @media (max-width: 860px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+        #menuBtn {
+          display: inline-block;
+        }
+        nav.side {
+          position: fixed;
+          top: 57px;
+          left: 0;
+          bottom: 0;
+          width: min(84vw, 320px);
+          height: auto;
+          background: var(--bg);
+          transform: translateX(-102%);
+          transition: transform 0.22s ease;
+          z-index: 50;
+          border-right: 1px solid var(--line);
+        }
+        body.nav-open nav.side {
+          transform: none;
+        }
+        body.nav-open .backdrop {
+          display: block;
+          position: fixed;
+          inset: 57px 0 0 0;
+          background: rgba(0, 0, 0, 0.45);
+          z-index: 45;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
 
-<div class="wrap hero">
-  <span class="pill"><span class="dot"></span> Actively developed · v0.2.5</span>
-  <h1>Your self-hosted world,<br>in one native app.</h1>
-  <p class="lead">Orionis Control is a privacy-first iOS app for the infrastructure you run yourself — live cameras, a DVR you can scrub, DNS filtering, system health, and edge configuration — reached over your own identity provider. No third-party cloud in the middle.</p>
-  <div class="cta">
-    <a class="btn primary" href="#features">Explore the features →</a>
-    <a class="btn ghost" href="#roadmap">See the roadmap</a>
-  </div>
+    <header class="top">
+      <button
+        class="btn"
+        id="menuBtn"
+        aria-label="Open navigation"
+        aria-expanded="false"
+      >
+        ☰ Menu
+      </button>
+      <a class="brand" href="#top">
+        <span class="logo" aria-hidden="true">◎</span>
+        <span>Orionis Control <small>· Help &amp; Support</small></span>
+      </a>
+      <span class="spacer"></span>
+      <button class="btn" id="themeBtn" aria-label="Toggle light or dark theme">
+        ☾ Theme
+      </button>
+    </header>
 
-  <div class="stats">
-    <div class="stat"><b>~0.5s</b><span>Glass-to-glass live video over WebRTC</span></div>
-    <div class="stat"><b>7 days</b><span>Continuous DVR, scrub to any moment</span></div>
-    <div class="stat"><b>OIDC + PKCE</b><span>Your identity provider, your rules</span></div>
-    <div class="stat"><b>0 clouds</b><span>Media never leaves your infrastructure</span></div>
-  </div>
-</div>
+    <div class="shell" id="top">
+      <div class="backdrop" id="backdrop" aria-hidden="true"></div>
+      <nav class="side" id="side" aria-label="Help topics">
+        <input
+          class="search"
+          id="search"
+          type="search"
+          placeholder="Search topics…"
+          aria-label="Search topics"
+        />
+        <div class="group">Start here</div>
+        <a href="#overview">Overview</a>
+        <a href="#getting-started">Getting started</a>
+        <div class="group">Using the app</div>
+        <a href="#cameras">Cameras &amp; live view</a>
+        <a href="#recordings">Recordings &amp; timeline</a>
+        <a href="#sources">Adding camera sources</a>
+        <a href="#filtering">Network filtering</a>
+        <a href="#health">System health</a>
+        <a href="#notifications">Notifications</a>
+        <div class="group">Help</div>
+        <a href="#troubleshooting">Troubleshooting</a>
+        <a href="#faq">FAQ</a>
+        <a href="#privacy">Privacy &amp; security</a>
+        <a href="#support">Get support</a>
+      </nav>
 
-<section id="features">
-  <div class="wrap">
-    <span class="eyebrow">What it does</span>
-    <h2>One app, the whole stack</h2>
-    <p class="lead">Every surface is built around the same idea: your data stays on your hardware, and the app is just a secure, fast window into it.</p>
-    <div class="grid">
-      <div class="card"><div class="ico">🎥</div><h3>Sub-second live view</h3><p>Native WebRTC with a per-session relay for low latency, plus automatic HLS fallback so there is always a picture — even on a rough cellular link.</p></div>
-      <div class="card"><div class="ico">⏪</div><h3>Scrubbable DVR</h3><p>A real timeline: drag through a week of continuous recording, see exactly where footage exists, and jump to any instant — with audio.</p></div>
-      <div class="card"><div class="ico">🔊</div><h3>Camera audio</h3><p>Live and recorded audio, transcoded on the fly so it plays everywhere — WebRTC, HLS, and saved clips alike.</p></div>
-      <div class="card"><div class="ico">🛡️</div><h3>DNS filtering</h3><p>AdGuard at your fingertips: a trustworthy query log, allow/block rules, client management, and one-tap protection pauses.</p></div>
-      <div class="card"><div class="ico">📊</div><h3>System health</h3><p>A live dashboard of your services and hosts, so you know the state of the whole box from the home screen.</p></div>
-      <div class="card"><div class="ico">⚙️</div><h3>Edge configuration</h3><p>Manage your reverse proxy and identity provider safely from the app, behind guard rails and an audit trail.</p></div>
-      <div class="card"><div class="ico">💾</div><h3>Storage &amp; retention</h3><p>See what recordings actually cost against a quota — not the whole disk — and tune retention without new privileges.</p></div>
-      <div class="card"><div class="ico">⭐</div><h3>Favourites &amp; order</h3><p>Pin the cameras you care about and arrange them your way, synced across the app.</p></div>
-      <div class="card"><div class="ico">🔐</div><h3>Least-privilege access</h3><p>Role-based permissions enforced server-side, biometric confirmation for sensitive actions, and short-lived, scoped playback tokens.</p></div>
+      <main id="main">
+        <div class="content">
+          <div class="hero">
+            <h1>Orionis Control Help &amp; Support</h1>
+            <p class="lead">
+              Everything you need to set up and get the most out of Orionis
+              Control — the one app for your cameras, network filtering and
+              system health. Pick a topic on the left, or start with the basics
+              below.
+            </p>
+          </div>
+
+          <section class="doc" id="overview">
+            <h2>Overview</h2>
+            <p>
+              Orionis Control brings the things you actually check into a single
+              app: whether your cameras are up, whether something moved in the
+              driveway overnight, whether your network filtering is still doing
+              its job, and whether everything underneath is healthy.
+            </p>
+            <div class="grid">
+              <div class="card">
+                <h3>🎥 Cameras</h3>
+                <p>Live video, snapshots, full-screen and Picture-in-Picture.</p>
+              </div>
+              <div class="card">
+                <h3>🕒 Recordings</h3>
+                <p>A timeline you can scrub, filter and export clips from.</p>
+              </div>
+              <div class="card">
+                <h3>🛡️ Filtering</h3>
+                <p>See and control DNS filtering — queries, blocks and rules.</p>
+              </div>
+              <div class="card">
+                <h3>📊 Health</h3>
+                <p>Plain-language status for the services that matter.</p>
+              </div>
+              <div class="card">
+                <h3>🔔 Alerts</h3>
+                <p>Push notifications for the things worth waking up for.</p>
+              </div>
+              <div class="card">
+                <h3>📱 Native</h3>
+                <p>iPhone and iPad, portrait and landscape, light and dark.</p>
+              </div>
+            </div>
+            <p class="lead-muted">
+              This site is a guide to <em>using</em> the app. It does not cover
+              installation of any server software or configuration behind the
+              scenes.
+            </p>
+          </section>
+
+          <section class="doc" id="getting-started">
+            <h2>Getting started</h2>
+            <ol class="steps">
+              <li>
+                <strong>Install the app</strong> on your iPhone or iPad and open
+                it.
+              </li>
+              <li>
+                <strong>Enter your gateway address</strong> when prompted — the
+                web address you were given for your system. The app checks it
+                and tells you right away if it can’t reach it.
+              </li>
+              <li>
+                <strong>Sign in.</strong> You’ll use your normal account and,
+                where your system requires it, a second step to confirm it’s
+                you. Your session is kept only on your device and can be signed
+                out at any time.
+              </li>
+              <li>
+                <strong>You’re in.</strong> Cameras appear on the main wall,
+                grouped by where they came from. Explore the tabs for
+                recordings, filtering, health and settings.
+              </li>
+            </ol>
+            <div class="note">
+              <p>
+                <strong>Nothing to see yet?</strong> If no cameras appear, add a
+                source under <em>Settings → Connections</em> — see
+                <a href="#sources">Adding camera sources</a>.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc" id="cameras">
+            <h2>Cameras &amp; live view</h2>
+            <p>
+              The camera wall shows every camera your system knows about,
+              discovered for you — there’s no list to hand-maintain. Tap a
+              camera to open it.
+            </p>
+            <ul>
+              <li>
+                <strong>Live video</strong> with a low-latency stream, plus a
+                snapshot you can grab at any moment.
+              </li>
+              <li>
+                <strong>Full screen &amp; landscape</strong>, and
+                <strong>Picture-in-Picture</strong> so a feed can keep playing
+                while you do something else.
+              </li>
+              <li>
+                <strong>Camera controls</strong> — pan, tilt, zoom, lighting,
+                presets and privacy — appear only for cameras that actually
+                support them, so you’re never shown a control that does nothing.
+              </li>
+              <li>
+                <strong>Honest status.</strong> A camera that’s offline says so,
+                and says why, instead of showing a frozen or blank image. A
+                camera that’s recording shows a recording badge.
+              </li>
+            </ul>
+            <div class="note">
+              <p>
+                Two-way talk and some advanced controls depend on the camera and
+                may not be available for every source.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc" id="recordings">
+            <h2>Recordings &amp; timeline</h2>
+            <p>
+              The recordings timeline lets you move through the day and see
+              exactly where footage exists and where there are gaps.
+            </p>
+            <ul>
+              <li>
+                <strong>Scrub the timeline</strong> to any moment; playback
+                seeks straight there rather than only to fixed boundaries.
+              </li>
+              <li>
+                <strong>Filter</strong> by camera, date and event type — motion,
+                person, vehicle, package, audio and system events — where your
+                cameras report them.
+              </li>
+              <li>
+                <strong>Export a clip</strong> to save or share. Clips are pulled
+                for the window you choose.
+              </li>
+              <li>
+                <strong>Storage at a glance.</strong> The app shows how much
+                space recordings use and roughly how long footage will be kept,
+                when that information is available.
+              </li>
+            </ul>
+            <div class="note warn">
+              <p>
+                <strong>“Nothing was recorded on this day.”</strong> If you
+                expect footage and don’t see it, the recorder for that camera
+                may not be set up, or it may have no footage in the range you’re
+                viewing. See <a href="#troubleshooting">Troubleshooting</a>.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc" id="sources">
+            <h2>Adding camera sources</h2>
+            <p>
+              Add the systems your cameras live behind under
+              <em>Settings → Connections</em>. Each source states what it can
+              actually do before you add it, and the app hides what it can’t — a
+              source with no event history won’t show an empty Events tab.
+            </p>
+            <p class="lead-muted">
+              To add one, tap <em>Add a source</em>, choose the kind, and fill in
+              the fields it asks for (usually an address and a login). The app
+              checks the source the moment you save, so you find out right away
+              whether it worked.
+            </p>
+
+            <table class="sources">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>What you provide</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Frigate</td>
+                  <td>Address</td>
+                  <td>Cameras, events, recordings and snapshots.</td>
+                </tr>
+                <tr>
+                  <td>UniFi Protect</td>
+                  <td>Address &amp; login</td>
+                  <td>Cameras, snapshots and live view.</td>
+                </tr>
+                <tr>
+                  <td>Scrypted</td>
+                  <td>Address &amp; login</td>
+                  <td>Cameras and snapshots, with live view.</td>
+                </tr>
+                <tr>
+                  <td>Tapo</td>
+                  <td>Camera login</td>
+                  <td>TP-Link Tapo cameras over their local account.</td>
+                </tr>
+                <tr>
+                  <td>Wyze</td>
+                  <td>Account</td>
+                  <td>The app can set up the helper it needs for you.</td>
+                </tr>
+                <tr>
+                  <td>Blink</td>
+                  <td>Email &amp; password</td>
+                  <td>You confirm one verification code in the app — see below.</td>
+                </tr>
+                <tr>
+                  <td>Nest</td>
+                  <td>Account access</td>
+                  <td>Google Nest cameras via your Device Access setup.</td>
+                </tr>
+                <tr>
+                  <td>RTSP / go2rtc</td>
+                  <td>Address or URL</td>
+                  <td>A catch-all for other cameras and streams.</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3>Signing in to Blink</h3>
+            <p>
+              Add your Blink email and password, then enter the verification
+              code Blink sends you. You do this <strong>once</strong>, in the
+              app — after that the connection is remembered and Blink won’t keep
+              asking. If a source needs a small helper service to run, the app
+              offers to set it up for you after you’ve signed in; just tap
+              <em>Set up</em> when prompted.
+            </p>
+            <div class="note">
+              <p>
+                Managing sources is limited to administrator accounts, and every
+                change is recorded.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc" id="filtering">
+            <h2>Network filtering</h2>
+            <p>
+              A first-class view of your DNS filtering, not a web page in a
+              costume.
+            </p>
+            <ul>
+              <li>
+                <strong>See the picture:</strong> query volume, block rates, top
+                clients and domains, and filter-list status across the time
+                range you pick.
+              </li>
+              <li>
+                <strong>Search the query log</strong> with real filtering to
+                find exactly what you’re looking for.
+              </li>
+              <li>
+                <strong>Allow and block rules</strong> that are checked for
+                validity before they’re applied.
+              </li>
+              <li>
+                <strong>Pause protection</strong> deliberately — with a
+                confirmation, a chosen duration, a visible reminder while it’s
+                off, and a record of who paused it and why.
+              </li>
+            </ul>
+          </section>
+
+          <section class="doc" id="health">
+            <h2>System health</h2>
+            <p>
+              Aggregate status for the services that matter, in plain language:
+              healthy, warning, critical, offline or unknown — never colour
+              alone, so it’s readable at a glance and with assistive tools.
+            </p>
+            <p>
+              A short list of safe, pre-approved actions is available where your
+              system allows them — for example, re-running a health check or
+              refreshing filters — rather than a command prompt in your pocket.
+            </p>
+          </section>
+
+          <section class="doc" id="notifications">
+            <h2>Notifications</h2>
+            <p>
+              Push alerts for the things worth knowing about — a camera dropping
+              offline, a person detected, a recording problem, storage running
+              low, or protection being turned off.
+            </p>
+            <ul>
+              <li>
+                <strong>Tune them</strong> per camera, per event type and per
+                severity.
+              </li>
+              <li>
+                <strong>Quiet hours</strong> keep the non-urgent ones from waking
+                you.
+              </li>
+              <li>
+                <strong>Deep links:</strong> tapping a notification opens the
+                exact screen it’s about.
+              </li>
+            </ul>
+            <div class="note">
+              <p>
+                Make sure notifications are allowed for Orionis Control in your
+                device’s Settings, or alerts won’t reach you.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc" id="troubleshooting">
+            <h2>Troubleshooting</h2>
+
+            <h3>A camera shows as offline</h3>
+            <p>
+              The camera isn’t sending video right now. It usually comes back on
+              its own once it reconnects. Check the camera’s power and network;
+              the app will show it as online again automatically.
+            </p>
+
+            <h3>Live view won’t play</h3>
+            <p>
+              Try backing out and reopening the camera. If it still won’t play,
+              confirm the camera shows as online, and that your device has a
+              working connection to your system.
+            </p>
+
+            <h3>A camera is recording but doesn’t show a recording badge</h3>
+            <p>
+              The badge appears once the app can confirm fresh footage is being
+              written. If a camera is genuinely recording and the badge is
+              missing, make sure the recorder for that source is set up and
+              reachable.
+            </p>
+
+            <h3>Blink keeps asking for a verification code</h3>
+            <p>
+              You only need to enter a code <strong>once</strong>, when you first
+              sign in to Blink in the app. Finish that sign-in step before
+              setting anything else up. Once the connection is signed in, the
+              code prompts stop.
+            </p>
+
+            <h3>“Nothing was recorded on this day”</h3>
+            <p>
+              Either that camera has no footage in the range you’re viewing, or
+              its recorder isn’t configured. Try a different date, and confirm
+              the source is set up to record.
+            </p>
+
+            <h3>Can’t reach the gateway</h3>
+            <p>
+              Double-check the address you entered and that your device is on a
+              network that can reach your system. The app tells you plainly when
+              it can’t connect rather than hanging.
+            </p>
+          </section>
+
+          <section class="doc" id="faq">
+            <h2>Frequently asked questions</h2>
+
+            <details class="faq">
+              <summary>Which devices does the app run on?</summary>
+              <div>
+                <p>
+                  iPhone and iPad. iPhone, iPhone landscape, iPad and iPad
+                  split-screen are all first-class layouts, in light and dark
+                  appearance.
+                </p>
+              </div>
+            </details>
+
+            <details class="faq">
+              <summary>What cameras and systems are supported?</summary>
+              <div>
+                <p>
+                  Frigate, UniFi Protect, Scrypted, TP-Link Tapo, Wyze, Blink,
+                  Google Nest, and generic RTSP / go2rtc sources. See
+                  <a href="#sources">Adding camera sources</a>. Each states what
+                  it can do before you add it.
+                </p>
+              </div>
+            </details>
+
+            <details class="faq">
+              <summary>Can I use it away from home?</summary>
+              <div>
+                <p>
+                  Yes, as long as your device can reach your system’s gateway
+                  address. How that’s reachable from outside your home is part of
+                  how your system is set up.
+                </p>
+              </div>
+            </details>
+
+            <details class="faq">
+              <summary>Is my footage or data sent anywhere?</summary>
+              <div>
+                <p>
+                  The app talks to your own system. It isn’t a cloud service that
+                  stores your video for you. See
+                  <a href="#privacy">Privacy &amp; security</a>.
+                </p>
+              </div>
+            </details>
+
+            <details class="faq">
+              <summary>Why can’t I add or change a source?</summary>
+              <div>
+                <p>
+                  Managing camera sources and other sensitive actions are limited
+                  to administrator accounts. If you need access, ask whoever
+                  administers your system.
+                </p>
+              </div>
+            </details>
+
+            <details class="faq">
+              <summary>
+                Why don’t I see an Events or Recordings tab for a camera?
+              </summary>
+              <div>
+                <p>
+                  The app only shows what a source can actually do. If a source
+                  has no event history or recordings, those tabs are hidden
+                  rather than shown empty — an empty list would wrongly read as
+                  “nothing happened.”
+                </p>
+              </div>
+            </details>
+          </section>
+
+          <section class="doc" id="privacy">
+            <h2>Privacy &amp; security</h2>
+            <p>
+              Orionis Control is built to talk to <em>your</em> system, not a
+              third-party cloud.
+            </p>
+            <ul>
+              <li>
+                <strong>Your credentials stay yours.</strong> Any passwords or
+                account details you enter for a camera source are stored securely
+                and are never shown back to the app once saved.
+              </li>
+              <li>
+                <strong>Secure sign-in.</strong> You sign in with your own
+                account, and your session lives only on your device — you can
+                sign out at any time.
+              </li>
+              <li>
+                <strong>Least privilege.</strong> Sensitive actions — managing
+                sources, pausing protection, service actions — are limited to
+                administrators and are recorded.
+              </li>
+              <li>
+                <strong>Honest states.</strong> When something is offline,
+                degraded or unavailable, the app says so clearly instead of
+                pretending.
+              </li>
+            </ul>
+          </section>
+
+          <section class="doc" id="support">
+            <h2>Get support</h2>
+            <p>
+              Still stuck, or spotted something that doesn’t look right? We’d
+              like to hear about it.
+            </p>
+            <div class="card">
+              <h3>Contact</h3>
+              <p>
+                Email
+                <a href="mailto:aqua@lostmediastudios.com"
+                  >aqua@lostmediastudios.com</a
+                >
+                — include your device model, what you were doing, and what you
+                expected to happen. Screenshots help.
+              </p>
+            </div>
+            <div class="note">
+              <p>
+                When reporting a problem, please don’t include passwords or other
+                secrets. A description of the steps and any on-screen message is
+                enough for us to help.
+              </p>
+            </div>
+
+            <footer class="site">
+              <p><span class="pill">Orionis Control</span></p>
+              <p>
+                © 2026 Lost Media Studios. Orionis Control is proprietary
+                software. This help site is provided for people using the app.
+              </p>
+            </footer>
+          </section>
+        </div>
+      </main>
     </div>
-  </div>
-</section>
 
-<section id="architecture">
-  <div class="wrap">
-    <span class="eyebrow">How it fits together</span>
-    <h2>A thin, secure window over your own media plane</h2>
-    <p class="lead">The app never talks to your cameras or services directly. A gateway you control mediates everything — authorizing each request, minting short-lived tokens, and keeping internal services off the public internet.</p>
-    <div class="flow">
-      <div class="node"><div class="k">Device</div><div class="v">iOS app</div><div class="d">SwiftUI · WebRTC · AVFoundation</div></div>
-      <div class="arrow">→</div>
-      <div class="node"><div class="k">Edge</div><div class="v">OIDC + PKCE</div><div class="d">Your identity provider signs you in</div></div>
-      <div class="arrow">→</div>
-      <div class="node"><div class="k">Control</div><div class="v">Gateway</div><div class="d">Authorizes · relays · tokenizes</div></div>
-      <div class="arrow">→</div>
-      <div class="node"><div class="k">Media</div><div class="v">Your stack</div><div class="d">Cameras · DVR · DNS · services</div></div>
-    </div>
-    <div class="note">🔒 <b>Privacy by design:</b> video is proxied through the gateway over per-session relay credentials, so the streaming layer is never exposed and never needs a public IP allowlist. Recorded footage is served only to the authenticated owner, with no shared caching.</div>
-  </div>
-</section>
+    <script>
+      (function () {
+        var root = document.documentElement;
+        var body = document.body;
 
-<section id="whatsnew">
-  <div class="wrap">
-    <span class="eyebrow">Recent releases</span>
-    <h2>What's new</h2>
-    <p class="lead">The last stretch has been about making the fast path <em>reliable</em> — smoother video, trustworthy data, and releases that can't ship broken.</p>
-    <div class="tl">
-      <div class="row new">
-        <div class="ver"><b>0.2.5</b><span class="tag">latest</span></div>
-        <p>Backend hot-path and upstream hardening, and CI that publishes only the intended release artifacts.</p>
-      </div>
-      <div class="row new">
-        <div class="ver"><b>0.2.4</b><span class="tag">streaming</span></div>
-        <p>Adaptive 1080p streaming — the live view scales to the connection instead of stalling on a fixed bitrate.</p>
-      </div>
-      <div class="row">
-        <div class="ver"><b>0.2.0 – 0.2.3</b><span class="tag">reliability</span></div>
-        <p>WebRTC TURN fallback prioritization, deinit-safe stream observation, clearer "gateway unreachable" states, and serialized, validated iOS releases that block on real device-test lanes.</p>
-      </div>
-      <div class="row">
-        <div class="ver"><b>0.2.1</b><span class="tag">adguard</span></div>
-        <p>Made AdGuard query activity trustworthy — precise allowed/blocked/unknown classification instead of guesswork.</p>
-      </div>
-      <div class="row">
-        <div class="ver"><b>0.1.7 – 0.1.9</b><span class="tag">foundation</span></div>
-        <p>Smoother camera playback, AdGuard usability, and broad reliability improvements across the app.</p>
-      </div>
-      <div class="row">
-        <div class="ver"><b>0.1.x</b><span class="tag">the big build-out</span></div>
-        <p>Native WebRTC player with automatic HLS fallback, camera audio (AAC transcode), the scrubbable recordings timeline, offline-camera handling, tolerant permission decoding, an infrastructure-management screen, and reliable AltStore delivery.</p>
-      </div>
-    </div>
-  </div>
-</section>
+        try {
+          var saved = localStorage.getItem("oc-theme");
+          if (saved) root.setAttribute("data-theme", saved);
+        } catch (e) {}
+        document
+          .getElementById("themeBtn")
+          .addEventListener("click", function () {
+            var current =
+              root.getAttribute("data-theme") ||
+              (window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light");
+            var next = current === "dark" ? "light" : "dark";
+            root.setAttribute("data-theme", next);
+            try {
+              localStorage.setItem("oc-theme", next);
+            } catch (e) {}
+          });
 
-<section id="roadmap">
-  <div class="wrap">
-    <span class="eyebrow">Where it's going</span>
-    <h2>Roadmap</h2>
-    <p class="lead">Near-term is polish and trust; the middle distance adds intelligence to the cameras; the horizon widens what "your stack" can mean.</p>
-    <div class="road">
-      <div class="lane">
-        <h3><span class="lb now">Now</span> Polish &amp; trust</h3>
-        <div class="item"><span class="m">🎬</span><div><b>Rock-steady live video</b><p>Kill the remaining WebRTC stutter and low-FPS dips on weak links with short-keyframe streaming and a warmed, always-ready feed.</p></div></div>
-        <div class="item"><span class="m">⚡</span><div><b>Snappier backend calls</b><p>Fail fast with tight, bounded timeouts so a slow or dead endpoint never leaves you waiting.</p></div></div>
-        <div class="item"><span class="m">📱</span><div><b>Home-screen app icon</b><p>Ship the app icon into the build so the installed app is unmistakably Orionis.</p></div></div>
-        <div class="item"><span class="m">🛡️</span><div><b>Query-log accuracy</b><p>Guarantee the AdGuard log reflects real allow/block reality, verified against the source.</p></div></div>
-      </div>
-      <div class="lane">
-        <h3><span class="lb next">Next</span> Bigger, smarter cameras</h3>
-        <div class="item"><span class="m">📺</span><div><b>4K support — soon</b><p>End-to-end 4K: full-resolution live view and recording for higher-detail cameras, with quality that adapts to your connection.</p></div></div>
-        <div class="item"><span class="m">⏬</span><div><b>Full recording control &amp; downloads</b><p>Download clips straight to your device, trim &amp; export any moment, lock footage so it survives retention, and manage recordings in bulk.</p></div></div>
-        <div class="item"><span class="m">🔔</span><div><b>Motion &amp; object events</b><p>A real event feed — person / vehicle / motion — powered by on-device detection, feeding the events tab and timeline markers.</p></div></div>
-        <div class="item"><span class="m">📩</span><div><b>Push notifications</b><p>APNs alerts for the events that matter, delivered the moment they happen.</p></div></div>
-        <div class="item"><span class="m">🌊</span><div><b>Low-latency HLS fallback</b><p>A buttery, ~1.5s smooth fallback for when the network is too rough for real-time.</p></div></div>
-      </div>
-      <div class="lane">
-        <h3><span class="lb later">Later</span> Wider horizon</h3>
-        <div class="item"><span class="m">🧱</span><div><b>Richer camera wall</b><p>Multi-camera layouts, grouping, and faster switching for larger installs.</p></div></div>
-        <div class="item"><span class="m">🔌</span><div><b>More integrations</b><p>Bring additional self-hosted services under the same secure roof.</p></div></div>
-        <div class="item"><span class="m">👥</span><div><b>Multi-user &amp; sharing</b><p>Scoped access for household members and guests, with per-role limits.</p></div></div>
-        <div class="item"><span class="m">🖥️</span><div><b>Beyond iPhone</b><p>Explore iPad and desktop surfaces for the same trusted control plane.</p></div></div>
-      </div>
-    </div>
-  </div>
-</section>
+        var menuBtn = document.getElementById("menuBtn");
+        var backdrop = document.getElementById("backdrop");
+        function closeNav() {
+          body.classList.remove("nav-open");
+          menuBtn.setAttribute("aria-expanded", "false");
+        }
+        menuBtn.addEventListener("click", function () {
+          var open = body.classList.toggle("nav-open");
+          menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        backdrop.addEventListener("click", closeNav);
 
-<section id="stack">
-  <div class="wrap">
-    <span class="eyebrow">Built with</span>
-    <h2>Tech stack</h2>
-    <div class="badges">
-      <span class="badge"><b>Swift</b> · SwiftUI</span>
-      <span class="badge"><b>WebRTC</b> · libwebrtc</span>
-      <span class="badge"><b>AVFoundation</b> · HLS</span>
-      <span class="badge"><b>Node</b> · Fastify · TypeScript</span>
-      <span class="badge"><b>SQLite</b> · single-writer</span>
-      <span class="badge"><b>OIDC</b> · Authelia</span>
-      <span class="badge"><b>go2rtc</b> + <b>MediaMTX</b></span>
-      <span class="badge"><b>coturn</b> · scoped TURN</span>
-      <span class="badge"><b>Docker</b> · Caddy · Cloudflare</span>
-      <span class="badge"><b>AltStore</b> delivery</span>
-    </div>
-    <div class="note">Distributed as an unsigned, self-re-signed build through AltStore / SideStore — no App Store gatekeeper, no distribution certificate, and updates that land the moment they're built.</div>
-  </div>
-</section>
+        var links = Array.prototype.slice.call(
+          document.querySelectorAll("nav.side a")
+        );
+        links.forEach(function (a) {
+          a.addEventListener("click", closeNav);
+        });
 
-<footer>
-  <div class="wrap">
-    <div class="brand" style="font-size:15px"><span class="logo" style="width:24px;height:24px"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2.6l7.2 3.2v5.4c0 4.6-3 8.7-7.2 10.2C7.8 19.9 4.8 15.8 4.8 11.2V5.8L12 2.6z" fill="#fff" opacity=".95"/></svg></span> Orionis Control</div>
-    <p style="margin-top:12px">A privacy-first control plane for self-hosted infrastructure. Built and maintained by Lost Media Studios.</p>
-    <p>This page describes the product and its direction; it intentionally contains no operational, network, or credential details.</p>
-  </div>
-</footer>
+        var search = document.getElementById("search");
+        search.addEventListener("input", function () {
+          var q = search.value.trim().toLowerCase();
+          links.forEach(function (a) {
+            var hit = a.textContent.toLowerCase().indexOf(q) !== -1;
+            a.style.display = q && !hit ? "none" : "";
+          });
+        });
 
-<script>
-  (function(){
-    var btn=document.getElementById('themeBtn'), root=document.documentElement;
-    var saved=null; try{saved=localStorage.getItem('orionis-theme');}catch(e){}
-    if(saved){ root.setAttribute('data-theme',saved); }
-    btn.addEventListener('click',function(){
-      var t=root.getAttribute('data-theme')==='dark'?'light':'dark';
-      root.setAttribute('data-theme',t);
-      try{localStorage.setItem('orionis-theme',t);}catch(e){}
-    });
-  })();
-</script>
-</body>
+        var sections = Array.prototype.slice.call(
+          document.querySelectorAll("section.doc")
+        );
+        var byId = {};
+        links.forEach(function (a) {
+          byId[a.getAttribute("href").slice(1)] = a;
+        });
+        if ("IntersectionObserver" in window) {
+          var io = new IntersectionObserver(
+            function (entries) {
+              entries.forEach(function (en) {
+                if (en.isIntersecting) {
+                  links.forEach(function (a) {
+                    a.classList.remove("active");
+                  });
+                  var active = byId[en.target.id];
+                  if (active) active.classList.add("active");
+                }
+              });
+            },
+            { rootMargin: "-40% 0px -55% 0px" }
+          );
+          sections.forEach(function (s) {
+            io.observe(s);
+          });
+        }
+      })();
+    </script>
+  </body>
 </html>
