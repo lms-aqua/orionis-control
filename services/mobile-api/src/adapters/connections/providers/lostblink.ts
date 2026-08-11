@@ -568,6 +568,55 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     return res;
   }
 
+  /**
+   * The authorization code, following the post-sign-in redirect chain.
+   *
+   * Once the session is authenticated, GET authorize redirects to the app's
+   * callback carrying a one-time `code`. Blink can insert an intermediate
+   * redirect first, and delivers the code in the query on some paths and the
+   * URL fragment on others — so follow a bounded chain and check both. Each hop
+   * is logged with its code value redacted, so a failure here is diagnosable
+   * from the gateway logs without ever writing the credential down.
+   */
+  async #authorizationCode(
+    jar: CookieJar,
+    hardwareId: string,
+    codeChallenge: string,
+  ): Promise<string | null> {
+    let target: string | null =
+      `${OAUTH_AUTHORIZE_URL}?${this.#authorizeParams(hardwareId, codeChallenge)}`;
+    for (let hop = 0; hop < 6 && target; hop++) {
+      const res = await this.#ctx.fetchImpl(target, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          'User-Agent': OAUTH_WEB_USER_AGENT,
+          Accept: '*/*',
+          Referer: OAUTH_SIGNIN_URL,
+          ...jar.header(),
+        },
+        signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+      });
+      jar.absorb(res);
+      const location = res.headers.get('location');
+      process.stderr.write(
+        `[lostblink] authorize hop ${hop}: HTTP ${res.status} -> ${redactLocation(location)}\n`,
+      );
+      if (!location) return null;
+      const code = extractAuthCode(location);
+      if (code) return code;
+      const next = new URL(location, target).toString();
+      if (next.startsWith(OAUTH_SIGNIN_URL)) {
+        // Bounced back to the sign-in page: the authenticated session was not
+        // carried, so no code will ever come. Say so rather than looping.
+        process.stderr.write('[lostblink] authorize bounced back to the sign-in page\n');
+        return null;
+      }
+      target = next;
+    }
+    return null;
+  }
+
   /** GET the sign-in page and pull the CSRF token out of its HTML. */
   async #signinCsrf(jar: CookieJar): Promise<string | null> {
     const res = await this.#ctx.fetchImpl(OAUTH_SIGNIN_URL, {
@@ -670,17 +719,17 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     hardwareId: string,
     email: string,
   ): Promise<AuthResult> {
-    // GET authorize again — now that the session is authenticated it 302s to the
-    // app redirect carrying `?code=`.
-    const authRes = await this.#authorize(jar, hardwareId, codeChallenge);
-    const location = authRes.headers.get('location');
-    const code = location ? new URLSearchParams(location.split('?')[1] ?? '').get('code') : null;
+    // Re-request authorize now that the session is authenticated: it redirects
+    // to the app callback with a one-time `code`. Blink can take an intermediate
+    // hop first, and returns the code in the query on some paths and the URL
+    // fragment on others — so follow the chain and check both (see below).
+    const code = await this.#authorizationCode(jar, hardwareId, codeChallenge);
     if (!code) {
       return {
         status: 'failed',
         message:
-          `Blink signed in but did not hand back an authorization code (its authorize step returned HTTP ${authRes.status}). ` +
-          'This usually means the session expired mid-flow — start the sign-in again.',
+          'Blink verified the code but did not return an authorization code on the final step. ' +
+          'Start the sign-in again — if it keeps happening, the gateway logs show where the redirect went.',
       };
     }
 
@@ -825,6 +874,33 @@ function redactEmail(email: string): string {
 /** RFC 7636 base64url (PKCE): URL-safe alphabet, no padding. */
 function base64Url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** The `code` from an OAuth redirect Location — checking query then fragment. */
+function extractAuthCode(location: string): string | null {
+  const query = location.includes('?')
+    ? location.slice(location.indexOf('?') + 1).split('#')[0]
+    : '';
+  const fragment = location.includes('#') ? location.slice(location.indexOf('#') + 1) : '';
+  return new URLSearchParams(query).get('code') ?? new URLSearchParams(fragment).get('code');
+}
+
+/**
+ * A redirect target reduced to scheme/host/path plus its parameter NAMES — never
+ * their values, so an authorization code is never written to the log.
+ */
+function redactLocation(location: string | null): string {
+  if (!location) return '(no Location header)';
+  try {
+    const url = new URL(location, OAUTH_ORIGIN);
+    const query = [...url.searchParams.keys()].join(',');
+    const fragment = url.hash
+      ? ` #[${[...new URLSearchParams(url.hash.slice(1)).keys()].join(',')}]`
+      : '';
+    return `${url.protocol}//${url.host}${url.pathname} ?[${query}]${fragment}`;
+  } catch {
+    return location.split('?')[0] ?? '(unparseable)';
+  }
 }
 
 /**
