@@ -17,14 +17,28 @@ struct RootView: View {
                 SignInView(reason: reason)
             case .authenticating:
                 SignInView(reason: nil, isAuthenticating: true)
-            case .locked(let user):
-                LockScreenView(user: user)
-            case .signedIn(let user):
+            case .signedIn(let user), .locked(let user):
+                // Kept mounted while locked — rather than swapped out for the
+                // lock screen — so an in-progress flow survives being locked.
+                // Leaving to fetch a 2FA code and returning through Face ID used
+                // to tear this whole tree down, dismissing the code sheet and
+                // discarding what had been typed. The lock is drawn as an
+                // overlay below instead, so unlocking restores the exact screen.
                 MainTabView(user: user)
             }
         }
         .animation(.smooth(duration: 0.25), value: environment.auth.state)
-        // Privacy shield: the app switcher must never show a camera frame.
+        // Biometric lock: an opaque overlay over the live app, so unlocking
+        // returns to exactly what was on screen — including a presented sheet —
+        // instead of a freshly rebuilt tab view.
+        .overlay {
+            if case .locked(let user) = environment.auth.state {
+                LockScreenView(user: user)
+                    .transition(.opacity)
+            }
+        }
+        // Privacy shield: the app switcher must never show a camera frame. Drawn
+        // last so it covers the lock too while the app is not frontmost.
         .overlay {
             if environment.preferences.hidePreviewsInAppSwitcher, scenePhase != .active,
                 environment.auth.state.isSignedIn
