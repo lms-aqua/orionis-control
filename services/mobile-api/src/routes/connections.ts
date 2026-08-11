@@ -326,7 +326,14 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
         targetId: record.id,
         requestId: req.id,
         ip: req.ip,
-        metadata: { provider: record.provider, result: result.status },
+        metadata: {
+          provider: record.provider,
+          result: result.status,
+          // The user-facing reason on failure, so a bad sign-in is diagnosable
+          // from the audit trail. It is the same text shown in the app, never a
+          // credential.
+          ...(result.status === 'failed' ? { reason: result.message } : {}),
+        },
       });
 
       return ok(result, req.id);
@@ -363,7 +370,14 @@ export async function registerConnectionRoutes(app: FastifyInstance): Promise<vo
         ip: req.ip,
         // The code itself is a credential for the duration of its life and is
         // never recorded.
-        metadata: { provider: record.provider, result: result.status },
+        metadata: {
+          provider: record.provider,
+          result: result.status,
+          // The user-facing reason on failure, so a bad sign-in is diagnosable
+          // from the audit trail. It is the same text shown in the app, never a
+          // credential.
+          ...(result.status === 'failed' ? { reason: result.message } : {}),
+        },
       });
 
       if (result.status === 'complete') {

@@ -494,10 +494,7 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
         },
       };
     } catch (error) {
-      return {
-        status: 'failed',
-        message: error instanceof Error ? error.message : 'Blink could not be reached.',
-      };
+      return { status: 'failed', message: describeNetworkError(error) };
     }
   }
 
@@ -512,8 +509,8 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     }
     try {
       const verified = await this.#verifyTwoFactor(state.jar, state.csrf, pin);
-      if (!verified) {
-        return { status: 'failed', message: 'That code was not accepted.' };
+      if (!verified.ok) {
+        return { status: 'failed', message: verified.message };
       }
       const result = await this.#finish(
         state.jar,
@@ -525,10 +522,7 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       if (result.status === 'complete') this.#oauth = null;
       return result;
     } catch (error) {
-      return {
-        status: 'failed',
-        message: error instanceof Error ? error.message : 'Blink could not be reached.',
-      };
+      return { status: 'failed', message: describeNetworkError(error) };
     }
   }
 
@@ -618,19 +612,15 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     if (REDIRECT_STATUSES.has(res.status)) return { kind: 'complete' };
     // 412, or 202 carrying two-step-verification fields, both mean "code needed".
     if (res.status === 412 || res.status === 202) return { kind: 'twofactor' };
-    if (res.status === 406) {
-      // Blink's response to a wrong password or, after a few tries, a lockout.
-      return {
-        kind: 'failed',
-        message:
-          'Blink would not accept the sign-in — usually a wrong password, or too many recent attempts (Blink then locks sign-in for about an hour). Check the password, and if you have been retrying, wait a while.',
-      };
-    }
-    return { kind: 'failed', message: await messageFor(res, 'Blink rejected the sign-in') };
+    return { kind: 'failed', message: await describeAuthFailure(res, 'signin') };
   }
 
   /** POST the emailed/texted code to finish the second factor. */
-  async #verifyTwoFactor(jar: CookieJar, csrf: string, code: string): Promise<boolean> {
+  async #verifyTwoFactor(
+    jar: CookieJar,
+    csrf: string,
+    code: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
     const res = await this.#ctx.fetchImpl(OAUTH_2FA_VERIFY_URL, {
       method: 'POST',
       redirect: 'manual',
@@ -646,16 +636,26 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       signal: AbortSignal.timeout(this.#ctx.timeoutMs),
     });
     jar.absorb(res);
+    // Some responses complete the factor with a redirect instead of a 201 body.
+    if (REDIRECT_STATUSES.has(res.status)) return { ok: true };
     if (res.status === 201) {
       try {
-        const body = (await res.json()) as { status?: string };
-        return body?.status === 'auth-completed';
+        const body = (await res.json()) as { status?: string; message?: string };
+        if (body?.status === 'auth-completed') return { ok: true };
+        return {
+          ok: false,
+          message:
+            body?.message ??
+            'Blink did not confirm that verification code. Request a new code and try again.',
+        };
       } catch {
-        return false;
+        return {
+          ok: false,
+          message: 'Blink returned an unreadable response to the verification code. Try again.',
+        };
       }
     }
-    // Some responses complete the factor with a redirect instead of a 201 body.
-    return REDIRECT_STATUSES.has(res.status);
+    return { ok: false, message: await describeAuthFailure(res, 'verify') };
   }
 
   /**
@@ -678,14 +678,23 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     if (!code) {
       return {
         status: 'failed',
-        message: 'Blink signed in but did not return an authorization code. Try again.',
+        message:
+          `Blink signed in but did not hand back an authorization code (its authorize step returned HTTP ${authRes.status}). ` +
+          'This usually means the session expired mid-flow — start the sign-in again.',
       };
     }
 
-    const token = await this.#exchangeCode(code, codeVerifier, hardwareId);
-    const accessToken = typeof token?.access_token === 'string' ? token.access_token : '';
+    const exchange = await this.#exchangeCode(code, codeVerifier, hardwareId);
+    if ('error' in exchange) {
+      return { status: 'failed', message: exchange.error };
+    }
+    const token = exchange.token;
+    const accessToken = typeof token.access_token === 'string' ? token.access_token : '';
     if (!accessToken) {
-      return { status: 'failed', message: 'Blink did not issue a token after sign-in.' };
+      return {
+        status: 'failed',
+        message: 'Blink completed sign-in but returned no access token. Try signing in again.',
+      };
     }
 
     const tier = await this.#tierInfo(accessToken);
@@ -703,7 +712,7 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     code: string,
     codeVerifier: string,
     hardwareId: string,
-  ): Promise<Record<string, unknown> | null> {
+  ): Promise<{ token: Record<string, unknown> } | { error: string }> {
     const res = await this.#ctx.fetchImpl(OAUTH_TOKEN_URL, {
       method: 'POST',
       redirect: 'manual',
@@ -724,11 +733,13 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       }),
       signal: AbortSignal.timeout(this.#ctx.timeoutMs),
     });
-    if (res.status !== 200) return null;
+    if (res.status !== 200) {
+      return { error: await describeAuthFailure(res, 'token') };
+    }
     try {
-      return (await res.json()) as Record<string, unknown>;
+      return { token: (await res.json()) as Record<string, unknown> };
     } catch {
-      return null;
+      return { error: 'Blink returned an unreadable token response. Try signing in again.' };
     }
   }
 
@@ -816,15 +827,89 @@ function base64Url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/** A human message from an error response body, falling back to the status. */
-async function messageFor(res: FetchResponse, fallback: string): Promise<string> {
-  try {
-    const json = JSON.parse(await res.text()) as { message?: string };
-    if (json?.message) return json.message;
-  } catch {
-    // Not JSON — the status-code fallback below is the honest answer.
+/**
+ * A specific, user-facing message for a non-success upstream response.
+ *
+ * Blink's own error body wins when it sends one; otherwise the HTTP status maps
+ * to the clearest cause. 406 is deliberately explained as two possibilities:
+ * Blink returns it — Cloudflare-fronted, plain-text body, no `Retry-After` and
+ * no machine-readable reason — for BOTH a wrong password and a temporary
+ * lockout after repeated attempts, so there is no honest way to tell them apart
+ * from the response alone.
+ */
+async function describeAuthFailure(
+  res: FetchResponse,
+  step: 'signin' | 'verify' | 'token',
+): Promise<string> {
+  const detail = await bodyMessage(res);
+  const wait = retryAfterText(res);
+  if (res.status === 429) {
+    return `Blink is rate-limiting sign-in after too many attempts${wait || ' — wait a while and try again'}.`;
   }
-  return `${fallback} (HTTP ${res.status}).`;
+  if (res.status === 406) {
+    return step === 'verify'
+      ? 'Blink would not accept that code. It may be wrong or expired — or there have been too many attempts, which Blink blocks for a while. Request a fresh code and try again shortly.'
+      : 'Blink would not accept the sign-in. Usually this means the email or password is wrong. It can also mean Blink has temporarily blocked sign-in after several attempts (that clears in about an hour). Double-check the password, then try again.';
+  }
+  if (res.status === 401 || res.status === 403) {
+    return detail ?? 'Blink rejected the email or password. Check them and try again.';
+  }
+  if (res.status === 400) {
+    if (detail) return `Blink rejected the request: ${detail}.`;
+    return step === 'token'
+      ? 'Blink rejected the sign-in exchange — the session most likely expired. Start the sign-in again.'
+      : 'Blink rejected the request. Start the sign-in again.';
+  }
+  if (res.status === 404) {
+    return 'Blink’s sign-in API could not be found — it may have changed again. This needs a gateway update.';
+  }
+  if (res.status >= 500) {
+    return `Blink is having server trouble (HTTP ${res.status})${wait}. Try again in a few minutes.`;
+  }
+  return detail
+    ? `Blink rejected the sign-in: ${detail} (HTTP ${res.status}).`
+    : `Blink rejected the sign-in (HTTP ${res.status}).`;
+}
+
+/** Blink's own error text, when it sent a JSON body; null for plain-text/empty. */
+async function bodyMessage(res: FetchResponse): Promise<string | null> {
+  try {
+    const text = await res.text();
+    if (!text) return null;
+    const json = JSON.parse(text) as {
+      message?: unknown;
+      error_description?: unknown;
+      error?: unknown;
+    };
+    const raw = json.message ?? json.error_description ?? json.error;
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+  } catch {
+    // Not JSON (e.g. Blink's bare "406 Not Acceptable"), or unreadable.
+    return null;
+  }
+}
+
+/** " — try again in about N minutes" from a `Retry-After`, or "" when absent. */
+function retryAfterText(res: FetchResponse): string {
+  const header = res.headers.get('retry-after');
+  if (!header) return '';
+  const seconds = Number(header);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  const minutes = Math.ceil(seconds / 60);
+  return minutes >= 1
+    ? ` — try again in about ${minutes} minute${minutes === 1 ? '' : 's'}`
+    : ` — try again in ${seconds} second${seconds === 1 ? '' : 's'}`;
+}
+
+/** A friendly message for a thrown fetch error (timeout vs unreachable). */
+function describeNetworkError(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      return 'Blink did not respond in time. Check the connection and try again.';
+    }
+    if (error.message) return `Could not reach Blink: ${error.message}.`;
+  }
+  return 'Could not reach Blink. Check the connection and try again.';
 }
 
 /**
