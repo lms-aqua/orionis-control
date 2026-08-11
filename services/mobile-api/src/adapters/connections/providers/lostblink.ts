@@ -482,13 +482,18 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       // A second factor is required: hold this session for completeAuth. The
       // store pins the instance across both calls, so this survives the wait.
       this.#oauth = { jar, codeVerifier, codeChallenge, hardwareId, csrf, email };
+      const bySms = outcome.channel === 'sms';
       return {
         status: 'challenge',
         challenge: {
           challengeId: hardwareId,
-          kind: 'emailed_code',
-          prompt: 'Blink sent a verification code. Enter it to finish connecting.',
-          sentTo: redactEmail(email),
+          kind: bySms ? 'sms_code' : 'emailed_code',
+          prompt: bySms
+            ? 'Blink texted a verification code. Enter it to finish connecting.'
+            : 'Blink sent a verification code. Enter it to finish connecting.',
+          // What Blink actually reported it sent to, masked; only if Blink named
+          // nothing do we fall back to the email on the connection.
+          sentTo: outcome.sentTo ?? (bySms ? null : redactEmail(email)),
           // Blink's codes are short-lived; ten minutes is the practical window.
           expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
         },
@@ -642,7 +647,11 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     csrf: string,
     email: string,
     password: string,
-  ): Promise<{ kind: 'complete' | 'twofactor' } | { kind: 'failed'; message: string }> {
+  ): Promise<
+    | { kind: 'complete' }
+    | { kind: 'twofactor'; channel: TwoFactorChannel; sentTo: string | null }
+    | { kind: 'failed'; message: string }
+  > {
     const res = await this.#ctx.fetchImpl(OAUTH_SIGNIN_URL, {
       method: 'POST',
       redirect: 'manual',
@@ -660,7 +669,24 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     jar.absorb(res);
     if (REDIRECT_STATUSES.has(res.status)) return { kind: 'complete' };
     // 412, or 202 carrying two-step-verification fields, both mean "code needed".
-    if (res.status === 412 || res.status === 202) return { kind: 'twofactor' };
+    // The response body names where the code went and by what channel — Blink
+    // often texts it rather than emailing — so parse it for the challenge.
+    if (res.status === 412 || res.status === 202) {
+      let channel: TwoFactorChannel = null;
+      let sentTo: string | null = null;
+      try {
+        const body = (await res.json()) as Record<string, unknown>;
+        // Digits masked so a real phone/email is never written to the log; the
+        // keys and structure are what refining this parser needs.
+        process.stderr.write(
+          `[lostblink] 2fa challenge body: ${maskDigits(JSON.stringify(body)).slice(0, 400)}\n`,
+        );
+        ({ channel, sentTo } = parseTwoFactorTarget(body));
+      } catch {
+        // A 412 may carry no body; the fallback wording still makes sense.
+      }
+      return { kind: 'twofactor', channel, sentTo };
+    }
     return { kind: 'failed', message: await describeAuthFailure(res, 'signin') };
   }
 
@@ -869,6 +895,73 @@ function redactEmail(email: string): string {
   const at = email.indexOf('@');
   if (at <= 0) return '•••';
   return `${email[0]}•••${email.slice(at)}`;
+}
+
+/** Which way Blink chose to send the code. */
+type TwoFactorChannel = 'sms' | 'email' | null;
+
+/** Mask any run of 4+ digits, so a phone or code never lands in a log. */
+function maskDigits(text: string): string {
+  return text.replace(/\d{4,}/g, '••••');
+}
+
+/**
+ * The channel and a masked destination from a Blink two-step response.
+ *
+ * Blink's field names here are undocumented and have changed before, so this
+ * sniffs broadly: the channel from any sms/phone/email hint anywhere in the
+ * body, and the destination from the common key names, masked before use.
+ */
+function parseTwoFactorTarget(body: Record<string, unknown>): {
+  channel: TwoFactorChannel;
+  sentTo: string | null;
+} {
+  const haystack = JSON.stringify(body).toLowerCase();
+  let channel: TwoFactorChannel = null;
+  if (/sms|phone|text|mobile|cell/.test(haystack)) channel = 'sms';
+  else if (/email|e-mail/.test(haystack)) channel = 'email';
+
+  const candidateKeys = [
+    'masked_phone',
+    'phone',
+    'phone_number',
+    'masked_email',
+    'email',
+    'destination',
+    'sent_to',
+    'sentTo',
+    'target',
+    'number',
+  ];
+  let raw: string | null = null;
+  for (const key of candidateKeys) {
+    const value = body[key];
+    if (typeof value === 'string' && value.trim()) {
+      raw = value.trim();
+      break;
+    }
+    if (value && typeof value === 'object') {
+      const inner = value as Record<string, unknown>;
+      const nested = inner.last_4_digits ?? inner.last4 ?? inner.number ?? inner.value;
+      if (typeof nested === 'string' && nested.trim()) {
+        raw = nested.trim();
+        break;
+      }
+    }
+  }
+  return { channel, sentTo: maskDestination(raw, channel) };
+}
+
+/** Present a destination safely: keep Blink's own mask, or make one. */
+function maskDestination(value: string | null, channel: TwoFactorChannel): string | null {
+  if (!value) return null;
+  if (value.includes('@')) return redactEmail(value);
+  // Already masked by Blink (a bullet, an asterisk, or a run of x's).
+  if (/[•*]|x{2,}/i.test(value)) return value;
+  const digits = value.replace(/\D/g, '');
+  if (digits.length >= 4) return `•••‑${digits.slice(-4)}`;
+  if (digits.length > 0 && channel === 'sms') return `•••‑${digits}`;
+  return value;
 }
 
 /** RFC 7636 base64url (PKCE): URL-safe alphabet, no padding. */
