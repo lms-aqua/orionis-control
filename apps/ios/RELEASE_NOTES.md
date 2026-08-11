@@ -1,3 +1,7 @@
+Fix: signing in to a source that sends a verification code (like Blink) no longer loses the code screen when you leave the app to go read the code. The biometric lock now draws over the app instead of rebuilding it, so coming back through Face ID returns you to exactly where you were — the code prompt, and anything you had already typed, are still there.
+
+---
+
 Orionis Control 1.6.0 adds two more camera brands: Uniview (UNV) and Hanwha Vision (Wisenet). Both talk to the camera on your own network over its local interface — the camera's own login, nothing sent to a vendor cloud — and give you snapshots and live view. As with the other local sources, events and recordings are left off rather than half-wired. These are verified by tests and against the vendors' documented interfaces; the live connection to your own camera is the one thing only you can confirm. (Uniview's snapshot path varies a little by model — if stills don't appear, live view still works over RTSP, and you can set the exact path under advanced settings.)
 
 ---
