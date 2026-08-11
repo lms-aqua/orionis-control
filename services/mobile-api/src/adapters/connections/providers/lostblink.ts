@@ -16,6 +16,7 @@
  *     writing, unverified against live hardware. The descriptor says so, so the
  *     app can warn before anyone depends on it for security footage.
  */
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AppError } from '../../../lib/errors.ts';
 import type {
   Camera,
@@ -154,19 +155,38 @@ const BLINK_DEFAULT_TIER = 'rest-prod';
  */
 const BLINK_DEVICE_IDENTIFIER = 'Orionis Control';
 
-interface BlinkLoginResponse {
-  account?: {
-    account_id?: number;
-    client_id?: number;
-    user_id?: number;
-    tier?: string;
-    client_verification_required?: boolean;
-    account_verification_required?: boolean;
-  };
-  auth?: { token?: string };
-  message?: string;
-  code?: number;
-}
+// MARK: Blink OAuth2 endpoints
+//
+// Blink retired the old `/api/v5/account/login` endpoint (it now answers HTTP
+// 426 "an app update is required" to force old clients off) and moved sign-in
+// to a browser-style OAuth2 authorization-code + PKCE flow at api.oauth.blink.com:
+// GET authorize (establishes a session cookie) -> GET the signin page (carries a
+// CSRF token in its HTML) -> POST credentials -> if a second factor is demanded,
+// POST the code to 2fa/verify -> GET authorize again to receive an auth `code` on
+// the redirect -> exchange that code for tokens -> read tier_info for the account.
+// Endpoint set and request shapes mirror the blinkpy reference client.
+const OAUTH_ORIGIN = 'https://api.oauth.blink.com';
+const OAUTH_AUTHORIZE_URL = `${OAUTH_ORIGIN}/oauth/v2/authorize`;
+const OAUTH_SIGNIN_URL = `${OAUTH_ORIGIN}/oauth/v2/signin`;
+const OAUTH_2FA_VERIFY_URL = `${OAUTH_ORIGIN}/oauth/v2/2fa/verify`;
+const OAUTH_TOKEN_URL = `${OAUTH_ORIGIN}/oauth/token`;
+const BLINK_TIER_INFO_URL = 'https://rest-prod.immedia-semi.com/api/v1/users/tier_info';
+const OAUTH_CLIENT_ID = 'ios';
+const OAUTH_SCOPE = 'client';
+const OAUTH_REDIRECT_URI = 'immedia-blink://applinks.blink.com/signin/callback';
+const BLINK_APP_VERSION = '50.1';
+/** Presented on the browser-flow requests; a plausible mobile Safari. */
+const OAUTH_WEB_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1';
+/** Presented on the token exchange, matching the native app's client string. */
+const OAUTH_TOKEN_USER_AGENT = 'Blink/2511191620 CFNetwork/3860.200.71 Darwin/25.1.0';
+/** Presented on the tier_info REST call. */
+const BLINK_DEFAULT_USER_AGENT = '27.0ANDROID_28373244';
+/** HTTP statuses Blink uses to mean "follow the redirect" (success). */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** The narrow slice of a Node/undici fetch Response this provider reads. */
+type FetchResponse = Awaited<ReturnType<typeof fetch>>;
 
 /** MediaMTX v3 `/v3/paths/list` shape, narrowed to what is used. */
 interface MediaMtxPath {
@@ -210,7 +230,10 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
    * succeeded.
    */
   get #signedIn(): boolean {
-    return Boolean(this.#ctx.settings.accountId);
+    // Either the durable account id from a completed sign-in, or a stored OAuth
+    // token — tier_info does not always yield an account id, but a token is
+    // itself proof the flow finished.
+    return Boolean(this.#ctx.settings.accountId) || Boolean(this.#ctx.secrets.authToken);
   }
 
   /**
@@ -401,20 +424,25 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   // the same object serves both calls, and nothing half-authenticated is
   // persisted.
 
-  #pending: {
-    accountId: number;
-    clientId: number;
-    tier: string;
-    userId: number | null;
+  /**
+   * Live OAuth sign-in state, held on this instance only between `beginAuth`
+   * and `completeAuth`. The store pins the same provider object across both
+   * steps (see ConnectionStore #challenges), so the session cookies, PKCE
+   * verifier and CSRF token survive the wait for the user's code — and nothing
+   * half-authenticated is ever persisted, because it lives here, not in the db.
+   */
+  #oauth: {
+    jar: CookieJar;
+    codeVerifier: string;
+    codeChallenge: string;
+    hardwareId: string;
+    csrf: string;
+    email: string;
   } | null = null;
   /** Credentials proper: encrypted at rest, never returned by the API. */
   #obtainedSecrets: Record<string, string> = {};
-  /** Account id, client id, region tier — identifiers, not credentials. */
+  /** Account id, region tier, hardware id — identifiers, not credentials. */
   #obtainedSettings: Record<string, unknown> = {};
-
-  get #tier(): string {
-    return String(this.#ctx.settings.tier || BLINK_DEFAULT_TIER);
-  }
 
   async beginAuth(): Promise<AuthResult> {
     const email = String(this.#ctx.settings.email ?? '').trim();
@@ -423,179 +451,334 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       return { status: 'failed', message: 'Enter the Blink email and password first.' };
     }
 
-    let body: BlinkLoginResponse;
+    const jar = new CookieJar();
+    const codeVerifier = base64Url(randomBytes(48));
+    const codeChallenge = base64Url(createHash('sha256').update(codeVerifier).digest());
+    // Blink binds the session to a hardware id; a stable UUID per connection
+    // lets a later re-sign-in reuse a remembered device instead of always
+    // mailing a fresh code.
+    const hardwareId = randomUUID().toUpperCase();
+
     try {
-      const response = await this.#ctx.fetchImpl(
-        `https://${BLINK_DEFAULT_TIER}.immedia-semi.com/api/v5/account/login`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            email,
-            password,
-            // Blink ties a PIN to a client identity. A stable ID per connection
-            // means re-signing in does not trigger a fresh verification every
-            // time, which would be a new email to the user on every restart.
-            unique_id: this.#ctx.connectionId,
-            device_identifier: BLINK_DEVICE_IDENTIFIER,
-            reauth: true,
-          }),
-          signal: AbortSignal.timeout(this.#ctx.timeoutMs),
-        },
-      );
-      body = (await response.json()) as BlinkLoginResponse;
-      if (!response.ok) {
+      // 1) authorize — unauthenticated this 302s to the sign-in page, but the
+      // point of the call is the session cookies it sets, which the rest of the
+      // flow rides on.
+      await this.#authorize(jar, hardwareId, codeChallenge);
+      // 2) sign-in page — the CSRF token the credential POST must echo is
+      // embedded in its HTML.
+      const csrf = await this.#signinCsrf(jar);
+      if (!csrf) {
         return {
           status: 'failed',
-          message: body.message ?? `Blink rejected the sign-in (HTTP ${response.status}).`,
+          message: 'Blink’s sign-in page did not return a form token. Try again in a moment.',
         };
       }
+      // 3) credentials.
+      const outcome = await this.#submitCredentials(jar, csrf, email, password);
+      if (outcome.kind === 'failed') return { status: 'failed', message: outcome.message };
+      if (outcome.kind === 'complete') {
+        return await this.#finish(jar, codeVerifier, codeChallenge, hardwareId, email);
+      }
+      // A second factor is required: hold this session for completeAuth. The
+      // store pins the instance across both calls, so this survives the wait.
+      this.#oauth = { jar, codeVerifier, codeChallenge, hardwareId, csrf, email };
+      return {
+        status: 'challenge',
+        challenge: {
+          challengeId: hardwareId,
+          kind: 'emailed_code',
+          prompt: 'Blink sent a verification code. Enter it to finish connecting.',
+          sentTo: redactEmail(email),
+          // Blink's codes are short-lived; ten minutes is the practical window.
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        },
+      };
     } catch (error) {
       return {
         status: 'failed',
         message: error instanceof Error ? error.message : 'Blink could not be reached.',
       };
     }
-
-    const account = body.account;
-    const accountId = account?.account_id;
-    const clientId = account?.client_id;
-    if (!accountId || !clientId) {
-      return {
-        status: 'failed',
-        message: body.message ?? 'Blink returned an unexpected response.',
-      };
-    }
-    const tier = account?.tier ?? BLINK_DEFAULT_TIER;
-    // Absent on some accounts. Recorded when present because a bridge handed a
-    // credential set with a hole in it signs in again from scratch rather than
-    // using the session it was given.
-    const userId = account?.user_id ?? null;
-
-    const needsVerification =
-      account?.client_verification_required === true ||
-      account?.account_verification_required === true;
-
-    if (!needsVerification && body.auth?.token) {
-      // A trusted client skips the PIN entirely.
-      this.#obtainedSecrets = { authToken: body.auth.token };
-      this.#obtainedSettings = this.#identity(tier, accountId, clientId, userId);
-      return { status: 'complete', message: 'Signed in to Blink.' };
-    }
-
-    this.#pending = { accountId, clientId, tier, userId };
-    // Held on this instance only. The store pins it for the duration of the
-    // challenge and persists nothing until verification succeeds, so an
-    // abandoned sign-in leaves no half-authenticated row behind.
-    if (body.auth?.token) this.#obtainedSecrets.authToken = body.auth.token;
-
-    return {
-      status: 'challenge',
-      challenge: {
-        challengeId: `${accountId}:${clientId}`,
-        kind: 'emailed_code',
-        prompt: 'Blink sent a verification code. Enter it to finish connecting.',
-        sentTo: redactEmail(email),
-        // Blink's PINs are short-lived; ten minutes is the practical window.
-        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-      },
-    };
   }
 
-  async completeAuth(challengeId: string, code: string): Promise<AuthResult> {
-    const pending =
-      this.#pending ??
-      // The instance may have been rebuilt between the two calls; the challenge
-      // ID carries enough to continue rather than making the user start over.
-      (() => {
-        const [a, c] = challengeId.split(':');
-        return a && c
-          ? {
-              accountId: Number(a),
-              clientId: Number(c),
-              tier: this.#tier,
-              // Recovered from a previous sign-in if there was one. Not worth
-              // failing the verification over: an absent user id costs the
-              // bridge one extra login, not the session.
-              userId: numberOrNull(this.#ctx.settings.userId),
-            }
-          : null;
-      })();
-    if (!pending) {
+  async completeAuth(_challengeId: string, code: string): Promise<AuthResult> {
+    const state = this.#oauth;
+    if (!state) {
       return { status: 'failed', message: 'That verification has expired. Sign in again.' };
     }
-
     const pin = code.trim();
-    if (!/^\d{4,8}$/.test(pin)) {
+    if (!/^\d{3,10}$/.test(pin)) {
       return { status: 'failed', message: 'The code should be the digits Blink sent you.' };
     }
-
     try {
-      const response = await this.#ctx.fetchImpl(
-        `https://${pending.tier}.immedia-semi.com/api/v4/account/${pending.accountId}/client/${pending.clientId}/pin/verify`,
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(this.#authToken ? { 'token-auth': this.#authToken } : {}),
-          },
-          body: JSON.stringify({ pin }),
-          signal: AbortSignal.timeout(this.#ctx.timeoutMs),
-        },
-      );
-      const body = (await response.json()) as { valid?: boolean; message?: string };
-      if (!response.ok || body.valid === false) {
-        return { status: 'failed', message: body.message ?? 'That code was not accepted.' };
+      const verified = await this.#verifyTwoFactor(state.jar, state.csrf, pin);
+      if (!verified) {
+        return { status: 'failed', message: 'That code was not accepted.' };
       }
+      const result = await this.#finish(
+        state.jar,
+        state.codeVerifier,
+        state.codeChallenge,
+        state.hardwareId,
+        state.email,
+      );
+      if (result.status === 'complete') this.#oauth = null;
+      return result;
     } catch (error) {
       return {
         status: 'failed',
         message: error instanceof Error ? error.message : 'Blink could not be reached.',
       };
     }
+  }
 
-    this.#obtainedSettings = {
-      ...this.#obtainedSettings,
-      ...this.#identity(pending.tier, pending.accountId, pending.clientId, pending.userId),
+  // MARK: OAuth flow steps
+
+  /** The authorize query, identical on both GETs so the issued code binds to us. */
+  #authorizeParams(hardwareId: string, codeChallenge: string): URLSearchParams {
+    return new URLSearchParams({
+      app_brand: 'blink',
+      app_version: BLINK_APP_VERSION,
+      client_id: OAUTH_CLIENT_ID,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      device_brand: 'Apple',
+      device_model: 'iPhone16,1',
+      device_os_version: '26.1',
+      hardware_id: hardwareId,
+      redirect_uri: OAUTH_REDIRECT_URI,
+      response_type: 'code',
+      scope: OAUTH_SCOPE,
+    });
+  }
+
+  /** GET authorize; returns the raw response so callers can read its redirect. */
+  async #authorize(
+    jar: CookieJar,
+    hardwareId: string,
+    codeChallenge: string,
+  ): Promise<FetchResponse> {
+    const url = `${OAUTH_AUTHORIZE_URL}?${this.#authorizeParams(hardwareId, codeChallenge)}`;
+    const res = await this.#ctx.fetchImpl(url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': OAUTH_WEB_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...jar.header(),
+      },
+      signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+    });
+    jar.absorb(res);
+    return res;
+  }
+
+  /** GET the sign-in page and pull the CSRF token out of its HTML. */
+  async #signinCsrf(jar: CookieJar): Promise<string | null> {
+    const res = await this.#ctx.fetchImpl(OAUTH_SIGNIN_URL, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': OAUTH_WEB_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...jar.header(),
+      },
+      signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+    });
+    jar.absorb(res);
+    const html = await res.text();
+    const match = html.match(/"csrf-token":"([^"]+)"/);
+    return match?.[1] ?? null;
+  }
+
+  /** POST credentials. Distinguishes success, a demanded second factor, failure. */
+  async #submitCredentials(
+    jar: CookieJar,
+    csrf: string,
+    email: string,
+    password: string,
+  ): Promise<{ kind: 'complete' | 'twofactor' } | { kind: 'failed'; message: string }> {
+    const res = await this.#ctx.fetchImpl(OAUTH_SIGNIN_URL, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': OAUTH_WEB_USER_AGENT,
+        Accept: '*/*',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Origin: OAUTH_ORIGIN,
+        Referer: OAUTH_SIGNIN_URL,
+        ...jar.header(),
+      },
+      body: new URLSearchParams({ username: email, password, 'csrf-token': csrf }),
+      signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+    });
+    jar.absorb(res);
+    if (REDIRECT_STATUSES.has(res.status)) return { kind: 'complete' };
+    // 412, or 202 carrying two-step-verification fields, both mean "code needed".
+    if (res.status === 412 || res.status === 202) return { kind: 'twofactor' };
+    if (res.status === 406) {
+      // Blink's response to a wrong password or, after a few tries, a lockout.
+      return {
+        kind: 'failed',
+        message:
+          'Blink would not accept the sign-in — usually a wrong password, or too many recent attempts (Blink then locks sign-in for about an hour). Check the password, and if you have been retrying, wait a while.',
+      };
+    }
+    return { kind: 'failed', message: await messageFor(res, 'Blink rejected the sign-in') };
+  }
+
+  /** POST the emailed/texted code to finish the second factor. */
+  async #verifyTwoFactor(jar: CookieJar, csrf: string, code: string): Promise<boolean> {
+    const res = await this.#ctx.fetchImpl(OAUTH_2FA_VERIFY_URL, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': OAUTH_WEB_USER_AGENT,
+        Accept: '*/*',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Origin: OAUTH_ORIGIN,
+        Referer: OAUTH_SIGNIN_URL,
+        ...jar.header(),
+      },
+      body: new URLSearchParams({ '2fa_code': code, 'csrf-token': csrf, remember_me: 'false' }),
+      signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+    });
+    jar.absorb(res);
+    if (res.status === 201) {
+      try {
+        const body = (await res.json()) as { status?: string };
+        return body?.status === 'auth-completed';
+      } catch {
+        return false;
+      }
+    }
+    // Some responses complete the factor with a redirect instead of a 201 body.
+    return REDIRECT_STATUSES.has(res.status);
+  }
+
+  /**
+   * From an authenticated session to stored tokens: fetch the authorization
+   * code off the redirect, exchange it, and read the account's tier. Shared by
+   * the no-2FA and post-2FA paths.
+   */
+  async #finish(
+    jar: CookieJar,
+    codeVerifier: string,
+    codeChallenge: string,
+    hardwareId: string,
+    email: string,
+  ): Promise<AuthResult> {
+    // GET authorize again — now that the session is authenticated it 302s to the
+    // app redirect carrying `?code=`.
+    const authRes = await this.#authorize(jar, hardwareId, codeChallenge);
+    const location = authRes.headers.get('location');
+    const code = location ? new URLSearchParams(location.split('?')[1] ?? '').get('code') : null;
+    if (!code) {
+      return {
+        status: 'failed',
+        message: 'Blink signed in but did not return an authorization code. Try again.',
+      };
+    }
+
+    const token = await this.#exchangeCode(code, codeVerifier, hardwareId);
+    const accessToken = typeof token?.access_token === 'string' ? token.access_token : '';
+    if (!accessToken) {
+      return { status: 'failed', message: 'Blink did not issue a token after sign-in.' };
+    }
+
+    const tier = await this.#tierInfo(accessToken);
+
+    this.#obtainedSecrets = {
+      authToken: accessToken,
+      ...(typeof token?.refresh_token === 'string' ? { refreshToken: token.refresh_token } : {}),
     };
-    this.#pending = null;
+    this.#obtainedSettings = this.#identity(email, tier, token, hardwareId);
     return { status: 'complete', message: 'Blink verified this device.' };
+  }
+
+  /** Exchange the authorization code for tokens. */
+  async #exchangeCode(
+    code: string,
+    codeVerifier: string,
+    hardwareId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const res = await this.#ctx.fetchImpl(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': OAUTH_TOKEN_USER_AGENT,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: '*/*',
+      },
+      body: new URLSearchParams({
+        app_brand: 'blink',
+        client_id: OAUTH_CLIENT_ID,
+        code,
+        code_verifier: codeVerifier,
+        grant_type: 'authorization_code',
+        hardware_id: hardwareId,
+        redirect_uri: OAUTH_REDIRECT_URI,
+        scope: OAUTH_SCOPE,
+      }),
+      signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+    });
+    if (res.status !== 200) return null;
+    try {
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Read the account's region and id; non-fatal, tokens are already in hand. */
+  async #tierInfo(accessToken: string): Promise<Record<string, unknown>> {
+    try {
+      const res = await this.#ctx.fetchImpl(BLINK_TIER_INFO_URL, {
+        method: 'GET',
+        headers: {
+          'User-Agent': BLINK_DEFAULT_USER_AGENT,
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(this.#ctx.timeoutMs),
+      });
+      if (!res.ok) return {};
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
   }
 
   /**
    * Everything a *different* process needs to reuse this sign-in.
    *
-   * Written as one object rather than assembled at each call site because it is
-   * consumed as a set: a bridge handed six of these seven values signs in again
-   * from scratch, which is the failure this exists to prevent. None of it is a
-   * credential — the token is a secret and travels separately.
+   * None of it is a credential — the tokens are secrets and travel separately.
+   * `accountId` doubles as the durable "sign-in completed" signal `#signedIn`
+   * reads.
    */
   #identity(
-    tier: string,
-    accountId: number,
-    clientId: number,
-    userId: number | null,
+    email: string,
+    tier: Record<string, unknown>,
+    token: Record<string, unknown> | null,
+    hardwareId: string,
   ): Record<string, unknown> {
+    const accountId = numberOrNull(tier.account_id) ?? numberOrNull(token?.account_id) ?? null;
+    const region =
+      (typeof tier.region_id === 'string' && tier.region_id) ||
+      (typeof tier.tier === 'string' && tier.tier) ||
+      BLINK_DEFAULT_TIER;
     return {
-      tier,
-      accountId,
-      clientId,
-      ...(userId === null ? {} : { userId }),
-      // The client identity Blink verified. Stored rather than derived so that
-      // what was actually presented stays recoverable even if the derivation
-      // ever changes.
+      email,
+      tier: region,
+      ...(accountId === null ? {} : { accountId }),
+      // The client identity Blink verified this device under, kept recoverable.
       uniqueId: this.#ctx.connectionId,
       deviceIdentifier: BLINK_DEVICE_IDENTIFIER,
+      hardwareId,
+      authMethod: 'oauth2',
     };
-  }
-
-  /**
-   * The token from the current sign-in, falling back to one stored by an
-   * earlier one — the PIN step must send it, and losing it strands the user on
-   * a code that will never be accepted.
-   */
-  get #authToken(): string {
-    return this.#obtainedSecrets.authToken ?? this.#ctx.secrets.authToken ?? '';
   }
 
   /**
@@ -626,4 +809,47 @@ function redactEmail(email: string): string {
   const at = email.indexOf('@');
   if (at <= 0) return '•••';
   return `${email[0]}•••${email.slice(at)}`;
+}
+
+/** RFC 7636 base64url (PKCE): URL-safe alphabet, no padding. */
+function base64Url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** A human message from an error response body, falling back to the status. */
+async function messageFor(res: FetchResponse, fallback: string): Promise<string> {
+  try {
+    const json = JSON.parse(await res.text()) as { message?: string };
+    if (json?.message) return json.message;
+  } catch {
+    // Not JSON — the status-code fallback below is the honest answer.
+  }
+  return `${fallback} (HTTP ${res.status}).`;
+}
+
+/**
+ * The smallest cookie jar that carries a browser-style flow.
+ *
+ * Node's `fetch` does not persist cookies between calls, and Blink's OAuth flow
+ * depends on the session cookies the first request sets being replayed on every
+ * later one. This collects `Set-Cookie` values and offers them back as a header.
+ */
+class CookieJar {
+  readonly #cookies = new Map<string, string>();
+
+  absorb(res: FetchResponse): void {
+    const setCookies = (res.headers as { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+    for (const raw of setCookies) {
+      const [pair] = raw.split(';');
+      if (!pair) continue;
+      const idx = pair.indexOf('=');
+      if (idx > 0) this.#cookies.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
+    }
+  }
+
+  /** Spread-ready: `{}` when empty, so no bare `Cookie:` header is ever sent. */
+  header(): Record<string, string> {
+    if (this.#cookies.size === 0) return {};
+    return { Cookie: [...this.#cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') };
+  }
 }
