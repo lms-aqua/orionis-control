@@ -79,6 +79,25 @@ export interface ProviderBridge {
    */
   provides: string[];
   /**
+   * Whether this provider works without the bridge.
+   *
+   * Blink and Wyze cannot: without their bridge there is no protocol to speak,
+   * so asking for an address before one exists is the original complaint the
+   * provisioning flow was built to fix, and the editor is right to hide those
+   * fields on add.
+   *
+   * go2rtc is the other case. The RTSP provider reads stream URLs directly in
+   * manual mode and needs nothing running, so hiding `provides` there took away
+   * the address field from someone who may well have a go2rtc already — and a
+   * provisioned one starts with an empty stream list, which the provider then
+   * enumerates as zero cameras. The source reported healthy and showed a blank
+   * wall, with no field left to point it anywhere useful.
+   *
+   * Set this when the bridge is a convenience. The editor keeps the fields it
+   * fills in visible, so the offer stands without becoming the only way out.
+   */
+  optional?: boolean;
+  /**
    * Connection values the instance needs for itself.
    *
    * lostblink signs in to Blink on its own behalf, so it needs the same email

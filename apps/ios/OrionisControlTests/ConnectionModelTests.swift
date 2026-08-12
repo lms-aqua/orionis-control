@@ -97,6 +97,51 @@ final class ConnectionModelTests: XCTestCase {
             descriptor.visibleFields(provisioning: true).map(\.key), ["email", "password"])
     }
 
+    func testAnOptionalBridgeKeepsTheFieldsItWouldSupply() throws {
+        // go2rtc is a convenience, not a necessity, and the one Orionis starts
+        // publishes no streams until someone points it at cameras. Hiding the
+        // address there left the source reporting healthy over an empty camera
+        // wall with nothing left to type into.
+        let descriptor = try decode(
+            ProviderDescriptor.self,
+            """
+            {"id":"rtsp","displayName":"RTSP / go2rtc","summary":"Any RTSP source.",
+             "capabilities":{"snapshots":true,"liveStream":true,"events":false,
+                             "eventDetection":false,"recordings":false,"controls":false,
+                             "storageReporting":false,"interactiveAuth":false},
+             "fields":[{"key":"mode","label":"Discovery","type":"text","required":true},
+                       {"key":"baseUrl","label":"go2rtc URL","type":"url","required":false},
+                       {"key":"streams","label":"RTSP streams","type":"text","required":false}],
+             "bridge":{"template":"go2rtc","summary":"Orionis can start one.",
+                       "provides":["baseUrl"],"optional":true}}
+            """)
+
+        XCTAssertEqual(descriptor.bridge?.optional, true)
+        XCTAssertEqual(
+            descriptor.visibleFields(provisioning: true).map(\.key),
+            ["mode", "baseUrl", "streams"])
+    }
+
+    func testABridgeIsMandatoryUnlessItSaysOtherwise() throws {
+        // A gateway older than the `optional` field only ever described bridges
+        // the provider could not work without, so absent must keep meaning
+        // "hide what it supplies".
+        let descriptor = try decode(
+            ProviderDescriptor.self,
+            """
+            {"id":"wyze","displayName":"Wyze","summary":"Wyze cameras.",
+             "capabilities":{"snapshots":true,"liveStream":true,"events":false,
+                             "eventDetection":false,"recordings":false,"controls":false,
+                             "storageReporting":false,"interactiveAuth":false},
+             "fields":[{"key":"baseUrl","label":"Bridge URL","type":"url","required":false}],
+             "bridge":{"template":"wyze","summary":"Orionis can start one.",
+                       "provides":["baseUrl"]}}
+            """)
+
+        XCTAssertEqual(descriptor.bridge?.optional, false)
+        XCTAssertTrue(descriptor.visibleFields(provisioning: true).isEmpty)
+    }
+
     func testProviderWithoutABridgeDecodesAndHidesNothing() throws {
         let descriptor = try decode(
             ProviderDescriptor.self,

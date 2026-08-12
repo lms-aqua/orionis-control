@@ -90,6 +90,12 @@ export const RTSP_DESCRIPTOR: ProviderDescriptor = {
     summary:
       'go2rtc enumerates several RTSP cameras as one source. Orionis can start one for you — or leave discovery on manual and list the URLs yourself, which needs nothing extra.',
     provides: ['baseUrl'],
+    // The go2rtc this can start is deliberately empty — see the template. So
+    // the address field has to stay reachable: a provisioned instance publishes
+    // nothing until someone points it at cameras, and an operator who already
+    // runs a go2rtc should be able to say so rather than being handed a second,
+    // empty one with no way to name it.
+    optional: true,
   },
 };
 
@@ -144,10 +150,26 @@ export class RtspProvider implements CameraProvider {
     }
     try {
       const streams = await this.#fetchStreams();
+      const count = Object.keys(streams).length;
+      // Reaching an empty go2rtc is not success. It answers, so `ok: true` was
+      // literally true, and the source then reported healthy over a camera wall
+      // with nothing on it — the state a freshly provisioned go2rtc is always
+      // in, because the template starts it with `streams: {}` on purpose. Say
+      // which end the gap is at instead.
+      if (count === 0) {
+        return {
+          ok: false,
+          message:
+            'Reached go2rtc, but it publishes no streams. Add cameras to go2rtc, ' +
+            'or set discovery to manual and list their RTSP URLs here.',
+          cameraCount: 0,
+          latencyMs: Date.now() - started,
+        };
+      }
       return {
         ok: true,
-        message: `Reached go2rtc; ${Object.keys(streams).length} stream(s) published.`,
-        cameraCount: Object.keys(streams).length,
+        message: `Reached go2rtc; ${count} stream(s) published.`,
+        cameraCount: count,
         latencyMs: Date.now() - started,
       };
     } catch (error) {

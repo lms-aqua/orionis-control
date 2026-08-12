@@ -65,15 +65,25 @@ struct ProviderBridge: Codable, Sendable, Equatable {
     let summary: String
     /// Settings the bridge fills in. Hidden in the editor when it will.
     let provides: [String]
+    /// Whether the provider works without this bridge at all.
+    ///
+    /// Defaults to false, which is the Blink and Wyze case: no bridge, no
+    /// protocol, so the address it will supply is not worth asking for. A
+    /// convenience bridge — go2rtc — keeps its fields, because the one Orionis
+    /// starts publishes nothing until someone points it at cameras.
+    let optional: Bool
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         template = try container.decode(String.self, forKey: .template)
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
         provides = try container.decodeIfPresent([String].self, forKey: .provides) ?? []
+        // Absent means mandatory: a gateway older than this field only ever
+        // described bridges the provider could not work without.
+        optional = try container.decodeIfPresent(Bool.self, forKey: .optional) ?? false
     }
 
-    private enum CodingKeys: String, CodingKey { case template, summary, provides }
+    private enum CodingKeys: String, CodingKey { case template, summary, provides, optional }
 }
 
 struct ProviderCapabilities: Codable, Sendable, Equatable {
@@ -112,8 +122,13 @@ struct ProviderDescriptor: Codable, Sendable, Equatable, Identifiable {
     /// ask for — the container it addresses does not exist yet. So when a bridge
     /// is going to be provisioned those keys are dropped entirely rather than
     /// tucked away where someone can still type into them.
+    ///
+    /// Unless the bridge is a convenience. Dropping them there was a dead end:
+    /// the go2rtc Orionis starts publishes no streams until someone points it at
+    /// cameras, so hiding the address field left the source reporting healthy
+    /// over an empty camera wall with nothing left to type into.
     func visibleFields(provisioning: Bool) -> [ProviderField] {
-        guard provisioning, let bridge else { return fields }
+        guard provisioning, let bridge, !bridge.optional else { return fields }
         return fields.filter { !bridge.provides.contains($0.key) }
     }
 
