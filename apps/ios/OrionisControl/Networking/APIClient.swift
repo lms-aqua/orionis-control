@@ -177,6 +177,30 @@ actor APIClient {
 
     var currentBaseURL: URL { baseURL }
 
+    /// Components for an API path whose segments are **already** percent-encoded.
+    ///
+    /// `URL.appending(path:)` encodes what it is given, and the callers here have
+    /// already escaped every interpolated id. Running both turned a namespaced
+    /// camera — `blink-lostblink:driveway` — into
+    /// `blink-lostblink%253Adriveway`: the colon became `%3A`, then the percent
+    /// became `%25`. The gateway decodes once, finds no colon to split on, and
+    /// answers `"…" is not a valid camera identifier.` for a camera that exists.
+    ///
+    /// So the path is assigned to `percentEncodedPath`, which is taken verbatim.
+    /// Every id crossing this boundary is `slug:upstreamId`, so this is the
+    /// normal case rather than an exotic one.
+    private func apiComponents(path: String) throws -> URLComponents {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw APIError.configuration("The gateway address could not be used to build a request.")
+        }
+        let prefix =
+            components.percentEncodedPath.hasSuffix("/")
+            ? String(components.percentEncodedPath.dropLast())
+            : components.percentEncodedPath
+        components.percentEncodedPath = prefix + "/api/mobile/v1" + path
+        return components
+    }
+
     /// A fully-qualified URL for a media sub-resource (e.g. a recording clip)
     /// together with a bearer header valid at call time. AVFoundation fetches
     /// media directly and cannot go through `request(...)`, so it needs both the
@@ -185,14 +209,13 @@ actor APIClient {
     func authorizedMedia(path: String, query: [String: String] = [:]) async throws -> (
         url: URL, headers: [String: String]
     ) {
-        var components = URLComponents(
-            url: baseURL.appending(path: "api/mobile/v1" + path), resolvingAgainstBaseURL: false)
+        var components = try apiComponents(path: path)
         if !query.isEmpty {
-            components?.queryItems = query
+            components.queryItems = query
                 .sorted { $0.key < $1.key }
                 .map { URLQueryItem(name: $0.key, value: $0.value) }
         }
-        guard let url = components?.url else {
+        guard let url = components.url else {
             throw APIError.configuration("Could not build a media URL.")
         }
         var headers: [String: String] = [:]
@@ -417,14 +440,20 @@ actor APIClient {
         try await Task.sleep(for: .seconds(base + jitter))
     }
 
-    private func buildRequest(_ endpoint: Endpoint) throws -> URLRequest {
-        guard
-            var components = URLComponents(
-                url: baseURL.appending(path: "api/mobile/v1" + endpoint.path),
-                resolvingAgainstBaseURL: false)
-        else {
-            throw APIError.configuration("The gateway address could not be used to build a request.")
+    /// The URL an endpoint resolves to, without sending anything.
+    ///
+    /// Exists so the percent-encoding rules in `apiComponents` can be pinned by a
+    /// test: a namespaced id reaching the wire double-encoded is invisible from
+    /// inside the app and reads as a missing camera from outside it.
+    func debugURL(for endpoint: Endpoint) throws -> URL {
+        guard let url = try buildRequest(endpoint).url else {
+            throw APIError.configuration("The request URL could not be constructed.")
         }
+        return url
+    }
+
+    private func buildRequest(_ endpoint: Endpoint) throws -> URLRequest {
+        var components = try apiComponents(path: endpoint.path)
 
         let items = endpoint.query.compactMap { key, value -> URLQueryItem? in
             guard let value, !value.isEmpty else { return nil }

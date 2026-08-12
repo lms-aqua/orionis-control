@@ -94,6 +94,23 @@ services:
       # cameras are live. Bound inside the project network only.
       MTX_API: "yes"
       MTX_APIADDRESS: :9997
+      # Switching the API on is not enough to be able to call it. MediaMTX's
+      # default internal user grants publish, read and playback — and *not* api,
+      # so /v3/paths/list answered 401 to the one caller it exists for. The
+      # provider read that as an unreachable source, the aggregate turned it into
+      # "No camera connection could be reached", and a bridge watching seven
+      # cameras showed none.
+      #
+      # Restated in full rather than appended to, because the env override
+      # replaces the list wholesale: omitting publish here would stop lostblink
+      # publishing at all. No password: the listener is on this project's network
+      # and reachable by exactly one container, which is the same boundary every
+      # other surface here relies on.
+      MTX_AUTHINTERNALUSERS_0_USER: any
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_0_ACTION: publish
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_1_ACTION: read
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_2_ACTION: playback
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_3_ACTION: api
       MTX_RTSP: "yes"
       MTX_RTSPTRANSPORTS: tcp
       MTX_RTSPADDRESS: :8554
