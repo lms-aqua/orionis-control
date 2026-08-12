@@ -23,6 +23,7 @@ import type {
 } from '../adapters/orionis/types.ts';
 import type { Permission } from '../auth/roles.ts';
 import { can } from '../auth/roles.ts';
+import { parseNamespacedId } from '../adapters/connections/provider.ts';
 
 /**
  * Tells the player to start at the live edge instead of the back of the window.
@@ -64,6 +65,19 @@ export function webRTCHighQualitySource(cameraId: string): string {
  * never touch the high-bitrate source. The native camera remains the last-resort
  * compatibility path for sites that have not provisioned either rendition.
  */
+/**
+ * The name the go2rtc / MediaMTX data plane knows a camera by.
+ *
+ * A camera contributed by a connection carries a `slug:upstreamId` id, but the
+ * data plane only knows the upstream stream name. A built-in (non-connection)
+ * camera id has no namespace and is returned unchanged. Stripping the namespace
+ * is what lets a go2rtc/RTSP connection's cameras resolve against the same data
+ * plane the built-in adapter already uses.
+ */
+function streamSourceId(cameraId: string): string {
+  return parseNamespacedId(cameraId)?.upstreamId ?? cameraId;
+}
+
 export function webRTCSourceCandidates(
   cameraId: string,
   quality: StreamQuality = 'auto',
@@ -602,7 +616,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
     //   media   /api/hls/playlist.m3u8?id=<sid> -> segment.ts?id=<sid>&n=<n>
     //   segment /api/hls/segment.ts?id=<sid>&n=<n>
     const { baseUrl: go2rtcBase, hlsBaseUrl, timeoutMs } = config.orionis;
-    const src = String(row.camera_id);
+    const src = streamSourceId(String(row.camera_id));
     const streamId = req.params.streamId;
     const self = `${config.publicBaseUrl}/api/mobile/v1/stream/${streamId}`;
     const tq = `token=${encodeURIComponent(token)}`;
@@ -738,7 +752,7 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
       // retained as an automatic compatibility fallback, so a missing `_ll`
       // mapping never turns a performance enhancement into an outage.
       const quality = z.enum(['auto', 'low', 'medium', 'high']).catch('auto').parse(row.quality);
-      const sources = webRTCSourceCandidates(String(row.camera_id), quality);
+      const sources = webRTCSourceCandidates(streamSourceId(String(row.camera_id)), quality);
       try {
         for (const src of sources) {
           const upstream = await fetch(
