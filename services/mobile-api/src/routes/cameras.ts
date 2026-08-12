@@ -24,6 +24,7 @@ import type {
 import type { Permission } from '../auth/roles.ts';
 import { can } from '../auth/roles.ts';
 import { parseNamespacedId } from '../adapters/connections/provider.ts';
+import { ensureGo2rtcSource, isRegisterableSource } from '../lib/media-registrar.ts';
 
 /**
  * Tells the player to start at the live edge instead of the back of the window.
@@ -362,6 +363,36 @@ export async function registerCameraRoutes(app: FastifyInstance): Promise<void> 
         quality: requestedQuality,
         ttlSeconds: config.streamTokenTtlSeconds,
       });
+
+      // A connection that publishes RTSP of its own gets pointed at the site's
+      // go2rtc rather than a media path of its own. The relay below reads from
+      // the hub, so without this a bridge's cameras list and open and then
+      // buffer forever against a source nothing is carrying.
+      //
+      // Lazy, and best-effort: this runs when a camera is actually opened, and
+      // a failure falls through to the relay's own "stream is not available"
+      // rather than replacing it with something about an internal hub.
+      if (isRegisterableSource(upstream.playbackUrl)) {
+        try {
+          const added = await ensureGo2rtcSource({
+            go2rtcBaseUrl: config.orionis.baseUrl,
+            name: streamSourceId(cameraId),
+            rtspUrl: upstream.playbackUrl,
+            timeoutMs: config.orionis.timeoutMs,
+          });
+          if (added) {
+            req.log.info(
+              { cameraId, source: streamSourceId(cameraId) },
+              'registered a connection stream with go2rtc',
+            );
+          }
+        } catch (error) {
+          req.log.warn(
+            { cameraId, err: error instanceof Error ? error.message : String(error) },
+            'could not register a connection stream with go2rtc',
+          );
+        }
+      }
 
       const localId = randomId('str');
       const now = Date.now();
