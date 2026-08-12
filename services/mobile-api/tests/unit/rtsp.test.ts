@@ -88,3 +88,41 @@ describe('RtspProvider.probe in manual mode', () => {
     expect(result.cameraCount).toBe(0);
   });
 });
+
+describe('renditions of one camera are not four cameras', () => {
+  // go2rtc lists a camera's alternate encodings as ordinary streams, so one
+  // Wyze camera arrived as 57, 57_aac, 57_hq and 57_ll — four tiles on the
+  // wall for one camera.
+  it('lists the base camera and hides its renditions', async () => {
+    const cameras = await new RtspProvider(
+      ctx(
+        { mode: 'go2rtc', baseUrl: 'http://go2rtc.invalid:1984' },
+        {
+          '57': {},
+          '57_aac': {},
+          '57_hq': {},
+          '57_ll': {},
+          driveway: {},
+        },
+      ),
+    ).listCameras();
+
+    expect(cameras.map((c) => c.id).sort()).toEqual(['57', 'driveway']);
+  });
+
+  it('keeps a camera whose name merely ends that way', async () => {
+    // The suffixes are a convention, not something go2rtc models. Without a
+    // base stream beside it, `front_ll` is just a camera called front_ll.
+    const cameras = await new RtspProvider(
+      ctx(
+        { mode: 'go2rtc', baseUrl: 'http://go2rtc.invalid:1984' },
+        {
+          front_ll: {},
+          garden_aac: {},
+        },
+      ),
+    ).listCameras();
+
+    expect(cameras.map((c) => c.id).sort()).toEqual(['front_ll', 'garden_aac']);
+  });
+});

@@ -104,6 +104,29 @@ interface Go2rtcStream {
   consumers?: unknown[];
 }
 
+/**
+ * Alternate encodings of a camera, which go2rtc lists as ordinary streams.
+ *
+ * A single camera commonly appears four times: the source, an AAC-transcoded
+ * twin for HLS, a short-keyframe rendition for WebRTC recovery, and a
+ * full-resolution one. They are renditions chosen per playback, not four
+ * cameras, and listing them as four put four tiles on the wall for one camera.
+ *
+ * The suffixes are a naming convention rather than anything go2rtc models, so
+ * this only drops a name when the base stream is present alongside it — a
+ * camera genuinely called `front_ll` with no `front` keeps its tile.
+ */
+const RENDITION_SUFFIXES = ['_aac', '_hq', '_ll'] as const;
+
+export function isRendition(name: string, streams: Record<string, unknown>): boolean {
+  for (const suffix of RENDITION_SUFFIXES) {
+    if (!name.endsWith(suffix)) continue;
+    const base = name.slice(0, -suffix.length);
+    if (base && Object.prototype.hasOwnProperty.call(streams, base)) return true;
+  }
+  return false;
+}
+
 export class RtspProvider implements CameraProvider {
   readonly descriptor = RTSP_DESCRIPTOR;
   readonly #ctx: ProviderContext;
@@ -197,11 +220,13 @@ export class RtspProvider implements CameraProvider {
       return this.#manualStreams.map(({ name }) => this.#camera(name, true));
     }
     const streams = await this.#fetchStreams();
-    return Object.entries(streams).map(([name, stream]) =>
-      // A stream with no producer is declared but not receiving; that is
-      // offline, not merely absent.
-      this.#camera(name, (stream.producers?.length ?? 0) > 0),
-    );
+    return Object.entries(streams)
+      .filter(([name]) => !isRendition(name, streams))
+      .map(([name, stream]) =>
+        // A stream with no producer is declared but not receiving; that is
+        // offline, not merely absent.
+        this.#camera(name, (stream.producers?.length ?? 0) > 0),
+      );
   }
 
   async getCamera(cameraId: string): Promise<Camera> {
