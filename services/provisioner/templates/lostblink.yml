@@ -105,11 +105,23 @@ services:
       # the muxer room to absorb it.
       MTX_PATHDEFAULTS_WRITEQUEUESIZE: "1024"
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget -q -O - http://127.0.0.1:9997/v3/config/global/get > /dev/null"]
+      # This image is distroless: no sh, no wget, nothing but the binary. The
+      # probe this replaced could never execute at all —
+      #   OCI runtime exec failed: exec: "sh": executable file not found in $PATH
+      # — so MediaMTX was pinned unhealthy for as long as it ran, lostblink's
+      # `condition: service_healthy` gate never opened, and the bridge sat in
+      # `Created` forever while the app showed "Verifying…". Probe with the one
+      # executable that is actually in the image.
+      #
+      # Weaker than what it replaced, and knowingly so: this proves the binary
+      # runs, not that the API is accepting requests. Distroless leaves no way to
+      # make an HTTP request from inside the container, so the start_period below
+      # is what covers the listener race the depends_on gate exists for.
+      test: ["CMD", "/mediamtx", "--version"]
       interval: 5s
       timeout: 3s
       retries: 12
-      start_period: 5s
+      start_period: 10s
     security_opt:
       - no-new-privileges:true
 
