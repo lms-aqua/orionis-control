@@ -120,29 +120,45 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
       'Blink speaks its own transports, so a lostblink bridge and a MediaMTX have to run alongside the gateway to translate them. Orionis can start both for you.',
     provides: ['mediamtxApiUrl', 'rtspBaseUrl'],
     // lostblink holds the Blink session the cameras stream over, so it needs a
-    // signed-in identity of its own. Handing over the *completed* one — token,
-    // account, and the client identity Blink has already verified — is what
+    // signed-in identity of its own. Handing over the *completed* one is what
     // stops it asking for a second verification code at a console nobody is
-    // watching. See `seed_lostblink_credentials` in the applier: these keys are
-    // exactly blinkpy's on-disk credential shape, and every one must be present
-    // or blinkpy signs in again from scratch.
+    // watching. See `seed_lostblink_credentials` in the applier, which maps
+    // these onto blinkpy's own `login_attributes` key names.
+    //
+    // What makes it durable is the pair `refreshToken` + `hardwareId`. blinkpy
+    // 0.25's `Auth.startup()` has exactly two paths: hold both and it silently
+    // refreshes the access token, hold either without the other and it drops
+    // through to a full OAuth sign-in — which means 2FA, at that console. So
+    // these two are not "extra completeness": they are the difference between a
+    // bridge that comes back up on its own and one that strands.
     handsOver: {
       settings: [
-        'email',
-        'tier',
+        'email', // → username
+        'tier', // → region_id
+        'host', // → host
         'accountId',
         'clientId',
         'userId',
+        'hardwareId', // → hardware_id, half the refresh pair
+        'tokenExpiresIn', // → expires_in
+        'tokenExpiresAt', // → expiration_date
+        // Not blinkpy's: the applier compares it against the file already in
+        // the volume so a re-seed cannot overwrite a fresher session.
+        'tokenIssuedAt',
         'uniqueId',
         'deviceIdentifier',
       ],
-      secrets: ['password', 'authToken'],
+      secrets: ['password', 'authToken', 'refreshToken'],
     },
   },
 };
 
 /** Blink's production API. Region is negotiated per account after login. */
 const BLINK_DEFAULT_TIER = 'rest-prod';
+/** Blink's API domain. `host` is `{region}.{this}` — blinkpy's own format. */
+const BLINK_URL = 'immedia-semi.com';
+/** What blinkpy assumes when a token response omits `expires_in`. */
+const DEFAULT_TOKEN_LIFETIME_SECONDS = 3600;
 
 /**
  * How this gateway names itself to Blink.
@@ -164,7 +180,12 @@ const BLINK_DEVICE_IDENTIFIER = 'Orionis Control';
 // CSRF token in its HTML) -> POST credentials -> if a second factor is demanded,
 // POST the code to 2fa/verify -> GET authorize again to receive an auth `code` on
 // the redirect -> exchange that code for tokens -> read tier_info for the account.
-// Endpoint set and request shapes mirror the blinkpy reference client.
+//
+// Endpoint set, request shapes and user-agent strings are held level with the
+// blinkpy reference client — currently 0.25.9, whose `helpers/constants.py` and
+// `auth.py` these were checked against. That matters beyond politeness: the
+// bridge downstream *is* blinkpy, so a session this gateway mints has to be one
+// that version can pick up and refresh without signing in again.
 const OAUTH_ORIGIN = 'https://api.oauth.blink.com';
 const OAUTH_AUTHORIZE_URL = `${OAUTH_ORIGIN}/oauth/v2/authorize`;
 const OAUTH_SIGNIN_URL = `${OAUTH_ORIGIN}/oauth/v2/signin`;
@@ -774,9 +795,19 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
 
     const tier = await this.#tierInfo(accessToken);
 
+    const refreshToken = typeof token?.refresh_token === 'string' ? token.refresh_token : '';
+    if (!refreshToken) {
+      // Not fatal — this sign-in works — but it is the one thing that decides
+      // whether the bridge survives its next restart without a fresh code, so
+      // it is worth a line in the log rather than a silent degradation.
+      process.stderr.write(
+        '[lostblink] Blink issued no refresh token; the bridge will need a new code when this one expires\n',
+      );
+    }
+
     this.#obtainedSecrets = {
       authToken: accessToken,
-      ...(typeof token?.refresh_token === 'string' ? { refreshToken: token.refresh_token } : {}),
+      ...(refreshToken ? { refreshToken } : {}),
     };
     this.#obtainedSettings = this.#identity(email, tier, token, hardwareId);
     return { status: 'complete', message: 'Blink verified this device.' };
@@ -843,6 +874,14 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
    * None of it is a credential — the tokens are secrets and travel separately.
    * `accountId` doubles as the durable "sign-in completed" signal `#signedIn`
    * reads.
+   *
+   * The three `token*` values exist because the process on the other side is
+   * blinkpy, and blinkpy decides whether to refresh from `expiration_date`
+   * rather than by trying the token and handling a 401. Handing over a token
+   * with no expiry means it either uses a dead one or refreshes needlessly on
+   * every start; both are avoidable by passing on what Blink already told us.
+   * Seconds since the epoch, not ISO strings, because that is what blinkpy
+   * compares against `time.time()`.
    */
   #identity(
     email: string,
@@ -851,14 +890,26 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     hardwareId: string,
   ): Record<string, unknown> {
     const accountId = numberOrNull(tier.account_id) ?? numberOrNull(token?.account_id) ?? null;
+    const clientId = numberOrNull(tier.client_id) ?? numberOrNull(token?.client_id) ?? null;
+    const userId = numberOrNull(tier.user_id) ?? numberOrNull(token?.user_id) ?? null;
     const region =
       (typeof tier.region_id === 'string' && tier.region_id) ||
       (typeof tier.tier === 'string' && tier.tier) ||
       BLINK_DEFAULT_TIER;
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const lifetime = numberOrNull(token?.expires_in) ?? DEFAULT_TOKEN_LIFETIME_SECONDS;
     return {
       email,
       tier: region,
+      // blinkpy builds this itself from the region on a fresh sign-in, but a
+      // seeded session skips the code that would; spell it out.
+      host: `${region}.${BLINK_URL}`,
       ...(accountId === null ? {} : { accountId }),
+      ...(clientId === null ? {} : { clientId }),
+      ...(userId === null ? {} : { userId }),
+      tokenExpiresIn: lifetime,
+      tokenExpiresAt: issuedAt + lifetime,
+      tokenIssuedAt: issuedAt,
       // The client identity Blink verified this device under, kept recoverable.
       uniqueId: this.#ctx.connectionId,
       deviceIdentifier: BLINK_DEVICE_IDENTIFIER,
