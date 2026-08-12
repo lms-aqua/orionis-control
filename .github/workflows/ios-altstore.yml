@@ -1,9 +1,12 @@
 name: iOS AltStore
 
-# Builds an UNSIGNED IPA and publishes it, together with an AltStore/SideStore
-# source, to a rolling "ios_latest" pre-release. AltStore re-signs the app
-# on-device with the installing user's own Apple ID, so no distribution
-# certificate is required here. The source and download URLs are stable:
+# Builds an AD-HOC SIGNED IPA and publishes it, together with an AltStore/
+# SideStore source, to a rolling "ios_latest" pre-release. AltStore re-signs the
+# app on-device with the installing user's own Apple ID, so no distribution
+# certificate is required here — but it re-signs a *signed* bundle, and refuses
+# a raw unsigned one with "(1007) This app is in an invalid format". The ad-hoc
+# identity needs no certificate and no secret. The source and download URLs are
+# stable:
 #
 #   Source: https://github.com/<owner>/<repo>/releases/download/ios_latest/altstore-source.json
 #   IPA:    Read the current unique downloadURL from altstore-source.json.
@@ -24,7 +27,7 @@ permissions:
 
 jobs:
   package:
-    name: Package unsigned IPA and publish source
+    name: Package ad-hoc signed IPA and publish source
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: macos-26
     timeout-minutes: 45
@@ -76,7 +79,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             | tee archive.log
 
-      - name: Package the unsigned IPA
+      - name: Sign ad-hoc and package the IPA
         id: ipa
         run: |
           set -euo pipefail
@@ -90,6 +93,28 @@ jobs:
 
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
           BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+
+          # Ad-hoc sign before packaging.
+          #
+          # The archive is built with CODE_SIGNING_ALLOWED=NO, which leaves the
+          # bundle with no _CodeSignature and no embedded.mobileprovision at all.
+          # AltStore re-signs on device, but it re-signs a *signed* bundle — given
+          # a raw unsigned one it refuses the file outright:
+          #
+          #   (1007) AltStore.OperationError — This app is in an invalid format.
+          #
+          # Signing with the ad-hoc identity ("-") needs no certificate, no
+          # account and no secret, and produces the CodeResources structure the
+          # installer expects. Frameworks first: signing the bundle seals a hash
+          # of everything inside it, so anything signed afterwards invalidates
+          # the outer signature.
+          codesign --force --sign - --timestamp=none \
+            "$APP/Frameworks/WebRTC.framework"
+          codesign --force --sign - --timestamp=none "$APP"
+          codesign --verify --deep --strict "$APP" \
+            || { echo "::error::Ad-hoc signature did not verify"; exit 1; }
+          test -f "$APP/_CodeSignature/CodeResources" \
+            || { echo "::error::No _CodeSignature after signing"; exit 1; }
 
           rm -rf build/Payload && mkdir -p build/Payload
           cp -R "$APP" build/Payload/
@@ -147,7 +172,7 @@ jobs:
           desc = (
               "Orionis Control is a native app for self-hosted infrastructure: cameras and "
               "live streams, DNS filtering, and system health, behind OIDC + PKCE "
-              f"authentication. Unsigned rolling build (CI run {build}); AltStore signs it "
+              f"authentication. Rolling build (CI run {build}); AltStore signs it "
               "on-device with your own Apple ID."
           )
           release_notes = Path("RELEASE_NOTES.md")
@@ -231,7 +256,7 @@ jobs:
               --prerelease \
               --latest=false \
               --title "Orionis Control — iOS (rolling, unsigned)" \
-              --notes "Unsigned rolling build for AltStore / SideStore. The app is re-signed on-device with your own Apple ID. Add the AltStore source: https://github.com/${{ github.repository }}/releases/download/ios_latest/altstore-source.json"
+              --notes "Rolling build for AltStore / SideStore, signed ad-hoc so the installer accepts it. The app is re-signed on-device with your own Apple ID. Add the AltStore source: https://github.com/${{ github.repository }}/releases/download/ios_latest/altstore-source.json"
           fi
           gh release edit ios_latest --target "$RELEASE_SHA"
           gh release upload ios_latest \
