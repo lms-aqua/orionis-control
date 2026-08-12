@@ -90,8 +90,13 @@ struct ConnectionDetailView: View {
         .sheet(item: $challenge) { challenge in
             ConnectionChallengeView(connectionId: connectionId, challenge: challenge) { message in
                 signInNotice = message
-                await load()
-                await maybeProvisionAfterSignIn()
+                // Owned by this screen, not the sheet that is on its way out, so
+                // the bridge card reports the progress and any failure lands in
+                // the error summary above it.
+                Task {
+                    await load()
+                    await maybeProvisionAfterSignIn()
+                }
             }
         }
         .confirmationDialog(
@@ -387,8 +392,38 @@ struct ConnectionDetailView: View {
                 // The addresses have just been filled in, so the settings shown
                 // on this screen — and the health it reports — are both stale.
                 await load()
-                if next.state == .ready { await probe() }
+                switch next.state {
+                case .ready:
+                    await probe()
+                case .failed:
+                    // The bridge card on its own was too quiet: it sits below the
+                    // health card and reads as status, so a setup that failed
+                    // looked like one that had merely stopped moving. Report it
+                    // the way every other failure on this screen is reported,
+                    // carrying whatever the host actually said.
+                    error = .server(
+                        code: .upstreamError,
+                        message: next.message ?? "The bridge could not be started.",
+                        recoverable: true, requestId: nil)
+                default:
+                    break
+                }
+                return
             }
+        }
+
+        guard !Task.isCancelled else { return }
+        // Falling out of the loop still in flight means the two-minute bound was
+        // hit. Stopping silently left "Setting up…" on screen for good, with
+        // nothing to say whether it was still working or had died.
+        if provisioning?.isInFlight == true {
+            error = .server(
+                code: .upstreamError,
+                message: """
+                    The bridge is still being set up after two minutes. It may yet \
+                    finish — pull down to refresh and check again.
+                    """,
+                recoverable: true, requestId: nil)
         }
     }
 
@@ -490,7 +525,9 @@ extension AuthChallenge: Identifiable {
 struct ConnectionChallengeView: View {
     let connectionId: String
     let challenge: AuthChallenge
-    let onCompleted: (String) async -> Void
+    /// Deliberately synchronous: the follow-on work outlives this sheet, so it
+    /// must not be awaited while the sheet is still up.
+    let onCompleted: (String) -> Void
 
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
@@ -572,7 +609,13 @@ struct ConnectionChallengeView: View {
                 id: connectionId, challengeId: challenge.challengeId, code: code)
             switch result {
             case .complete(let message):
-                await onCompleted(message)
+                // Verification ends the moment the gateway accepts the code.
+                // Standing the bridge up is the *next* step and belongs to the
+                // detail screen: holding this sheet open across it kept
+                // "Verifying…" on screen for the whole provisioning poll — up to
+                // two minutes — and then dismissed onto a failure the user never
+                // saw being reported. Hand the message up and get out of the way.
+                onCompleted(message)
                 dismiss()
             case .failed(let message):
                 failure = message
