@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  RTSP_DESCRIPTOR,
-  RtspProvider,
-} from '../../src/adapters/connections/providers/rtsp.ts';
+import { RTSP_DESCRIPTOR, RtspProvider } from '../../src/adapters/connections/providers/rtsp.ts';
 import type { ProviderContext } from '../../src/adapters/connections/provider.ts';
 
 /** A context whose fetch answers `/api/streams` with whatever go2rtc would. */
