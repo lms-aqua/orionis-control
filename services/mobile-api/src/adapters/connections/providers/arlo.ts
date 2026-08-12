@@ -48,7 +48,7 @@ export const ARLO_DESCRIPTOR: ProviderDescriptor = {
   id: 'arlo',
   displayName: 'Arlo (arlo-cam-api)',
   summary:
-    'Base-station Arlo cameras through an arlo-cam-api bridge on your own network. Live view only — Arlo keeps snapshots, motion events and cloud clips off this local path.',
+    'Base-station Arlo cameras through an arlo-cam-api bridge you run on the cameras’ own network — it replaces the Arlo base station, so it needs its own WiFi adapter and cannot be started from here. Live view only.',
   capabilities: {
     snapshots: false,
     liveStream: true,
@@ -82,12 +82,23 @@ export const ARLO_DESCRIPTOR: ProviderDescriptor = {
       help: 'The port each Arlo camera serves RTSP on. 554 unless you changed it on the bridge.',
     },
   ],
-  bridge: {
-    template: 'arlo-cam-api',
-    summary:
-      'Arlo cameras only reach this gateway through an arlo-cam-api bridge that stands in for the Arlo base station on your network. Orionis can start one and point this connection at it.',
-    provides: ['baseUrl'],
-  },
+  // No bridge, deliberately — and this is not an omission to be filled in later.
+  //
+  // arlo-cam-api does not merely talk to the cameras, it *is* their base
+  // station: it runs hostapd and dnsmasq to raise an access point with the real
+  // base station's SSID and captured WPA-PSK, and the cameras associate to it.
+  // Upstream runs it on a Raspberry Pi with a USB WiFi adapter, sitting on the
+  // camera's own network.
+  //
+  // None of that is a container this applier can start. It needs a radio, it
+  // needs privileged control of a network interface, and it needs to be
+  // physically where the cameras are — not on whatever host happens to run the
+  // gateway. Declaring a bridge here only hid the address field behind an offer
+  // that could never be honoured; the applier refused the template, and because
+  // it refuses before writing a status, the app showed nothing at all.
+  //
+  // So the address is asked for instead. Run arlo-cam-api where it belongs and
+  // tell this connection where to find it.
 };
 
 interface ArloBridgeCamera {

@@ -1,0 +1,49 @@
+# Eufy bridge: eufy-security-ws.
+#
+# One of a fixed set of templates the applier will run. Nothing in this file is
+# supplied by the gateway or the app — the only variable is ${ORIONIS_INSTANCE},
+# which the applier sets from a validated slug, plus the account this bridge
+# signs in with.
+#
+# Eufy has no local API. This container signs in to the Eufy cloud on the
+# account's behalf and exposes it over a WebSocket, which is the only thing the
+# gateway talks to.
+#
+# One departure from the stock compose file: **no published ports.** The stock
+# file exposes 3000 on the host, which puts an unauthenticated control surface
+# for every Eufy device on the LAN. Here the gateway joins this project's
+# network instead, so the socket is reachable by exactly one container.
+
+services:
+  eufy-security-ws:
+    image: ${ORIONIS_EUFY_IMAGE:-bropat/eufy-security-ws:latest}
+    container_name: orionis-${ORIONIS_INSTANCE}-eufy-security-ws
+    restart: unless-stopped
+    environment:
+      # The account this bridge signs in with, handed down by the applier from
+      # the connection's own credentials. Env rather than a file so the password
+      # never lands in a volume that outlives the container.
+      USERNAME: ${ORIONIS_EMAIL:-}
+      PASSWORD: ${ORIONIS_PASSWORD:-}
+      # Eufy's cloud is region-partitioned and rejects a sign-in aimed at the
+      # wrong one, so this is asked for rather than guessed.
+      COUNTRY: ${ORIONIS_COUNTRY:-US}
+      LANGUAGE: ${ORIONIS_LANGUAGE:-en}
+      PORT: "3000"
+      # Named so a person looking at the trusted-device list in the Eufy app can
+      # tell what it is and revoke it deliberately.
+      TRUSTED_DEVICE_NAME: Orionis Control
+      # Invitations are an account-level action, not something a camera source
+      # should take on its owner's behalf.
+      ACCEPT_INVITATIONS: "false"
+    volumes:
+      - data:/data
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  # Holds the bridge's Eufy session. Named, and never removed on teardown:
+  # losing it means signing in again — and, on an account with two-factor
+  # enabled, waiting for another emailed code. That is not a side effect a
+  # source removal should have.
+  data:

@@ -97,6 +97,14 @@ resolved_settings() {
     go2rtc)
       jq -nc --arg h "$host" '{baseUrl: "http://\($h)-go2rtc:1984"}'
       ;;
+    ring-mqtt)
+      # RTSP only. ring-mqtt's other two surfaces — MQTT and the web UI on
+      # 55123 — are not things the gateway reads, so it is not told about them.
+      jq -nc --arg h "$host" '{rtspBaseUrl: "rtsp://\($h)-ring-mqtt:8554"}'
+      ;;
+    eufy-security-ws)
+      jq -nc --arg h "$host" '{wsUrl: "ws://\($h)-eufy-security-ws:3000"}'
+      ;;
     *)
       echo '{}'
       ;;

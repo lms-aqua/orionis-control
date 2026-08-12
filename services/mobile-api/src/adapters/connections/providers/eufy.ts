@@ -77,12 +77,41 @@ export const EUFY_DESCRIPTOR: ProviderDescriptor = {
       default: DEFAULT_WS_URL,
       help: 'The eufy-security-ws WebSocket, reachable from this gateway. Usually ws://…:3000.',
     },
+    // The bridge signs in to Eufy on its own behalf. Before these existed the
+    // connection held nothing to hand it, so a provisioned bridge started with
+    // no account and sat there unable to reach anything.
+    {
+      key: 'email',
+      label: 'Eufy email',
+      type: 'text',
+      required: false,
+      help: 'Only needed if Orionis starts the bridge for you — it signs in to Eufy with this. Leave blank when pointing at a bridge that is already signed in.',
+    },
+    {
+      key: 'password',
+      label: 'Eufy password',
+      type: 'secret',
+      required: false,
+      help: 'Stored encrypted, and handed to the bridge rather than used from here. This gateway never signs in to Eufy itself.',
+    },
+    {
+      key: 'country',
+      label: 'Country',
+      type: 'text',
+      required: false,
+      default: 'US',
+      advanced: true,
+      help: 'Two-letter code for the Eufy region the account belongs to. A sign-in aimed at the wrong region is rejected.',
+    },
   ],
   bridge: {
     template: 'eufy-security-ws',
     summary:
-      'Eufy cameras only reach this gateway through a eufy-security-ws bridge. Orionis can start one; you then sign in to Eufy once in the bridge (entering the emailed code or captcha it asks for).',
+      'Eufy cameras only reach this gateway through a eufy-security-ws bridge. Orionis can start one and sign it in with the account above. An account with two-factor enabled will need the emailed code entered at the bridge itself the first time.',
     provides: ['wsUrl'],
+    // The bridge signs in to Eufy on its own behalf, so it needs the same
+    // account the connection holds — the Wyze arrangement exactly.
+    handsOver: { settings: ['email', 'country'], secrets: ['password'] },
   },
 };
 

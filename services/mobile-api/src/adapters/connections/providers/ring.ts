@@ -87,6 +87,17 @@ export const RING_DESCRIPTOR: ProviderDescriptor = {
       help: 'live is the current view. event plays back the last recorded motion/ding event.',
     },
     {
+      key: 'refreshToken',
+      label: 'Ring refresh token',
+      type: 'secret',
+      required: false,
+      help:
+        'Only needed if Orionis starts the bridge for you. Generate one with ' +
+        '`npx -p ring-client-api ring-auth-cli` — Ring sends a code, and the tool ' +
+        'prints a token. Stored encrypted, and handed to the bridge so it never ' +
+        'has to ask for a code of its own.',
+    },
+    {
       key: 'username',
       label: 'RTSP username',
       type: 'text',
@@ -106,8 +117,13 @@ export const RING_DESCRIPTOR: ProviderDescriptor = {
   bridge: {
     template: 'ring-mqtt',
     summary:
-      'Ring cameras only reach this gateway through a ring-mqtt bridge. Orionis can start one; you then sign in to Ring once in the bridge’s web app and add each camera’s device id here.',
+      'Ring cameras only reach this gateway through a ring-mqtt bridge. Orionis can start one — give it a Ring refresh token above, and add each camera’s device id, which the bridge logs on its first run.',
     provides: ['rtspBaseUrl'],
+    // ring-mqtt earns its own session through a browser flow on port 55123.
+    // Publishing that would put a Ring account auth page on the LAN, so the
+    // token is handed over instead and the port stays closed — the same trade
+    // the Blink bridge makes, for the same reason.
+    handsOver: { secrets: ['refreshToken'] },
   },
 };
 
