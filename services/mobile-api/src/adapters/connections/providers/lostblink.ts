@@ -477,7 +477,7 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       const outcome = await this.#submitCredentials(jar, csrf, email, password);
       if (outcome.kind === 'failed') return { status: 'failed', message: outcome.message };
       if (outcome.kind === 'complete') {
-        return await this.#finish(jar, codeVerifier, codeChallenge, hardwareId, email);
+        return await this.#finish(jar, codeVerifier, hardwareId, email);
       }
       // A second factor is required: hold this session for completeAuth. The
       // store pins the instance across both calls, so this survives the wait.
@@ -520,7 +520,6 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
       const result = await this.#finish(
         state.jar,
         state.codeVerifier,
-        state.codeChallenge,
         state.hardwareId,
         state.email,
       );
@@ -583,13 +582,14 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
    * is logged with its code value redacted, so a failure here is diagnosable
    * from the gateway logs without ever writing the credential down.
    */
-  async #authorizationCode(
-    jar: CookieJar,
-    hardwareId: string,
-    codeChallenge: string,
-  ): Promise<string | null> {
-    let target: string | null =
-      `${OAUTH_AUTHORIZE_URL}?${this.#authorizeParams(hardwareId, codeChallenge)}`;
+  async #authorizationCode(jar: CookieJar): Promise<string | null> {
+    // Requested with NO query params on purpose. The initial authorize (step 1)
+    // registered this authorization request against the session server-side, so
+    // re-sending the params here would begin a *fresh* request in an
+    // unauthenticated context and bounce straight back to /signin. The bare URL
+    // plus the authenticated session cookie is what makes Blink 302 to the
+    // callback with the code — matching blinkpy's oauth_get_authorization_code.
+    let target: string | null = OAUTH_AUTHORIZE_URL;
     for (let hop = 0; hop < 6 && target; hop++) {
       const res = await this.#ctx.fetchImpl(target, {
         method: 'GET',
@@ -741,15 +741,13 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   async #finish(
     jar: CookieJar,
     codeVerifier: string,
-    codeChallenge: string,
     hardwareId: string,
     email: string,
   ): Promise<AuthResult> {
-    // Re-request authorize now that the session is authenticated: it redirects
-    // to the app callback with a one-time `code`. Blink can take an intermediate
-    // hop first, and returns the code in the query on some paths and the URL
-    // fragment on others — so follow the chain and check both (see below).
-    const code = await this.#authorizationCode(jar, hardwareId, codeChallenge);
+    // Re-request authorize (bare) now that the session is authenticated: Blink
+    // 302s to the app callback with a one-time `code`. #authorizationCode follows
+    // any intermediate hop and reads the code from the query or fragment.
+    const code = await this.#authorizationCode(jar);
     if (!code) {
       return {
         status: 'failed',
