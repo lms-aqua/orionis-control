@@ -1,3 +1,7 @@
+Fix: a Blink source stays signed in. Signing in once in the app was meant to be the only code you ever see, and it was — until the Blink helper restarted, at which point it asked Blink for a session of its own, and Blink sent a code to a place nobody was looking. The reason was small and completely invisible from the app: when Blink moved to its new sign-in, it started handing out a *renewal* grant alongside the session, and the app was keeping the session but throwing the renewal away. Without it the helper has no way to ask for a fresh session, so it starts over from your email and password — which is exactly what triggers a code. Both halves are now kept and handed over, so the helper renews quietly on its own, through restarts and past the point the old session expired. It also no longer overwrites a session the helper has already renewed for itself, which was the same problem arriving from the other direction. If you have a Blink source that has been asking for codes, sign in to it once more in the app; that sign-in is the one that will stick.
+
+---
+
 Fix: signing in to a source that sends a verification code (like Blink) no longer loses the code screen when you leave the app to go read the code. The biometric lock now draws over the app instead of rebuilding it, so coming back through Face ID returns you to exactly where you were — the code prompt, and anything you had already typed, are still there.
 
 ---

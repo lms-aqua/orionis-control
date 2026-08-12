@@ -55,14 +55,25 @@ const blink = (name: string, extraSettings: Record<string, unknown> = {}) => ({
   settings: {
     email: 'pat@example.invalid',
     tier: 'u011',
+    host: 'u011.immedia-semi.com',
     accountId: 42,
     clientId: 7,
     userId: 99,
+    // The hardware id the token was minted against; without it the refresh
+    // token below is useless to blinkpy and the bridge signs in from scratch.
+    hardwareId: '3F2504E0-4F89-11D3-9A0C-0305E82C3301',
+    tokenExpiresIn: 3600,
+    tokenExpiresAt: 1_786_500_000,
+    tokenIssuedAt: 1_786_496_400,
     uniqueId: 'stable-client-id',
     deviceIdentifier: 'Orionis Control',
     ...extraSettings,
   },
-  secrets: { password: 'not-a-real-password', authToken: 'verified-session-token' },
+  secrets: {
+    password: 'not-a-real-password',
+    authToken: 'verified-session-token',
+    refreshToken: 'verified-refresh-token',
+  },
 });
 
 async function create(h: Harness, token: string, body: Record<string, unknown>): Promise<string> {
@@ -145,6 +156,9 @@ describe('asking for a bridge', () => {
     expect(handover.password).toBe('not-a-real-password');
     // The verified session, which is the whole reason a bridge waits for sign-in.
     expect(handover.authToken).toBe('verified-session-token');
+    // And the half of it that lets the bridge renew without a second code.
+    expect(handover.refreshToken).toBe('verified-refresh-token');
+    expect(handover.hardwareId).toBe('3F2504E0-4F89-11D3-9A0C-0305E82C3301');
     // Exactly the declared keys that are present — and not mediamtxApiUrl.
     expect(Object.keys(handover).sort()).toEqual(
       [
@@ -153,8 +167,14 @@ describe('asking for a bridge', () => {
         'clientId',
         'deviceIdentifier',
         'email',
+        'hardwareId',
+        'host',
         'password',
+        'refreshToken',
         'tier',
+        'tokenExpiresAt',
+        'tokenExpiresIn',
+        'tokenIssuedAt',
         'uniqueId',
         'userId',
       ].sort(),

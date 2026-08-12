@@ -119,6 +119,21 @@ git clone git@github.com:lms-aqua/lostblink.git /opt/lostblink
 docker build -t lostblink:local /opt/lostblink
 ```
 
+**The image must ship blinkpy 0.25.9 or newer.** Blink retired the old
+`/api/v5/account/login` endpoint — it answers HTTP 426 "an app update is
+required" to force old clients off — and moved sign-in to OAuth2 with PKCE.
+blinkpy speaks that from 0.25.0; anything older cannot log in to Blink at all,
+whatever this gateway hands it. Check what a built image actually contains:
+
+```bash
+docker run --rm --entrypoint python lostblink:local \
+  -c 'import importlib.metadata as m; print(m.version("blinkpy"))'
+```
+
+The credential file described below is written in that version's shape, so the
+two move together: bumping blinkpy in the lostblink image is not independent of
+this repository.
+
 Enable the units:
 
 ```bash
@@ -187,25 +202,53 @@ down would have made the whole flow pointless.
 `seed_lostblink_credentials` closes it. When the gateway's sign-in completes, it
 re-sends the provisioning request carrying the finished session, and the applier
 writes it into the instance's `config` volume as `.cred.json` — blinkpy's own
-credentials file, in blinkpy 0.23's exact shape:
+credentials file, in blinkpy 0.25's `Auth.login_attributes` shape:
 
 | key | from |
 | --- | --- |
 | `username` / `password` | the connection's own credentials |
-| `token` | the token the verified sign-in returned |
+| `token` | the access token the verified sign-in returned |
+| `refresh_token` | **the grant that renews it without a new code** |
+| `hardware_id` | **the device identity that token was minted against** |
+| `expires_in` / `expiration_date` | when Blink said the token dies (epoch seconds) |
 | `host` / `region_id` | the account's region tier |
 | `client_id` / `account_id` / `user_id` | the identifiers Blink returned |
-| `uid` / `device_id` | **the client identity Blink already verified** |
+| `uid` / `device_id` | the client identity Blink already verified |
+| `issued_at` | not blinkpy's — see "a seed only moves forward" below |
 
 lostblink prefers this file over an email and password and reads it with
-blinkpy's `no_prompt=True`, so it never asks. The last two rows are what make it
-durable rather than merely working once: if the token later expires, blinkpy
-signs in again presenting the same `uid` — a client Blink has already trusted —
-so there is no new code then either.
+blinkpy's `no_prompt=True`, so it never asks.
 
-**Completeness is load-bearing.** blinkpy's `Auth.startup()` refreshes the token
-if *any* value in that file is `None`, which would put the instance straight back
-at a fresh login. A unit test asserts the descriptor still hands over all nine.
+**The two bold rows are the whole game.** blinkpy 0.25's `Auth.startup()` has
+exactly two paths, and which one it takes is decided by those:
+
+```python
+if self.refresh_token and self.hardware_id:   # renews silently, no code
+    ...
+success = await self._oauth_login_flow()      # full sign-in → 2FA → exits
+```
+
+There is no third path, and no partial credit. A file carrying a valid access
+token but no `refresh_token` works until that token expires — an hour — and then
+the bridge is back at a verification code sent to a container log. A file
+carrying both survives restarts and expiry indefinitely. So the gateway captures
+Blink's refresh token and the hardware id it was bound to, and hands over both;
+`tests/unit/lostblink.test.ts` asserts it still does, because the failure mode
+looks exactly like success from the app's side.
+
+Note this differs from the pre-OAuth arrangement, where completeness mattered
+because blinkpy 0.23 re-logged-in if *any* value was `None`. That is no longer
+the rule — `client_id`, `user_id` and the two legacy `uid` / `device_id` keys are
+carried for the fallback login's benefit, but they are not what keeps the bridge
+signed in.
+
+**A seed only moves forward.** Refresh tokens rotate: once blinkpy has renewed,
+the copy the gateway holds is spent. Every apply pass re-sends the handover, so
+seeding unconditionally would eventually overwrite a live session with a dead
+one and send the bridge back to a code prompt. `newer_session_present` reads the
+`issued_at` stamp already in the volume and declines to seed when it is at least
+as new — a routine reconcile leaves a working session alone, while a fresh
+sign-in in the app stamps a later time and wins.
 
 The file is built with `jq` and piped straight into the volume: it is never
 written to this host's filesystem and never passed as an argument where `ps`

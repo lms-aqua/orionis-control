@@ -111,45 +111,94 @@ resolved_settings() {
 # already done that sign-in through the app; this is what carries the result
 # across.
 #
-# The shape is blinkpy 0.23's `Auth.login_attributes` exactly, and completeness
-# is load-bearing: `Auth.startup()` refreshes the token if **any** value is
-# None, which would put the instance straight back at a fresh login. `uid` and
-# `device_id` are the client identity Blink verified, so even that fallback
-# login is recognised rather than challenged.
+# The shape is blinkpy 0.25's `Auth.login_attributes` — Blink's move to OAuth2
+# changed it, and an 0.23-shaped file no longer buys anything. What carries the
+# weight now is `refresh_token` + `hardware_id`: `Auth.startup()` refreshes
+# silently when it holds both, and falls through to a full OAuth sign-in — which
+# means 2FA, at that console — when either is missing. `uid` and `device_id` are
+# kept because they are the client identity Blink verified, so even that fallback
+# is recognised rather than challenged.
 #
 # Built with jq rather than a shell heredoc because the values include an email
 # address the operator typed, and a heredoc would let a quote in it write the
 # rest of the document.
 seed_lostblink_credentials() {
   local project="$1" handover="$2"
-  local token tier
+  local token issued
   token="$(jq -r '.authToken // ""' <<<"$handover")"
   # No token yet — the connection has been created but not signed in. The
   # instance falls back to email and password, which is the pre-existing
   # behaviour, and a reseed follows as soon as the sign-in completes.
   [ -n "$token" ] || return 1
 
-  tier="$(jq -r '.tier // "rest-prod"' <<<"$handover")"
+  issued="$(jq -r '(.tokenIssuedAt // 0) | tonumber? // 0 | floor' <<<"$handover")"
+  newer_session_present "$project" "$issued" && return 1
+
+  if [ -z "$(jq -r '.refreshToken // ""' <<<"$handover")" ]; then
+    # Worth saying out loud: this seeds a session that works now but cannot
+    # renew itself, so the bridge will want a fresh code when it expires.
+    log "warning: the Blink session for $project carries no refresh token; sign in again in the app to get one"
+  fi
 
   # Piped straight into the volume: never written to this host's filesystem, and
   # never passed as an argument where it would show up in `ps`.
-  jq -n --argjson h "$handover" --arg tier "$tier" '
+  jq -n --argjson h "$handover" '
+      ($h.tier // "rest-prod") as $tier |
       {
-        username:   ($h.email // ""),
-        password:   ($h.password // ""),
-        uid:        ($h.uniqueId // ""),
-        device_id:  ($h.deviceIdentifier // "Orionis Control"),
-        token:      $h.authToken,
-        host:       ($tier + ".immedia-semi.com"),
-        region_id:  $tier,
-        client_id:  (($h.clientId  // "") | tonumber? // null),
-        account_id: (($h.accountId // "") | tonumber? // null),
-        user_id:    (($h.userId    // "") | tonumber? // null)
+        # blinkpy 0.25 login_attributes
+        username:        ($h.email // ""),
+        password:        ($h.password // ""),
+        token:           $h.authToken,
+        refresh_token:   ($h.refreshToken // null),
+        expires_in:      (($h.tokenExpiresIn // "") | tonumber? // 3600),
+        expiration_date: (($h.tokenExpiresAt // "") | tonumber? // null),
+        hardware_id:     ($h.hardwareId // null),
+        host:            ($h.host // ($tier + ".immedia-semi.com")),
+        region_id:       $tier,
+        client_id:       (($h.clientId  // "") | tonumber? // null),
+        account_id:      (($h.accountId // "") | tonumber? // null),
+        user_id:         (($h.userId    // "") | tonumber? // null),
+        # Not read by blinkpy; carried in its `data` dict untouched. The client
+        # identity Blink verified, and the stamp `newer_session_present` reads.
+        uid:             ($h.uniqueId // ""),
+        device_id:       ($h.deviceIdentifier // "Orionis Control"),
+        issued_at:       (($h.tokenIssuedAt // "") | tonumber? // 0)
       }' |
     docker run --rm -i -v "${project}_config:/config" busybox:1.36 \
       sh -c 'cat > /config/.cred.json &&
              chmod 600 /config/.cred.json &&
              chown 1000:1000 /config/.cred.json'
+}
+
+# True when the instance already holds a session at least as new as this one.
+#
+# Refresh tokens rotate: once blinkpy has renewed, the copy the gateway holds is
+# spent, and re-seeding it — which every apply pass would otherwise do — would
+# replace a working session with a dead one and send the bridge back to a
+# verification code. So a seed only ever moves forward. A new sign-in in the app
+# stamps a later `tokenIssuedAt` and wins; a routine reconcile does not.
+#
+# The file is read into a variable and never echoed: it holds the account's
+# token.
+newer_session_present() {
+  local project="$1" issued="$2" existing prev_issued prev_refresh
+  existing="$(docker run --rm -v "${project}_config:/config" busybox:1.36 \
+    sh -c 'cat /config/.cred.json 2>/dev/null' 2>/dev/null || true)"
+  [ -n "$existing" ] || return 1
+
+  prev_refresh="$(jq -r '.refresh_token // ""' <<<"$existing" 2>/dev/null || true)"
+  prev_issued="$(jq -r '(.issued_at // 0) | tonumber? // 0 | floor' <<<"$existing" 2>/dev/null || echo 0)"
+  # Without a refresh token there is nothing to preserve: overwriting is an
+  # improvement whatever the dates say.
+  [ -n "$prev_refresh" ] || return 1
+
+  case "$prev_issued$issued" in
+    *[!0-9]*) return 1 ;; # unparseable stamp: prefer seeding over stalling
+  esac
+  [ "$prev_issued" -ge "$issued" ] || return 1
+
+  log "kept the session already in $project (seeded at $prev_issued, offered $issued)"
+  return 0
 }
 
 write_status() {

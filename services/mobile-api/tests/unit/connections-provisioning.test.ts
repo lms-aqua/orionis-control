@@ -60,17 +60,23 @@ describe('the Blink session handed to lostblink', () => {
   const bridge = registry.descriptor('lostblink')?.bridge;
 
   it('carries every field blinkpy needs to skip signing in again', () => {
-    // blinkpy 0.23 `Auth.startup()` refreshes the token if **any** value in its
-    // saved credentials is None. A handover missing one of these does not
-    // degrade — it puts the bridge straight back at a fresh login and a
-    // verification code sent to a console nobody is watching. The applier's
+    // blinkpy 0.25 `Auth.startup()` renews in silence when it holds a
+    // `refresh_token` and a `hardware_id`, and starts a whole new OAuth sign-in
+    // when it holds either without the other. A handover missing one of those
+    // does not degrade — it puts the bridge straight back at a verification code
+    // sent to a console nobody is watching. The applier's
     // `seed_lostblink_credentials` maps these onto blinkpy's own key names.
     const handed = [...(bridge?.handsOver?.settings ?? []), ...(bridge?.handsOver?.secrets ?? [])];
     for (const key of [
       'email', // → username
       'password',
       'authToken', // → token
-      'tier', // → region_id, and host
+      'refreshToken', // → refresh_token ┐ together: renew without a new code
+      'hardwareId', // → hardware_id    ┘
+      'tokenExpiresIn', // → expires_in
+      'tokenExpiresAt', // → expiration_date
+      'host', // → host
+      'tier', // → region_id
       'accountId',
       'clientId',
       'userId',
@@ -81,11 +87,14 @@ describe('the Blink session handed to lostblink', () => {
     }
   });
 
-  it('sends the session as a secret, not as a setting', () => {
-    // A Blink token is full account access. Storing it beside the region tier
-    // would put it in every API response that returns settings.
-    expect(bridge?.handsOver?.secrets).toContain('authToken');
-    expect(bridge?.handsOver?.settings ?? []).not.toContain('authToken');
+  it('sends both tokens as secrets, not as settings', () => {
+    // A Blink access token is full account access and the refresh token is a
+    // standing grant to mint more. Storing either beside the region tier would
+    // put it in every API response that returns settings.
+    for (const key of ['authToken', 'refreshToken']) {
+      expect(bridge?.handsOver?.secrets ?? [], key).toContain(key);
+      expect(bridge?.handsOver?.settings ?? [], key).not.toContain(key);
+    }
   });
 });
 
