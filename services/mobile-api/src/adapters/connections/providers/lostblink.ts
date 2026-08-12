@@ -90,6 +90,44 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
       required: true,
       help: 'Stored encrypted. Blink will email or text a code to finish signing in.',
     },
+    // How hard the bridge works the cameras. These were fixed in the compose
+    // template, which meant changing one took an edit to a file in a volume on
+    // the server — and the config sidecar rewrote it on the next reconcile
+    // anyway. They belong to the connection.
+    {
+      key: 'liveMode',
+      label: 'Live view',
+      type: 'text',
+      required: false,
+      default: 'on_motion',
+      help: 'off — clips only. on_motion — stream while something is happening. always — stream continuously, which is the only setting that keeps every camera visible when nothing is going on.',
+    },
+    {
+      key: 'requireBatteryOk',
+      label: 'Respect battery level',
+      type: 'boolean',
+      required: false,
+      default: true,
+      help: 'Refuses live view on a camera reporting low battery. Turn off only for mains-powered cameras — a wired doorbell, Floodlight or Mini.',
+    },
+    {
+      key: 'dailyBudgetSeconds',
+      label: 'Daily live seconds per camera',
+      type: 'number',
+      required: false,
+      default: 1800,
+      advanced: true,
+      help: 'Live view is continuous radio-on and flattens a Blink battery in 1–3 days. The default is 30 minutes a day per camera; raise it only where mains power makes that moot.',
+    },
+    {
+      key: 'maxSessionsPerHour',
+      label: 'Sessions per hour per camera',
+      type: 'number',
+      required: false,
+      default: 6,
+      advanced: true,
+      help: 'Caps how often a camera may be woken. Raise alongside the daily budget when running continuously.',
+    },
     {
       key: 'mediamtxApiUrl',
       label: 'MediaMTX API URL',
@@ -147,6 +185,13 @@ export const LOSTBLINK_DESCRIPTOR: ProviderDescriptor = {
         'tokenIssuedAt',
         'uniqueId',
         'deviceIdentifier',
+        // Behaviour, not identity. The template used to hard-code these, so the
+        // only way to change one was to edit a file inside a volume — which the
+        // config sidecar then overwrote on the next reconcile.
+        'liveMode',
+        'requireBatteryOk',
+        'dailyBudgetSeconds',
+        'maxSessionsPerHour',
       ],
       secrets: ['password', 'authToken', 'refreshToken'],
     },

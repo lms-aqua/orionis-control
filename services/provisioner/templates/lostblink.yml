@@ -23,24 +23,40 @@ services:
   config:
     image: busybox:1.36
     container_name: orionis-${ORIONIS_INSTANCE}-lostblink-config
-    user: "1000:1000"
+    # Root, then chown the result to lostblink's uid below. Running the sidecar
+    # *as* 1000 only worked because the volume already existed owned that way: a
+    # genuinely fresh named volume is root-owned, and this is the first container
+    # to mount it, so it could not write its own config on a clean install.
     volumes:
       - config:/config
     # Credentials are *not* written here — they arrive as environment variables
     # on the service that needs them, so they never touch a file in a volume.
+    #
+    # Everything below that is a *choice* rather than a constant comes from the
+    # connection. These used to be literals in this file, which made the only
+    # way to change one an edit to a file inside a volume — and this sidecar
+    # rewrote it on the next reconcile, so the change did not survive.
+    environment:
+      ORIONIS_LIVEMODE: ${ORIONIS_LIVEMODE:-on_motion}
+      ORIONIS_REQUIREBATTERYOK: ${ORIONIS_REQUIREBATTERYOK:-true}
+      ORIONIS_DAILYBUDGETSECONDS: ${ORIONIS_DAILYBUDGETSECONDS:-1800}
+      ORIONIS_MAXSESSIONSPERHOUR: ${ORIONIS_MAXSESSIONSPERHOUR:-6}
     command:
       - sh
       - -c
+      # An unquoted heredoc, so the *shell* substitutes at runtime. The `$$`
+      # keeps compose from interpolating these itself at config time, which
+      # would bake one connection's settings into the template's rendered form.
       - |
-        cat > /config/config.json <<'JSON'
+        cat > /config/config.json <<JSON
         {
           "blink": { "poll_interval": 30, "history_days": 7, "request_timeout": 30 },
           "live": {
-            "mode": "on_motion",
-            "max_sessions_per_hour": 6,
+            "mode": "$${ORIONIS_LIVEMODE}",
+            "max_sessions_per_hour": $${ORIONIS_MAXSESSIONSPERHOUR},
             "min_seconds_between_sessions": 60,
-            "daily_seconds_budget": 1800,
-            "require_battery_ok": true,
+            "daily_seconds_budget": $${ORIONIS_DAILYBUDGETSECONDS},
+            "require_battery_ok": $${ORIONIS_REQUIREBATTERYOK},
             "mains_powered": []
           },
           "cameras": { "enabled": [], "disabled": [], "max_failures": 5 },
@@ -50,6 +66,10 @@ services:
           "log_level": "INFO"
         }
         JSON
+        # lostblink runs as 1000 and only reads this file; the credentials it
+        # signs in with arrive as environment, not from here.
+        chown 1000:1000 /config/config.json
+        chmod 644 /config/config.json
     restart: "no"
 
   lostblink:
