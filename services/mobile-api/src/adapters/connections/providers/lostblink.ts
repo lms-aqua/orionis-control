@@ -267,6 +267,26 @@ interface MediaMtxPathList {
   items?: MediaMtxPath[];
 }
 
+/**
+ * Camera names this connection has seen publishing, keyed by connection id.
+ *
+ * MediaMTX only knows about a path while something is publishing to it, and a
+ * Blink camera publishes in bursts: Blink caps a live session at 300 seconds
+ * and lostblink opens a replacement. Listing only what is live therefore
+ * emptied the entire camera wall between sessions — the cameras appeared,
+ * vanished, and reappeared depending on when the app happened to ask.
+ *
+ * A camera that was publishing a minute ago is still a camera. It is reported
+ * with `ready: false`, which reads through as offline rather than absent —
+ * honest about the state without pretending the camera does not exist.
+ *
+ * Module-level rather than per-instance because the store rebuilds a provider
+ * on every connection write, and an edit to an unrelated setting should not
+ * blank the wall. Lost on restart, which is correct: nothing here is worth
+ * persisting through one.
+ */
+const seenCameras = new Map<string, Set<string>>();
+
 export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   readonly descriptor = LOSTBLINK_DESCRIPTOR;
   readonly #ctx: ProviderContext;
@@ -354,14 +374,35 @@ export class LostblinkProvider implements CameraProvider, InteractiveAuth {
     }
   }
 
+  /** Every camera this connection has seen, live or between sessions. */
+  #remember(live: MediaMtxPath[]): Set<string> {
+    const seen = seenCameras.get(this.#ctx.connectionId) ?? new Set<string>();
+    for (const path of live) seen.add(path.name);
+    seenCameras.set(this.#ctx.connectionId, seen);
+    return seen;
+  }
+
   async listCameras(): Promise<Camera[]> {
-    return (await this.#paths()).map((path) => this.#camera(path));
+    const live = await this.#paths();
+    const byName = new Map(live.map((path) => [path.name, path]));
+    // Union, not replacement: a poll landing between two live sessions sees no
+    // paths at all, and returning nothing there is what made the wall flicker.
+    return [...this.#remember(live)].map((name) =>
+      this.#camera(byName.get(name) ?? { name, ready: false }),
+    );
   }
 
   async getCamera(cameraId: string): Promise<Camera> {
-    const path = (await this.#paths()).find((p) => p.name === cameraId);
-    if (!path) throw AppError.notFound('Camera');
-    return this.#camera(path);
+    const live = await this.#paths();
+    const path = live.find((p) => p.name === cameraId);
+    if (path) return this.#camera(path);
+    // Opening a camera in the gap between sessions is the common case, not an
+    // error — the tile was on screen a moment ago. Report it offline rather
+    // than 404ing a camera the user can plainly see.
+    if (this.#remember(live).has(cameraId)) {
+      return this.#camera({ name: cameraId, ready: false });
+    }
+    throw AppError.notFound('Camera');
   }
 
   #camera(path: MediaMtxPath): Camera {
