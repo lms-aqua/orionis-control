@@ -141,6 +141,18 @@ services:
       # A live handover splices two MPEG-TS sources, so timestamps jump. Give
       # the muxer room to absorb it.
       MTX_PATHDEFAULTS_WRITEQUEUESIZE: "1024"
+      # Blink caps a session at 300s and lostblink splices a replacement under
+      # the same ffmpeg, which stops writing until the new tunnel yields a
+      # keyframe. That pause is longer than the 10s default, so MediaMTX hung up
+      # on the publisher mid-handover:
+      #
+      #   [RTSP] closed: read tcp …:8554->…: i/o timeout
+      #
+      # and ffmpeg took a broken pipe and exited 224. Measured: every publisher
+      # died at 6m06s, one session plus one splice. This is the gap that has to
+      # be tolerated, not a network that is slow.
+      MTX_READTIMEOUT: 30s
+      MTX_WRITETIMEOUT: 30s
     healthcheck:
       # This image is distroless: no sh, no wget, nothing but the binary. The
       # probe this replaced could never execute at all —
