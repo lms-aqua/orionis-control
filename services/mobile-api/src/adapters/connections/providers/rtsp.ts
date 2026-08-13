@@ -173,7 +173,7 @@ export class RtspProvider implements CameraProvider {
     }
     try {
       const streams = await this.#fetchStreams();
-      const count = Object.keys(streams).length;
+      const count = Object.keys(streams).filter((name) => !isRendition(name, streams)).length;
       // Reaching an empty go2rtc is not success. It answers, so `ok: true` was
       // literally true, and the source then reported healthy over a camera wall
       // with nothing on it — the state a freshly provisioned go2rtc is always

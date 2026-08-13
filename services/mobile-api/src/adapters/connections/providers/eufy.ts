@@ -256,8 +256,11 @@ export class EufyProvider implements CameraProvider {
         'The bridge has no recent image for this camera yet. Open live view or wait for a motion event.',
       );
     }
-    // pictureUrl is a signed cloud URL for the last still; fetch it directly.
-    const response = await this.#ctx.fetchImpl(device.pictureUrl, {
+    // The bridge is third-party code, so its signed cloud URL is untrusted input
+    // just like an operator-entered upstream address. Validate it at the fetch
+    // boundary so a compromised bridge cannot turn snapshots into SSRF.
+    const pictureUrl = assertSafeUpstreamUrl(device.pictureUrl, 'Eufy snapshot URL');
+    const response = await this.#ctx.fetchImpl(pictureUrl, {
       signal: AbortSignal.timeout(this.#ctx.timeoutMs),
     });
     if (!response.ok) {

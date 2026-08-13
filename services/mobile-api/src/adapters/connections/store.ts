@@ -277,10 +277,11 @@ export class ConnectionStore {
   }
 
   remove(id: string): void {
-    this.get(id); // 404 rather than a silent no-op.
+    const existing = this.get(id); // 404 rather than a silent no-op.
     this.#db.prepare('DELETE FROM connections WHERE id = ?').run(id);
     this.#instances.delete(id);
     this.#challenges.delete(id);
+    this.#registry.cleanupConnection(existing.provider, id);
   }
 
   recordHealth(id: string, health: ConnectionHealthRecord): void {

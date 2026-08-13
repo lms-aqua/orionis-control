@@ -1,0 +1,15 @@
+# Baseline for the shared go2rtc hub. Dynamic Scrypted streams are populated by
+# sync-go2rtc-from-scrypted.mjs; other connection bridges register their streams
+# through go2rtc's API and the sync preserves those foreign entries.
+streams: {}
+
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8554"
+
+webrtc:
+  listen: ":8555"
+  # No public candidate is advertised. Reachability is provided by the TURN
+  # relay, without exposing go2rtc directly to clients.

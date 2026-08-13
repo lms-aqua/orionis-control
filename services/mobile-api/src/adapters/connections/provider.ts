@@ -284,6 +284,7 @@ export interface CameraProvider {
 }
 
 export type ProviderFactory = (ctx: ProviderContext) => CameraProvider;
+export type ProviderConnectionCleanup = (connectionId: string) => void;
 
 /**
  * The registry.
@@ -294,14 +295,22 @@ export type ProviderFactory = (ctx: ProviderContext) => CameraProvider;
 export class ProviderRegistry {
   readonly #factories = new Map<
     string,
-    { descriptor: ProviderDescriptor; create: ProviderFactory }
+    {
+      descriptor: ProviderDescriptor;
+      create: ProviderFactory;
+      cleanupConnection?: ProviderConnectionCleanup;
+    }
   >();
 
-  register(descriptor: ProviderDescriptor, create: ProviderFactory): void {
+  register(
+    descriptor: ProviderDescriptor,
+    create: ProviderFactory,
+    cleanupConnection?: ProviderConnectionCleanup,
+  ): void {
     if (this.#factories.has(descriptor.id)) {
       throw new Error(`Provider "${descriptor.id}" is already registered.`);
     }
-    this.#factories.set(descriptor.id, { descriptor, create });
+    this.#factories.set(descriptor.id, { descriptor, create, cleanupConnection });
   }
 
   has(id: string): boolean {
@@ -322,6 +331,10 @@ export class ProviderRegistry {
     const entry = this.#factories.get(id);
     if (!entry) throw new Error(`Unknown provider "${id}".`);
     return entry.create(ctx);
+  }
+
+  cleanupConnection(id: string, connectionId: string): void {
+    this.#factories.get(id)?.cleanupConnection?.(connectionId);
   }
 }
 

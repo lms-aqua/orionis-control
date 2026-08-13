@@ -287,6 +287,11 @@ interface MediaMtxPathList {
  */
 const seenCameras = new Map<string, Set<string>>();
 
+/** Release process-local camera history when its owning connection is deleted. */
+export function forgetSeenCameras(connectionId: string): void {
+  seenCameras.delete(connectionId);
+}
+
 export class LostblinkProvider implements CameraProvider, InteractiveAuth {
   readonly descriptor = LOSTBLINK_DESCRIPTOR;
   readonly #ctx: ProviderContext;

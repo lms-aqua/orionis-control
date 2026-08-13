@@ -90,6 +90,24 @@ describe('EufyProvider', () => {
     expect(snap.contentType).toBe('image/jpeg');
   });
 
+  it('rejects a bridge-supplied snapshot URL that targets link-local metadata', async () => {
+    state.devices = [
+      {
+        serialNumber: 'CAM1',
+        name: 'Front',
+        pictureUrl: 'http://169.254.169.254/latest/meta-data/',
+      },
+    ];
+    const fetchImpl = vi.fn(
+      async () => new Response('should not be fetched'),
+    ) as unknown as typeof fetch;
+
+    await expect(new EufyProvider(ctx(fetchImpl)).getSnapshot('CAM1')).rejects.toThrow(
+      /link-local|metadata/i,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('throws when the camera has no recent image', async () => {
     state.devices = [{ serialNumber: 'CAM2', name: 'Yard', rtspStream: true }];
     await expect(new EufyProvider(ctx()).getSnapshot('CAM2')).rejects.toThrow(/no recent image/i);

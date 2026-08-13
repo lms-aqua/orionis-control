@@ -62,6 +62,19 @@ describe('RtspProvider.probe in go2rtc mode', () => {
     expect(result.message).toMatch(/2 stream/);
   });
 
+  it('counts a base stream once when go2rtc also publishes renditions', async () => {
+    const result = await new RtspProvider(
+      ctx(
+        { mode: 'go2rtc', baseUrl: 'http://go2rtc.invalid:1984' },
+        { '57': {}, '57_aac': {}, '57_hq': {}, '57_ll': {}, driveway: {} },
+      ),
+    ).probe();
+
+    expect(result.ok).toBe(true);
+    expect(result.cameraCount).toBe(2);
+    expect(result.message).toMatch(/2 stream/);
+  });
+
   it('says so when no go2rtc address is set at all', async () => {
     const result = await new RtspProvider(ctx({ mode: 'go2rtc' })).probe();
     expect(result.ok).toBe(false);

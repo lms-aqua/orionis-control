@@ -19,7 +19,10 @@ const OLD_KEY = 'o'.repeat(48);
 
 const noFetch: typeof fetch = async () => new Response('{}', { status: 200 });
 
-function buildStore(cipher = new SecretsCipher(KEY)): { store: ConnectionStore; db: Db } {
+function buildStore(
+  cipher = new SecretsCipher(KEY),
+  cleanupConnection?: (connectionId: string) => void,
+): { store: ConnectionStore; db: Db } {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON;');
   migrate(db);
@@ -28,6 +31,7 @@ function buildStore(cipher = new SecretsCipher(KEY)): { store: ConnectionStore; 
   registry.register(
     fakeDescriptor({ id: 'fake' }),
     (ctx) => new FakeProvider(ctx, { cameras: ['a'] }),
+    cleanupConnection,
   );
   registry.register(
     fakeDescriptor({ id: 'failing' }),
@@ -196,9 +200,12 @@ describe('ConnectionStore', () => {
     });
 
     it('drops a removed connection and its cached instance', () => {
-      const created = store.create({ provider: 'fake', name: 'Gone' });
-      store.remove(created.id);
-      expect(() => store.get(created.id)).toThrow(AppError);
+      const cleaned: string[] = [];
+      const cleanupStore = buildStore(new SecretsCipher(KEY), (id) => cleaned.push(id)).store;
+      const created = cleanupStore.create({ provider: 'fake', name: 'Gone' });
+      cleanupStore.remove(created.id);
+      expect(() => cleanupStore.get(created.id)).toThrow(AppError);
+      expect(cleaned).toEqual([created.id]);
     });
   });
 

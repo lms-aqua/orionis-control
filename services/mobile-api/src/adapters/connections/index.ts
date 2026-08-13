@@ -14,7 +14,11 @@ import { FOSCAM_DESCRIPTOR, FoscamProvider } from './providers/foscam.ts';
 import { FRIGATE_DESCRIPTOR, FrigateProvider } from './providers/frigate.ts';
 import { HANWHA_DESCRIPTOR, HanwhaProvider } from './providers/hanwha.ts';
 import { HIKVISION_DESCRIPTOR, HikvisionProvider } from './providers/hikvision.ts';
-import { LOSTBLINK_DESCRIPTOR, LostblinkProvider } from './providers/lostblink.ts';
+import {
+  forgetSeenCameras,
+  LOSTBLINK_DESCRIPTOR,
+  LostblinkProvider,
+} from './providers/lostblink.ts';
 import { NEST_DESCRIPTOR, NestProvider } from './providers/nest.ts';
 import { ONVIF_DESCRIPTOR, OnvifProvider } from './providers/onvif.ts';
 import { REOLINK_DESCRIPTOR, ReolinkProvider } from './providers/reolink.ts';
@@ -32,7 +36,7 @@ export function buildProviderRegistry(): ProviderRegistry {
   registry.register(FRIGATE_DESCRIPTOR, (ctx) => new FrigateProvider(ctx));
   registry.register(RTSP_DESCRIPTOR, (ctx) => new RtspProvider(ctx));
   registry.register(SCRYPTED_DESCRIPTOR, (ctx) => new ScryptedProvider(ctx));
-  registry.register(LOSTBLINK_DESCRIPTOR, (ctx) => new LostblinkProvider(ctx));
+  registry.register(LOSTBLINK_DESCRIPTOR, (ctx) => new LostblinkProvider(ctx), forgetSeenCameras);
   registry.register(UNIFI_DESCRIPTOR, (ctx) => new UnifiProvider(ctx));
   registry.register(TAPO_DESCRIPTOR, (ctx) => new TapoProvider(ctx));
   registry.register(REOLINK_DESCRIPTOR, (ctx) => new ReolinkProvider(ctx));
