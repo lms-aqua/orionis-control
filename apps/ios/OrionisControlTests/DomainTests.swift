@@ -81,11 +81,12 @@ final class ErrorMappingTests: XCTestCase {
 @MainActor
 final class CameraFilteringTests: XCTestCase {
     private func camera(
-        id: String, name: String, status: CameraStatus = .online, location: String? = nil
+        id: String, name: String, status: CameraStatus = .online, location: String? = nil,
+        snapshot: Bool = true
     ) -> Camera {
         Camera(
             id: id, name: name, location: location, group: nil, model: nil, firmware: nil,
-            capabilities: CameraCapabilities(),
+            capabilities: CameraCapabilities(snapshot: snapshot),
             health: CameraHealth(status: status),
             snapshotPath: nil)
     }
@@ -154,6 +155,16 @@ final class CameraFilteringTests: XCTestCase {
             cameras, search: "", status: .all, location: nil, favouritesOnly: false,
             favourites: [])
         XCTAssertEqual(result.count, 3)
+    }
+
+    func testSnapshotRefreshUsesPerCameraCapabilityAndHealth() {
+        let cameras = [
+            camera(id: "supported", name: "Supported"),
+            camera(id: "manual-rtsp", name: "Manual RTSP", snapshot: false),
+            camera(id: "offline", name: "Offline", status: .offline),
+        ]
+
+        XCTAssertEqual(CamerasViewModel.snapshotCameraIds(cameras), ["supported"])
     }
 }
 

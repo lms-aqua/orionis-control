@@ -85,7 +85,7 @@ struct CameraLiveViewer: View {
             // One pass for the switcher strip; the wall is not kept refreshing
             // while a live stream is the thing being watched.
             await thumbnails?.refresh(
-                cameraIds: cameras.filter { $0.health.status.isUsable }.map(\.id))
+                cameraIds: CamerasViewModel.snapshotCameraIds(cameras))
             scheduleControlsHide()
             while !Task.isCancelled {
                 do {

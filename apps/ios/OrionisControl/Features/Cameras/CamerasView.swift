@@ -93,6 +93,18 @@ final class CamerasViewModel {
             }
     }
 
+    /// Cameras for which the UI may truthfully request a still frame.
+    ///
+    /// Provider descriptors describe a provider family, while this flag is
+    /// resolved for the configured connection and individual camera. A manual
+    /// RTSP camera, for example, is live-view capable but cannot produce a
+    /// snapshot through Orionis.
+    static func snapshotCameraIds(_ cameras: [Camera]) -> [String] {
+        cameras
+            .filter { $0.health.status.isUsable && $0.capabilities.snapshot }
+            .map(\.id)
+    }
+
     func visible(favourites: [String]) -> [Camera] {
         Self.filter(
             cameras,
@@ -370,15 +382,17 @@ struct CamerasView: View {
             .searchable(text: $model.searchText, prompt: "Search cameras")
             // Snapshots refresh only while the grid is on screen, and only for
             // the cameras actually shown.
-            // Include usability in the identity. A refresh can bring an offline
-            // camera online without changing the visible IDs; keying only by ID
-            // left that camera permanently outside the snapshot refresh loop.
+            // Include usability and snapshot support in the identity. A refresh
+            // can change either without changing the visible IDs; keying only by
+            // ID left that camera permanently outside (or inside) the loop.
             .task(
-                id: visible.map { "\($0.id):\($0.health.status.isUsable)" }
+                id: visible.map {
+                    "\($0.id):\($0.health.status.isUsable):\($0.capabilities.snapshot)"
+                }
                     + [String(describing: scenePhase)]
             ) {
                 guard scenePhase == .active else { return }
-                await snapshots?.run(cameraIds: visible.filter { $0.health.status.isUsable }.map(\.id))
+                await snapshots?.run(cameraIds: CamerasViewModel.snapshotCameraIds(visible))
             }
             // Health is live state, not setup metadata. Keep online/offline and
             // recording indicators honest while the wall remains open.
@@ -510,10 +524,12 @@ struct CamerasView: View {
                     ? "Remove favourite" : "Add favourite",
                 systemImage: environment.preferences.isFavourite(camera.id) ? "star.slash" : "star")
         }
-        Button {
-            Task { await snapshots?.refresh(cameraIds: [camera.id]) }
-        } label: {
-            Label("Refresh image", systemImage: "arrow.clockwise")
+        if camera.capabilities.snapshot {
+            Button {
+                Task { await snapshots?.refresh(cameraIds: [camera.id]) }
+            } label: {
+                Label("Refresh image", systemImage: "arrow.clockwise")
+            }
         }
     }
 

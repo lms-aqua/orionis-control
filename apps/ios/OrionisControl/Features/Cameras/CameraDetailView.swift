@@ -72,6 +72,7 @@ final class CameraDetailViewModel {
     func loadSnapshot() async {
         snapshotGeneration &+= 1
         let generation = snapshotGeneration
+        guard camera?.capabilities.snapshot == true else { return }
         guard let loaded = try? await cameras.snapshot(cameraId: cameraId),
               let prepared = await SnapshotImageDecoder.prepare(
                 loaded.data, maxPixelSize: 1_920)
@@ -205,13 +206,15 @@ struct CameraDetailView: View {
                 stream = CameraStreamController(
                     cameraId: cameraId, service: environment.service)
             }
-            // Fetch a still immediately, in parallel with connecting, so the scene
-            // is on screen within a couple hundred ms instead of a blank spinner
-            // while WebRTC negotiates and waits for its first keyframe.
-            Task { await model?.loadSnapshot() }
             quality = environment.preferences.defaultStreamQuality
             isMuted = environment.preferences.startMuted
             await model?.load()
+            // The provider catalogue is static; the camera capability is the
+            // configured, per-device truth. Do not call a snapshot endpoint the
+            // camera says it cannot support (manual RTSP is the common case).
+            if model?.camera?.capabilities.snapshot == true {
+                Task { await model?.loadSnapshot() }
+            }
             if environment.preferences.autoplayLiveView {
                 await startStream()
             }
@@ -331,9 +334,10 @@ struct CameraDetailView: View {
             }
             .orionisScreen()
             .refreshable {
-                async let details: Void = model.load()
-                async let snapshot: Void = model.loadSnapshot()
-                _ = await (details, snapshot)
+                await model.load()
+                if model.camera?.capabilities.snapshot == true {
+                    await model.loadSnapshot()
+                }
             }
         } else {
             LoadingStateView(message: "Loading camera…")

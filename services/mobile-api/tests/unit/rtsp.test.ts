@@ -100,6 +100,20 @@ describe('RtspProvider.probe in manual mode', () => {
     expect(result.ok).toBe(false);
     expect(result.cameraCount).toBe(0);
   });
+
+  it('keeps the provider capability while marking manual cameras snapshot-less', async () => {
+    const provider = new RtspProvider(
+      ctx({ mode: 'manual', streams: 'front=rtsp://cam.invalid/1' }),
+    );
+
+    // The catalogue is provider-static: go2rtc configurations can take frames.
+    expect(RTSP_DESCRIPTOR.capabilities.snapshots).toBe(true);
+    // The camera is the configured runtime truth consumed by the app.
+    expect((await provider.listCameras())[0]!.capabilities.snapshot).toBe(false);
+    await expect(provider.getSnapshot('front')).rejects.toMatchObject({
+      code: 'CAPABILITY_UNSUPPORTED',
+    });
+  });
 });
 
 describe('renditions of one camera are not four cameras', () => {
