@@ -101,3 +101,33 @@ describe('registering a connection stream with the hub', () => {
     expect(calls.every((c) => !c.url.includes('//api/streams'))).toBe(true);
   });
 });
+
+describe('a credentialed URL is never registered', () => {
+  // The ten direct-device providers put the camera login in the RTSP URL,
+  // because RTSP has no other way to authenticate. Their own comment states the
+  // terms that makes safe: minted per request, handed to an authenticated
+  // caller, never written down. go2rtc persists what it is given, so
+  // registering one would write a camera password to a group-readable file on
+  // disk and into every backup of it.
+  it('refuses a URL carrying a password', () => {
+    expect(
+      isRegisterableSource('rtsp://admin:hunter2@192.168.1.50:554/Streaming/Channels/101'),
+    ).toBe(false);
+  });
+
+  it('refuses a URL carrying only a username', () => {
+    expect(isRegisterableSource('rtsp://admin@192.168.1.50:554/stream')).toBe(false);
+  });
+
+  it('still registers a bridge URL, which has no credentials', () => {
+    expect(isRegisterableSource('rtsp://orionis-blink-lostblink-mediamtx:8554/driveway')).toBe(
+      true,
+    );
+  });
+
+  it('refuses anything it cannot parse', () => {
+    // This decides whether to hand a string to another service. "I could not
+    // read it" is not a yes.
+    expect(isRegisterableSource('rtsp://[not a url')).toBe(false);
+  });
+});

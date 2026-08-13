@@ -41,7 +41,35 @@ export interface RegisterOptions {
  */
 export function isRegisterableSource(playbackUrl: string | null | undefined): boolean {
   if (!playbackUrl) return false;
-  return /^rtsps?:\/\//i.test(playbackUrl);
+  if (!/^rtsps?:\/\//i.test(playbackUrl)) return false;
+  return !carriesCredentials(playbackUrl);
+}
+
+/**
+ * Whether a URL has a username or password in it.
+ *
+ * The ten direct-device providers put the camera login in the RTSP URL, because
+ * RTSP has no other way to authenticate. That is safe on the terms those
+ * providers state: the session is minted per request, handed only to an
+ * authenticated caller, and never written down.
+ *
+ * Registering one here would write it down. go2rtc persists a registered stream
+ * into its own config file — that is the property that makes registration
+ * survive a restart, and the same property makes it a plaintext credential on
+ * disk, in a group-readable file, copied into every backup of it.
+ *
+ * So a credentialed URL is not registerable. Such a camera keeps whatever
+ * playback path it had before rather than gaining one at that price.
+ */
+function carriesCredentials(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.username !== '' || url.password !== '';
+  } catch {
+    // Unparseable is not registerable either: this decides whether to hand a
+    // string to another service, and "I could not read it" is not a yes.
+    return true;
+  }
 }
 
 /**
