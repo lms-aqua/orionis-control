@@ -27,6 +27,9 @@ jobs:
 
     steps:
       - name: Refuse to run from an unapproved ref
+        # Runs before checkout, so it cannot use the job-level apps/ios working
+        # directory (which does not exist yet). Run it at the workspace root.
+        working-directory: ${{ github.workspace }}
         run: |
           REF="${{ github.ref }}"
           case "$REF" in
