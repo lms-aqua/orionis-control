@@ -161,7 +161,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-test-results
           path: |
@@ -171,7 +171,7 @@ jobs:
 
       - name: Upload build logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-build-logs
           path: apps/ios/*.log
@@ -222,7 +222,7 @@ jobs:
 
       - name: Upload Release log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-release-build-log
           path: apps/ios/build-release.log
@@ -323,7 +323,7 @@ jobs:
 
       - name: Upload UI test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-ui-test-results-${{ matrix.name }}
           path: apps/ios/TestResults-ui-${{ matrix.name }}.xcresult
