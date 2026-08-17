@@ -84,7 +84,7 @@ jobs:
           sha256sum mobile-api-${{ steps.version.outputs.value }}.tar.gz > checksums.txt
           cat checksums.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: |
@@ -191,7 +191,7 @@ jobs:
           cd build && shasum -a 256 -q OrionisControl.xcarchive > /dev/null || true
 
       - name: Upload archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-archive
           # Only the unsigned zip is uploaded. A signed archive contains
