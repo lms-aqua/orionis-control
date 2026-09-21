@@ -34,11 +34,11 @@
   },
   "devDependencies": {
     "@scrypted/types": "^0.5.55",
-    "@types/node": "^22.13.5",
-    "@typescript-eslint/eslint-plugin": "^8.66.0",
+    "@types/node": "^22.20.3",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@typescript-eslint/parser": "^8.25.0",
     "eslint": "^9.21.0",
-    "prettier": "^3.5.2",
+    "prettier": "^3.9.8",
     "typescript": "^5.7.3",
     "vitest": "^3.0.7"
   }
