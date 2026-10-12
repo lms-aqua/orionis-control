@@ -24,12 +24,12 @@
     "openapi": "npm run build && node dist/openapi/emit.js"
   },
   "dependencies": {
-    "@fastify/cors": "^11.0.1",
-    "@fastify/helmet": "^13.0.1",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/helmet": "^13.1.2",
     "@fastify/rate-limit": "^10.2.2",
     "@scrypted/client": "^1.3.26",
-    "fastify": "^5.11.2",
-    "jose": "^6.2.8",
+    "fastify": "^5.12.5",
+    "jose": "^6.2.12",
     "zod": "^3.24.2"
   },
   "devDependencies": {
